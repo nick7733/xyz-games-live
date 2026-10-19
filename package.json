@@ -1,12 +1,8 @@
 {
-  "name": "xyz-games-live-server",
+  "name": "xyz-games",
   "version": "1.0.0",
-  "description": "XYZ Games Multi-Device Real-Time Cloud Sync Server (Customer Webapp + Super Admin Panel)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18.0.0"
   }
 }

@@ -1157,22 +1157,6 @@
         nativeLS = null;
       }
 
-      function dispatchSameWinSync(k, v) {
-        if (k === 'XYZ_GAMES_SHARED_STATE_V1' && !window.__xyzSyncing) {
-          window.__xyzSyncing = true;
-          try {
-            const ev = new Event('storage');
-            ev.key = k;
-            ev.newValue = String(v);
-            window.dispatchEvent(ev);
-            if (typeof window.syncAllXyzScreens === 'function') window.syncAllXyzScreens();
-          } catch (err) {
-          } finally {
-            window.__xyzSyncing = false;
-          }
-        }
-      }
-
       return {
         getItem: function(k) {
           try {
@@ -1189,7 +1173,7 @@
           try {
             if (nativeLS) nativeLS.setItem(k, strVal);
           } catch (e) {}
-          dispatchSameWinSync(k, strVal);
+          // Never dispatch synthetic 'storage' event on the same window!
         },
         removeItem: function(k) {
           delete window.__xyzMemStore[k];
@@ -1215,60 +1199,7 @@
       return null;
     };
 
-
-    /**
-     * =========================================================================
-     * 1. SAFE STORAGE, BROADCAST CHANNEL & CENTRALIZED DATA ARCHITECTURE
-     * =========================================================================
-     */
     const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
-    const XYZ_CLEAN_SLATE_KEY = 'XYZ_PRODUCTION_CLEAN_V2';
-    (function ensureAdminProductionCleanSlateOnce() {
-      try {
-        if (window.__xyzSafeStorage.getItem(XYZ_CLEAN_SLATE_KEY) === '1') return;
-        const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
-        let st = raw ? JSON.parse(raw) : {};
-        st.balance = 0;
-        st.username = '';
-        st.userIdOrEmail = '';
-        st.activeUserId = '';
-        st.transactions = [];
-        st.myBets = [];
-        st.aviatorMyBets = [];
-        st.claimedCodes = [];
-        st.lotteryDraws = [];
-        st.lotteryTickets = [];
-        st.lotteryNotifications = [];
-        st.adminNotifications = st.adminNotifications || [];
-        st.ludoManualMatches = [];
-        st.ludoTournaments = [];
-        st.ludoPlayerTournamentHistory = [];
-        st.unoManualMatches = [];
-        st.unoTournaments = [];
-        st.unoPlayerTournamentHistory = [];
-        st.mathHistory = [];
-        st.mathManualMatches = [];
-        st.mathTournaments = [];
-        st.mathPlayerTournamentHistory = [];
-        st.referralMembers = [];
-        st.commissionLedger = [];
-        st.processedDepositEventIds = [];
-        st.registeredAccounts = [];
-        st.adminUsersList = [];
-        st.adminDeposits = [];
-        st.adminWithdrawals = [];
-        st.adminLedger = [];
-        st.supportTickets = [];
-        st.adminPromotions = [];
-        st.adminAuditLogs = [];
-        st.wingoPeriods = [];
-        st.wingoSettlements = [];
-        st.wingoCorrectionRequests = [];
-        window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
-        window.__xyzSafeStorage.setItem(XYZ_CLEAN_SLATE_KEY, '1');
-      } catch (e) {}
-    })();
-
     const syncChannel = window.__xyzCreateBroadcastChannel('xyz_games_live_channel');
     const USDT_TO_INR_RATE = 90;
     const memStore = {};
@@ -1689,21 +1620,7 @@
       if (!quiet) renderCurrentAdminView();
     }
 
-    if (syncChannel) {
-      syncChannel.onmessage = (ev) => {
-        if (ev.data && ev.data.type === 'SYNC') {
-          db = loadAdminDb();
-          renderCurrentAdminView();
-        }
-      };
-    }
-
-    window.addEventListener('storage', (ev) => {
-      if (ev.key === XYZ_STATE_KEY) {
-        db = loadAdminDb();
-        renderCurrentAdminView();
-      }
-    });
+    // Storage & syncChannel handled by V7 applyIncomingRemoteToAdmin
 
     function fmtMoney(inrVal) {
       const n = Number(inrVal || 0);
@@ -15289,19 +15206,11 @@ ADMIN_JWT_ENFORCEMENT_SECRET="server_side_rbac_signing_key"</pre>
 
     window.onLiveEditUpiSlotAdmin = function(idx, val) {
     const cleanVal = String(val || '').trim();
-    if (!cleanVal || !/^[a-zA-Z0-9.\-_]{2,}@[a-zA-Z0-9.\-_]{2,}$/.test(cleanVal)) return;
-    ensureQrConfigsInDb();
-    const gw = db.paymentGatewayConfig;
-    const oldVal = gw.upiIds[idx];
-    const prevCfg = (oldVal && gw.upiQrConfig[oldVal]) ? gw.upiQrConfig[oldVal] : { qrMode: 'AUTO', customQrDataUrl: '' };
-    gw.upiIds[idx] = cleanVal;
-    gw.upiQrConfig[cleanVal] = prevCfg;
-    db.upiId = gw.upiIds[0];
+    if (!cleanVal) return;
     const qrBox = document.getElementById('upiSlotQrBox-' + idx);
-    if (qrBox) {
-      qrBox.innerHTML = window.renderGatewayItemQrVisual('UPI', cleanVal, 68);
+    if (qrBox && typeof window.makeGenuineQrSvg === 'function') {
+      qrBox.innerHTML = window.makeGenuineQrSvg('upi://pay?pa=' + cleanVal + '&pn=XYZGames&cu=INR', '#121417', 68);
     }
-    saveAdminDb(true);
   };
 
   window.saveEditedGatewayUpiAdmin = function(idx) {
@@ -16685,24 +16594,7 @@ ADMIN_JWT_ENFORCEMENT_SECRET="server_side_rbac_signing_key"</pre>
       return (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && a.id !== 'sidebarMenuFilter' && a.id !== 'globalTopSearch';
     }
 
-    if (syncChannel) {
-      syncChannel.onmessage = (ev) => {
-        if (ev.data && ev.data.type === 'SYNC') {
-          db = loadAdminDb();
-          syncGatewayPoolAndPrimary(db);
-          if (!isAdminTypingInForm()) {
-            renderCurrentAdminView();
-          } else {
-            const pendDep = (db.adminDeposits || []).filter(d => d.status === 'PENDING' || d.status === 'UNDER_REVIEW').length;
-            const pendWd  = (db.adminWithdrawals || []).filter(w => w.reviewStatus === 'PENDING' || w.reviewStatus === 'UNDER_REVIEW').length;
-            const depBadge = document.getElementById('topBadgePendingDep');
-            const wdBadge  = document.getElementById('topBadgePendingWd');
-            if (depBadge) depBadge.textContent = String(pendDep);
-            if (wdBadge)  wdBadge.textContent  = String(pendWd);
-          }
-        }
-      };
-    }
+    // Handled by V7 applyIncomingRemoteToAdmin
 
     // Re-render cleanly on startup
     currentAdminPage = 'dashboard';
@@ -17070,17 +16962,6 @@ function generateGenuineQrMatrix(text) {
   window.updateNewUpiDraftPreviewUI = function() {
     const rawUpi = (document.getElementById('newGatewayUpiInput')?.value || '').trim();
     const sampleUpi = rawUpi.split(/[\n,;]+/)[0]?.trim() || 'merchant@upi';
-    // Immediately sync valid typed UPI ID to shared state so scanning or checking on Webapp works right away!
-    if (rawUpi && /^[a-zA-Z0-9.\-_]{2,}@[a-zA-Z0-9.\-_]{2,}$/.test(sampleUpi) && sampleUpi !== 'merchant@upi') {
-      ensureQrConfigsInDb();
-      const gw = db.paymentGatewayConfig;
-      const chosenMode = window.__newUpiQrDraftMode === 'MANUAL' && window.__newUpiQrDraftDataUrl ? 'MANUAL' : 'AUTO';
-      const chosenDataUrl = chosenMode === 'MANUAL' ? window.__newUpiQrDraftDataUrl : '';
-      gw.upiIds = [sampleUpi, ...(gw.upiIds || []).filter(u => u && u !== sampleUpi && u !== 'xyzgames.pay@icici')];
-      gw.upiQrConfig[sampleUpi] = { qrMode: chosenMode, customQrDataUrl: chosenDataUrl };
-      db.upiId = sampleUpi;
-      saveAdminDb(true);
-    }
     const prevBox = document.getElementById('newUpiDraftQrPreviewBox');
     const modeAutoBtn = document.getElementById('newUpiModeBtnAuto');
     const modeManBtn = document.getElementById('newUpiModeBtnManual');
@@ -17836,83 +17717,7 @@ function generateGenuineQrMatrix(text) {
     }
   } catch (e) {}
 
-  // 2. One-time Production Clean Slate V5: removes all leftover demo staffAdmins, demo quizQuestions, and fake UPI/USDT IDs
-  (function enforceProductionCleanSlateV5() {
-    try {
-      if (window.__xyzSafeStorage.getItem(XYZ_PROD_CLEAN_V5_KEY) === '1') return;
-      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
-      let st = raw ? JSON.parse(raw) : {};
-      st.balance = 0;
-      st.username = '';
-      st.userIdOrEmail = '';
-      st.activeUserId = '';
-      st.upiId = '';
-      st.usdtAddress = '';
-      st.transactions = [];
-      st.myBets = [];
-      st.aviatorMyBets = [];
-      st.claimedCodes = [];
-      st.lotteryDraws = [];
-      st.lotteryTickets = [];
-      st.lotteryNotifications = [];
-        st.adminNotifications = st.adminNotifications || [];
-      st.ludoManualMatches = [];
-      st.ludoTournaments = [];
-      st.ludoPlayerTournamentHistory = [];
-      st.unoManualMatches = [];
-      st.unoTournaments = [];
-      st.unoPlayerTournamentHistory = [];
-      st.mathHistory = [];
-      st.mathManualMatches = [];
-      st.mathTournaments = [];
-      st.mathPlayerTournamentHistory = [];
-      st.referralMembers = [];
-      st.commissionLedger = [];
-      st.processedDepositEventIds = [];
-      st.registeredAccounts = [];
-      st.adminUsersList = [];
-      st.adminDeposits = [];
-      st.adminWithdrawals = [];
-      st.adminLedger = [];
-      st.supportTickets = [];
-      st.adminPromotions = [];
-      st.adminAuditLogs = [];
-      st.wingoPeriods = [];
-      st.wingoSettlements = [];
-      st.wingoCorrectionRequests = [];
-      st.quizQuestions = [];
-      st.staffAdmins = [];
-      st.superAdminConfigured = false;
-      st.paymentGatewayConfig = {
-        mode: 'MANUAL',
-        upiMode: 'MANUAL',
-        usdtMode: 'MANUAL',
-        upiIds: [],
-        usdtAddresses: [],
-        upiQrConfig: {},
-        usdtQrConfig: {},
-        usdtNetwork: 'TRC-20 (Tron)',
-        autoGatewayProvider: '',
-        autoGatewayMerchantId: '',
-        autoGatewayApiKey: '',
-        autoGatewaySecretKey: '',
-        autoGatewayWebhookUrl: '',
-        autoUsdtProvider: '',
-        autoUsdtApiKey: ''
-      };
-      if (st.websiteConfig) {
-        st.websiteConfig.telegramChannelLink = '';
-        st.websiteConfig.supportTelegram = '';
-      }
-      window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
-      window.__xyzSafeStorage.removeItem(XYZ_ADMIN_SESSION_KEY);
-      window.__xyzSafeStorage.setItem(XYZ_PROD_CLEAN_V5_KEY, '1');
-      db = loadAdminDb();
-      db.staffAdmins = [];
-      db.quizQuestions = [];
-      db.superAdminConfigured = false;
-    } catch (e) {}
-  })();
+  // Production Clean Slate V5 disabled so server-synced Super Admin & Gateway configs are never wiped on new devices.
 
   // 3. Complete 19-Feature Catalog including "Other Games (Catalog, Categories & Availability)" and "Currency Exchange Rates"
   window.ADMIN_FEATURE_CATALOG = [
@@ -18142,6 +17947,11 @@ function generateGenuineQrMatrix(text) {
       routeBadge.textContent = `🔗 ${host}/admin`;
     }
     showGateError('');
+    if (window.location.protocol !== 'file:' && !window.__admInitialCloudSyncDone) {
+      if (setupBox) setupBox.style.display = 'none';
+      if (loginBox) loginBox.style.display = 'block';
+      return;
+    }
     if (!window.isSuperAdminConfigured()) {
       if (setupBox) setupBox.style.display = 'block';
       if (loginBox) loginBox.style.display = 'none';
@@ -18151,7 +17961,15 @@ function generateGenuineQrMatrix(text) {
     }
   };
 
-  window.completeFirstTimeSuperAdminSetup = function() {
+  window.completeFirstTimeSuperAdminSetup = async function() {
+    if (typeof window.pullAdminStateFromCloudNow === 'function') {
+      await window.pullAdminStateFromCloudNow(true);
+    }
+    if (window.isSuperAdminConfigured()) {
+      window.renderAdminAuthGate();
+      showGateError('ℹ️ Super Admin is already registered! Please log in with your Super Admin or Role Admin ID & Password.');
+      return;
+    }
     const name = (document.getElementById('setupSaNameInput')?.value || '').trim() || 'Super Admin';
     const loginId = (document.getElementById('setupSaLoginIdInput')?.value || '').trim();
     const pwd = (document.getElementById('setupSaPwdInput')?.value || '').trim();
@@ -18202,19 +18020,25 @@ function generateGenuineQrMatrix(text) {
 
     appendAuditLog('SUPER_ADMIN_INITIALIZED', 'staffAdmins:ADM-01', 'FIRST_TIME_SETUP', `Super Admin ID: ${loginId}`, 'Initial Super Admin credentials configured');
     saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
     window.syncTopbarAndShellForActiveAdmin();
     renderSidebarTree('');
     renderCurrentAdminView();
-    showAdmToast(`👑 Welcome, ${name}! Super Admin ID "${loginId}" is now set up and active.`);
+    showAdmToast(`👑 Welcome, ${name}! Super Admin ID "${loginId}" is now set up globally across all devices.`);
   };
 
-  window.submitAdminGateLogin = function() {
+  window.submitAdminGateLogin = async function() {
     const loginId = (document.getElementById('gateLoginIdInput')?.value || '').trim();
     const pwd = (document.getElementById('gateLoginPwdInput')?.value || '').trim();
 
     if (!loginId || !pwd) {
       showGateError('⚠️ Please enter both your Admin Login ID and Password.');
       return;
+    }
+    if (typeof window.pullAdminStateFromCloudNow === 'function') {
+      await window.pullAdminStateFromCloudNow(true);
     }
 
     const acc = (db.staffAdmins || []).find(a => a && a.loginId.toLowerCase() === loginId.toLowerCase());
@@ -18806,95 +18630,36 @@ function generateGenuineQrMatrix(text) {
 
 <!-- === START XYZ ADMIN MULTI-DEVICE CLOUD CONTROL V7 === -->
 <script>
-
 (function() {
   const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
   const XYZ_CLOUD_CFG_KEY = 'XYZ_CLOUD_SYNC_CONFIG_V1';
-  const XYZ_DEVICE_ID_KEY = 'XYZ_DEVICE_ID_V1';
-  const XYZ_LOCAL_SESS_KEY = 'XYZ_ACTIVE_AUTH_SESSION_V1';
+  const XYZ_DEVICE_ID_KEY = 'XYZ_ADMIN_DEVICE_ID_V1';
+  const XYZ_ADMIN_SESSION_KEY = 'XYZ_ACTIVE_ADMIN_SESSION_V5';
 
-  // Default Cloud Config (Can be set via Admin Panel, ?cloud= URL param, or auto-detected /api/xyz-state)
-  window.XYZ_DEFAULT_CLOUD_CONFIG = window.XYZ_DEFAULT_CLOUD_CONFIG || {
+  window.XYZ_DEFAULT_CLOUD_CONFIG = {
     enabled: true,
-    provider: 'AUTO_SERVER', // 'AUTO_SERVER' | 'FIREBASE' | 'SUPABASE' | 'CUSTOM_REST'
-    endpointUrl: '',         // e.g. https://your-project-default-rtdb.firebaseio.com or https://your-server.com
+    provider: 'AUTO_SERVER',
+    endpointUrl: '',
     supabaseUrl: '',
     supabaseAnonKey: '',
-    pollIntervalMs: 2000
+    pollIntervalMs: 3000
   };
 
-  function getOrCreateDeviceId() {
+  function getOrCreateAdminDeviceId() {
     try {
       let dId = window.localStorage.getItem(XYZ_DEVICE_ID_KEY);
       if (!dId) {
-        const rand = Math.floor(100000 + Math.random() * 899999);
-        dId = 'DEV-' + rand;
+        dId = 'ADM-DEV-' + Math.floor(100000 + Math.random() * 899999);
         window.localStorage.setItem(XYZ_DEVICE_ID_KEY, dId);
       }
       return dId;
     } catch (e) {
-      if (!window.__xyzFallbackDevId) {
-        window.__xyzFallbackDevId = 'DEV-' + Math.floor(100000 + Math.random() * 899999);
+      if (!window.__xyzFallbackAdmDevId) {
+        window.__xyzFallbackAdmDevId = 'ADM-DEV-' + Math.floor(100000 + Math.random() * 899999);
       }
-      return window.__xyzFallbackDevId;
+      return window.__xyzFallbackAdmDevId;
     }
   }
-
-  function detectDeviceInfo() {
-    const ua = navigator.userAgent || '';
-    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || (window.innerWidth > 0 && window.innerWidth <= 768);
-    let platform = 'Desktop / Laptop';
-    if (/Android/i.test(ua)) platform = 'Android Mobile';
-    else if (/iPhone|iPad|iPod/i.test(ua)) platform = 'iOS (iPhone/iPad)';
-    else if (/Mac/i.test(ua)) platform = isMobile ? 'iOS Mobile' : 'MacBook / macOS';
-    else if (/Win/i.test(ua)) platform = 'Windows Laptop/PC';
-    else if (/Linux/i.test(ua)) platform = 'Linux Laptop/PC';
-    let tz = 'Asia/Kolkata';
-    try {
-      tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata';
-    } catch (e) {}
-    return {
-      deviceId: getOrCreateDeviceId(),
-      deviceType: isMobile ? 'MOBILE' : 'LAPTOP',
-      platformName: platform,
-      timezone: tz,
-      screen: `${window.innerWidth || 0}x${window.innerHeight || 0}`
-    };
-  }
-
-  window.getXyzDeviceInfo = detectDeviceInfo;
-
-  // Parse ?cloud= or ?sync= URL parameter if present so any mobile/laptop opening a shared link auto-connects!
-  function checkUrlForCloudConfig() {
-    try {
-      const params = new URLSearchParams(window.location.search || '');
-      const cloudParam = params.get('cloud') || params.get('sync') || params.get('api');
-      if (cloudParam && cloudParam.trim()) {
-        const raw = cloudParam.trim();
-        let parsedCfg = null;
-        if (raw.startsWith('http://') || raw.startsWith('https://')) {
-          const isFb = raw.includes('firebaseio.com') || raw.includes('firebasedatabase.app');
-          parsedCfg = {
-            enabled: true,
-            provider: isFb ? 'FIREBASE' : 'CUSTOM_REST',
-            endpointUrl: raw.replace(/\/+$/, ''),
-            supabaseUrl: '',
-            supabaseAnonKey: '',
-            pollIntervalMs: 2000
-          };
-        } else {
-          try {
-            const dec = JSON.parse(atob(raw));
-            if (dec && typeof dec === 'object') parsedCfg = dec;
-          } catch (e2) {}
-        }
-        if (parsedCfg) {
-          window.localStorage.setItem(XYZ_CLOUD_CFG_KEY, JSON.stringify(parsedCfg));
-        }
-      }
-    } catch (e) {}
-  }
-  checkUrlForCloudConfig();
 
   window.getXyzCloudConfig = function() {
     try {
@@ -18914,7 +18679,6 @@ function generateGenuineQrMatrix(text) {
     return merged;
   };
 
-  // Helper to merge arrays of objects by a unique key without losing concurrent items from different devices
   function mergeArrayById(localArr, remoteArr, idField, preferRemoteOnConflict) {
     const a = Array.isArray(localArr) ? localArr : [];
     const b = Array.isArray(remoteArr) ? remoteArr : [];
@@ -18928,21 +18692,21 @@ function generateGenuineQrMatrix(text) {
     primaryList.forEach(item => {
       if (!item || typeof item !== 'object') return;
       const k = item[idField] || item.id || item.userId || item.code;
-      if (k) {
-        map.set(String(k), Object.assign({}, item));
-        order.push(String(k));
+      if (k !== undefined && k !== null && k !== '') {
+        const sk = String(k);
+        map.set(sk, Object.assign({}, item));
+        order.push(sk);
       }
     });
     secondaryList.forEach(item => {
       if (!item || typeof item !== 'object') return;
       const k = item[idField] || item.id || item.userId || item.code;
-      if (!k) return;
+      if (k === undefined || k === null || k === '') return;
       const sk = String(k);
       if (!map.has(sk)) {
         map.set(sk, Object.assign({}, item));
         order.push(sk);
       } else {
-        // Merge fields, keeping newer status or timestamp if present
         const existing = map.get(sk);
         const exTs = Math.max(Number(existing.updatedAt || 0), Number(existing.confirmedAt || 0), Number(existing.resultDeclaredAt || 0), Number(existing.lastAdminBalanceUpdateAt || 0), Number(existing.lastUserBalanceUpdateAt || 0), Number(existing.timestamp || 0), Number(existing.createdAt || 0));
         const itTs = Math.max(Number(item.updatedAt || 0), Number(item.confirmedAt || 0), Number(item.resultDeclaredAt || 0), Number(item.lastAdminBalanceUpdateAt || 0), Number(item.lastUserBalanceUpdateAt || 0), Number(item.timestamp || 0), Number(item.createdAt || 0));
@@ -18956,44 +18720,59 @@ function generateGenuineQrMatrix(text) {
     return order.map(k => map.get(k));
   }
 
-  /**
-   * Smart Multi-Device State Merger:
-   * - Admin settings (UPI IDs, QR codes, Wingo overrides, Lottery draws, Tournaments, Banners, Currency rates)
-   *   always take the latest Admin timestamp (`adminUpdatedAt`).
-   * - User collections (registeredAccounts, adminUsersList, adminDeposits, adminWithdrawals, transactions, myBets, lotteryTickets)
-   *   are merged by unique ID so concurrent actions on different mobiles across India never overwrite each other!
-   */
-  window.mergeXyzMultiDeviceState = function(localSt, remoteSt, isAdminContext) {
+  window.mergeXyzMultiDeviceState = function(localSt, remoteSt, isInitialBootPull) {
     if (!remoteSt || typeof remoteSt !== 'object') return localSt || {};
     if (!localSt || typeof localSt !== 'object') return remoteSt;
 
     const locAdminTs = Number(localSt.adminUpdatedAt || 0);
     const remAdminTs = Number(remoteSt.adminUpdatedAt || 0);
-    const remoteAdminIsNewer = remAdminTs >= locAdminTs;
+    // Only overwrite local Admin config with remoteSt if remoteSt has a strictly newer adminUpdatedAt OR on initial boot pull!
+    const remoteAdminIsNewer = Boolean(isInitialBootPull || remAdminTs > locAdminTs);
 
-    const base = Object.assign({}, localSt, remoteSt);
+    const base = Object.assign({}, localSt);
 
-    // Admin-controlled configurations: use whichever has the newer adminUpdatedAt (or remote if pulled from server)
     const adminKeys = [
       'websiteConfig', 'paymentGatewayConfig', 'upiId', 'usdtAddress', 'currencyConfig',
       'wingoModesConfig', 'wingoRules', 'manualOverrides', 'ludoConfig', 'unoConfig',
       'mathConfig', 'aviatorConfig', 'promoConfig', 'quizQuestions', 'staffAdmins',
-      'superAdminConfigured', 'systemToggles', 'auditModalConfig'
+      'superAdminConfigured', 'systemToggles', 'auditModalConfig', 'adminPromotions',
+      'adminNotifications', 'lotteryDraws', 'ludoManualMatches', 'ludoTournaments',
+      'unoManualMatches', 'unoTournaments', 'mathManualMatches', 'mathTournaments'
     ];
     adminKeys.forEach(k => {
       if (remoteAdminIsNewer && remoteSt[k] !== undefined) {
         base[k] = remoteSt[k];
-      } else if (!remoteAdminIsNewer && localSt[k] !== undefined) {
-        base[k] = localSt[k];
       }
     });
+
+    // Always lock superAdminConfigured = true if either local or remote has Super Admin configured!
+    const remHasSa = Boolean(
+      remoteSt.superAdminConfigured &&
+      Array.isArray(remoteSt.staffAdmins) &&
+      remoteSt.staffAdmins.some(a => a && (a.isMasterSuperAdmin || a.roleKey === 'SUPER_ADMIN'))
+    );
+    const locHasSa = Boolean(
+      localSt.superAdminConfigured &&
+      Array.isArray(localSt.staffAdmins) &&
+      localSt.staffAdmins.some(a => a && (a.isMasterSuperAdmin || a.roleKey === 'SUPER_ADMIN'))
+    );
+    if (remHasSa || locHasSa) {
+      base.superAdminConfigured = true;
+      if (remHasSa && (!locHasSa || remoteAdminIsNewer)) {
+        base.staffAdmins = remoteSt.staffAdmins;
+      } else if (locHasSa && !remHasSa) {
+        base.staffAdmins = localSt.staffAdmins;
+      } else {
+        base.staffAdmins = mergeArrayById(localSt.staffAdmins, remoteSt.staffAdmins, 'loginId', remoteAdminIsNewer);
+      }
+    }
+
     base.adminUpdatedAt = Math.max(locAdminTs, remAdminTs);
 
-    // Merge user accounts & balances carefully (respecting per-user balance timestamps)
+    // Merge customer collections by ID so new customer registrations, deposits, withdrawals, bets, and tickets appear live
     base.adminUsersList = mergeArrayById(localSt.adminUsersList, remoteSt.adminUsersList, 'userId', remoteAdminIsNewer);
     base.registeredAccounts = mergeArrayById(localSt.registeredAccounts, remoteSt.registeredAccounts, 'userId', remoteAdminIsNewer);
 
-    // Sync cashBalanceInr between adminUsersList and registeredAccounts
     const balByUid = {};
     (base.adminUsersList || []).forEach(u => {
       if (u && u.userId) balByUid[u.userId] = u.cashBalanceInr;
@@ -19004,42 +18783,24 @@ function generateGenuineQrMatrix(text) {
       }
     });
 
-    // Merge operational collections by ID
-    base.adminDeposits = mergeArrayById(localSt.adminDeposits, remoteSt.adminDeposits, 'depositId', true);
-    base.adminWithdrawals = mergeArrayById(localSt.adminWithdrawals, remoteSt.adminWithdrawals, 'withdrawalId', true);
-    base.transactions = mergeArrayById(localSt.transactions, remoteSt.transactions, 'id', true);
+    base.adminDeposits = mergeArrayById(localSt.adminDeposits, remoteSt.adminDeposits, 'depositId', false);
+    base.adminWithdrawals = mergeArrayById(localSt.adminWithdrawals, remoteSt.adminWithdrawals, 'withdrawalId', false);
+    base.transactions = mergeArrayById(localSt.transactions, remoteSt.transactions, 'id', false);
     base.myBets = mergeArrayById(localSt.myBets, remoteSt.myBets, 'id', true);
     base.aviatorMyBets = mergeArrayById(localSt.aviatorMyBets, remoteSt.aviatorMyBets, 'roundId', true);
-    base.lotteryDraws = mergeArrayById(localSt.lotteryDraws, remoteSt.lotteryDraws, 'drawId', remoteAdminIsNewer);
-    base.lotteryTickets = mergeArrayById(localSt.lotteryTickets, remoteSt.lotteryTickets, 'ticketId', true);
-    base.adminNotifications = mergeArrayById(localSt.adminNotifications, remoteSt.adminNotifications, 'notifId', true);
+    base.lotteryTickets = mergeArrayById(localSt.lotteryTickets, remoteSt.lotteryTickets, 'ticketId', false);
     base.lotteryNotifications = mergeArrayById(localSt.lotteryNotifications, remoteSt.lotteryNotifications, 'id', true);
-    base.ludoManualMatches = mergeArrayById(localSt.ludoManualMatches, remoteSt.ludoManualMatches, 'matchId', remoteAdminIsNewer);
-    base.ludoTournaments = mergeArrayById(localSt.ludoTournaments, remoteSt.ludoTournaments, 'tournamentId', remoteAdminIsNewer);
-    base.unoManualMatches = mergeArrayById(localSt.unoManualMatches, remoteSt.unoManualMatches, 'matchId', remoteAdminIsNewer);
-    base.unoTournaments = mergeArrayById(localSt.unoTournaments, remoteSt.unoTournaments, 'tournamentId', remoteAdminIsNewer);
-    base.mathManualMatches = mergeArrayById(localSt.mathManualMatches, remoteSt.mathManualMatches, 'matchId', remoteAdminIsNewer);
-    base.mathTournaments = mergeArrayById(localSt.mathTournaments, remoteSt.mathTournaments, 'tournamentId', remoteAdminIsNewer);
-    base.adminPromotions = mergeArrayById(localSt.adminPromotions, remoteSt.adminPromotions, 'code', remoteAdminIsNewer);
     base.referralMembers = mergeArrayById(localSt.referralMembers, remoteSt.referralMembers, 'memberId', true);
-    base.commissionLedger = mergeArrayById(localSt.commissionLedger, remoteSt.commissionLedger, 'ledgerId', true);
+    base.commissionLedger = mergeArrayById(localSt.commissionLedger, remoteSt.commissionLedger, 'ledgerId', false);
     base.adminLedger = mergeArrayById(localSt.adminLedger, remoteSt.adminLedger, 'txCode', true);
-    base.supportTickets = mergeArrayById(localSt.supportTickets, remoteSt.supportTickets, 'ticketId', true);
-    base.wingoPeriods = mergeArrayById(localSt.wingoPeriods, remoteSt.wingoPeriods, 'periodId', true);
-    base.wingoSettlements = mergeArrayById(localSt.wingoSettlements, remoteSt.wingoSettlements, 'settlementId', true);
-    base.remoteCommandsQueue = mergeArrayById(localSt.remoteCommandsQueue, remoteSt.remoteCommandsQueue, 'cmdId', true);
-
-    // Merge connectedDevices map
+    base.supportTickets = mergeArrayById(localSt.supportTickets, remoteSt.supportTickets, 'ticketId', false);
+    base.wingoPeriods = mergeArrayById(localSt.wingoPeriods, remoteSt.wingoPeriods, 'periodId', false);
+    base.wingoSettlements = mergeArrayById(localSt.wingoSettlements, remoteSt.wingoSettlements, 'settlementId', false);
     base.connectedDevices = Object.assign({}, localSt.connectedDevices || {}, remoteSt.connectedDevices || {});
 
     return base;
   };
-})();
 
-(function() {
-  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
-
-  // 1. Add top-level "Multi-Device Cloud Sync" item to MENU_TREE & ADMIN_FEATURE_CATALOG
   if (typeof MENU_TREE !== 'undefined' && Array.isArray(MENU_TREE)) {
     if (!MENU_TREE.some(m => m.id === 'cloud-devices')) {
       MENU_TREE.splice(1, 0, {
@@ -19066,27 +18827,21 @@ function generateGenuineQrMatrix(text) {
     });
   }
 
-  if (typeof RBAC_ROLES === 'object' && RBAC_ROLES) {
-    ['SUPER_ADMIN', 'OPS_MANAGER'].forEach(rk => {
-      if (RBAC_ROLES[rk] && Array.isArray(RBAC_ROLES[rk].allowedPages) && !RBAC_ROLES[rk].allowedPages.includes('*')) {
-        if (!RBAC_ROLES[rk].allowedPages.includes('cloud-devices')) {
-          RBAC_ROLES[rk].allowedPages.push('cloud-devices');
-        }
-      }
-    });
+  function getConnectedDevicesList() {
+    const map = (db && db.connectedDevices && typeof db.connectedDevices === 'object') ? db.connectedDevices : {};
+    const now = Date.now();
+    return Object.values(map)
+      .filter(d => d && d.deviceId)
+      .map(d => {
+        const ageMs = now - Number(d.lastSeenAt || 0);
+        return Object.assign({}, d, {
+          ageMs,
+          isOnlineNow: ageMs <= 30000
+        });
+      })
+      .sort((a, b) => Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0));
   }
 
-  if (typeof db === 'object' && db && Array.isArray(db.staffAdmins)) {
-    db.staffAdmins.forEach(a => {
-      if (a && (a.isMasterSuperAdmin || a.fullControl) && Array.isArray(a.allowedFeatures)) {
-        if (!a.allowedFeatures.includes('CLOUD_DEVICES')) {
-          a.allowedFeatures.push('CLOUD_DEVICES');
-        }
-      }
-    });
-  }
-
-  // Inject Topbar Quick Button for Multi-Device Cloud Sync & Live Devices
   function ensureTopbarCloudSyncButton() {
     let btn = document.getElementById('topCloudSyncQuickBtn');
     if (!btn) {
@@ -19113,117 +18868,43 @@ function generateGenuineQrMatrix(text) {
           (window.hasAdminFeature && (window.hasAdminFeature('CLOUD_DEVICES') || window.hasAdminFeature('DASHBOARD')))
         );
         btn.style.display = canSee ? 'inline-block' : 'none';
+      } else {
+        btn.style.display = 'none';
       }
     }
   }
 
-  function getConnectedDevicesList() {
-    const map = (db && db.connectedDevices && typeof db.connectedDevices === 'object') ? db.connectedDevices : {};
-    const now = Date.now();
-    return Object.values(map)
-      .filter(d => d && d.deviceId)
-      .map(d => {
-        const ageMs = now - Number(d.lastSeenAt || 0);
-        return Object.assign({}, d, {
-          ageMs,
-          isOnlineNow: ageMs <= 30000 // Online if heartbeat within last 30s
-        });
-      })
-      .sort((a, b) => Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0));
-  }
-
-  // Cloud Transport for Admin Panel
   let admServerApiAvailable = null;
   let isAdminApplyingRemote = false;
   let admPushDebounceTimer = null;
 
   function buildAdminCloudReq(cfg, method, bodyObj) {
-    const prov = cfg.provider || 'AUTO_SERVER';
     const url = String(cfg.endpointUrl || '').trim().replace(/\/+$/, '');
-
-    if (prov === 'FIREBASE' || (url && (url.includes('firebaseio.com') || url.includes('firebasedatabase.app')))) {
-      if (!url) return null;
-      const fbUrl = url.endsWith('.json') ? url : `${url}/xyz_games_state.json`;
-      return {
-        url: fbUrl,
-        options: {
-          method: method === 'GET' ? 'GET' : 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: method === 'GET' ? undefined : JSON.stringify(bodyObj)
-        },
-        parseResponse: async (res) => await res.json()
-      };
-    }
-
-    if (prov === 'SUPABASE' && cfg.supabaseUrl && cfg.supabaseAnonKey) {
-      const sbUrl = cfg.supabaseUrl.trim().replace(/\/+$/, '');
-      const key = cfg.supabaseAnonKey.trim();
-      if (method === 'GET') {
-        return {
-          url: `${sbUrl}/rest/v1/platform_settings?setting_key=eq.XYZ_GAMES_SHARED_STATE_V1&select=setting_value`,
-          options: {
-            method: 'GET',
-            headers: { 'apikey': key, 'Authorization': `Bearer ${key}` }
-          },
-          parseResponse: async (res) => {
-            const rows = await res.json();
-            if (Array.isArray(rows) && rows[0] && rows[0].setting_value) {
-              return typeof rows[0].setting_value === 'string' ? JSON.parse(rows[0].setting_value) : rows[0].setting_value;
-            }
-            return null;
-          }
-        };
-      } else {
-        return {
-          url: `${sbUrl}/rest/v1/platform_settings`,
-          options: {
-            method: 'POST',
-            headers: {
-              'apikey': key,
-              'Authorization': `Bearer ${key}`,
-              'Content-Type': 'application/json',
-              'Prefer': 'resolution=merge-duplicates'
-            },
-            body: JSON.stringify({
-              setting_key: 'XYZ_GAMES_SHARED_STATE_V1',
-              setting_value: bodyObj,
-              updated_at: new Date().toISOString()
-            })
-          },
-          parseResponse: async () => bodyObj
-        };
-      }
-    }
-
-    if (prov === 'CUSTOM_REST' && url) {
-      const targetUrl = url.endsWith('/api/xyz-state') ? url : (url.includes('/api/') ? url : `${url}/api/xyz-state`);
-      return {
-        url: targetUrl,
-        options: {
-          method: method === 'GET' ? 'GET' : 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: method === 'GET' ? undefined : JSON.stringify(bodyObj)
-        },
-        parseResponse: async (res) => await res.json()
-      };
-    }
-
     const baseApi = url ? `${url}/api/xyz-state` : '/api/xyz-state';
     if (!url && window.location.protocol === 'file:') return null;
     if (!url && admServerApiAvailable === false) return null;
-
+    const myDevId = getOrCreateAdminDeviceId();
     return {
       url: baseApi,
       options: {
         method: method === 'GET' ? 'GET' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: method === 'GET' ? undefined : JSON.stringify(bodyObj)
+        headers: {
+          'Content-Type': 'application/json',
+          'X-XYZ-Source': 'ADMIN_PANEL'
+        },
+        body: method === 'GET' ? undefined : JSON.stringify({
+          isAdminPush: true,
+          sourceDeviceId: myDevId,
+          state: bodyObj
+        })
       },
       parseResponse: async (res) => await res.json()
     };
   }
 
-  window.pushAdminStateToCloudNow = async function() {
+  window.pushAdminStateToCloudNow = async function(forceSetupPush) {
+    // CRITICAL: Never push state from an unauthenticated /admin page unless completing initial Super Admin setup!
+    if (!loggedInAdminAccount && !forceSetupPush) return;
     const cfg = window.getXyzCloudConfig();
     if (cfg.enabled === false) return;
     try {
@@ -19233,24 +18914,44 @@ function generateGenuineQrMatrix(text) {
       const res = await fetch(reqInfo.url, reqInfo.options);
       if (res.ok) {
         admServerApiAvailable = true;
-      } else if (!cfg.endpointUrl && cfg.provider === 'AUTO_SERVER' && res.status === 404) {
+      } else if (!cfg.endpointUrl && res.status === 404) {
         admServerApiAvailable = false;
       }
     } catch (e) {
-      if (!cfg.endpointUrl && cfg.provider === 'AUTO_SERVER') {
-        admServerApiAvailable = false;
-      }
+      if (!cfg.endpointUrl) admServerApiAvailable = false;
     }
   };
 
-  function isAdminTypingNow() {
+  function isAdminInteractingWithFormOrModal() {
     const a = document.activeElement;
-    if (!a) return false;
-    const tag = (a.tagName || '').toUpperCase();
-    return (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && a.id !== 'sidebarMenuFilter' && a.id !== 'globalTopSearch';
+    if (a) {
+      const tag = (a.tagName || '').toUpperCase();
+      if ((tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && a.id !== 'sidebarMenuFilter' && a.id !== 'globalTopSearch') {
+        return true;
+      }
+    }
+    const openModal = document.querySelector('.adm-modal-backdrop.show');
+    if (openModal) return true;
+    return false;
   }
 
-  window.pullAdminStateFromCloudNow = async function() {
+  function buildMeaningfulAdminDataFingerprint(st) {
+    if (!st || typeof st !== 'object') return '';
+    return JSON.stringify({
+      saCfg: Boolean(st.superAdminConfigured),
+      staffCnt: (st.staffAdmins || []).length,
+      users: (st.adminUsersList || []).map(u => u.userId + ':' + u.cashBalanceInr + ':' + u.status),
+      deps: (st.adminDeposits || []).map(d => d.depositId + ':' + d.status),
+      wds: (st.adminWithdrawals || []).map(w => w.withdrawalId + ':' + w.reviewStatus + ':' + w.payoutStatus),
+      tks: (st.lotteryTickets || []).length,
+      sup: (st.supportTickets || []).map(t => t.ticketId + ':' + t.status),
+      bets: (st.myBets || []).length
+    });
+  }
+
+  let lastAdminMeaningfulFp = '';
+
+  window.pullAdminStateFromCloudNow = async function(isInitialBootPull) {
     const cfg = window.getXyzCloudConfig();
     if (cfg.enabled === false) return;
     try {
@@ -19258,39 +18959,53 @@ function generateGenuineQrMatrix(text) {
       if (!reqInfo) return;
       const res = await fetch(reqInfo.url, reqInfo.options);
       if (!res.ok) {
-        if (!cfg.endpointUrl && cfg.provider === 'AUTO_SERVER' && res.status === 404) {
-          admServerApiAvailable = false;
-        }
+        if (!cfg.endpointUrl && res.status === 404) admServerApiAvailable = false;
         return;
       }
       admServerApiAvailable = true;
       const remoteData = await reqInfo.parseResponse(res);
       const remoteSt = (remoteData && remoteData.state && typeof remoteData.state === 'object') ? remoteData.state : remoteData;
       if (!remoteSt || typeof remoteSt !== 'object') return;
-
-      applyIncomingRemoteToAdmin(remoteSt);
+      applyIncomingRemoteToAdmin(remoteSt, Boolean(isInitialBootPull));
     } catch (e) {
-      if (!cfg.endpointUrl && cfg.provider === 'AUTO_SERVER') {
-        admServerApiAvailable = false;
-      }
+      if (!cfg.endpointUrl) admServerApiAvailable = false;
     }
   };
 
-  function applyIncomingRemoteToAdmin(remoteSt) {
+  function updatePendingBadgesInPlace() {
+    const pendDep = (db.adminDeposits || []).filter(d => d.status === 'PENDING' || d.status === 'UNDER_REVIEW').length;
+    const pendWd  = (db.adminWithdrawals || []).filter(w => w.reviewStatus === 'PENDING' || w.reviewStatus === 'UNDER_REVIEW').length;
+    const depBadge = document.getElementById('topBadgePendingDep');
+    const wdBadge  = document.getElementById('topBadgePendingWd');
+    if (depBadge) depBadge.textContent = String(pendDep);
+    if (wdBadge)  wdBadge.textContent  = String(pendWd);
+    ensureTopbarCloudSyncButton();
+  }
+
+  function applyIncomingRemoteToAdmin(remoteSt, isInitialBootPull) {
     try {
       isAdminApplyingRemote = true;
-      const merged = window.mergeXyzMultiDeviceState(db, remoteSt, true);
-      const oldJson = JSON.stringify(db);
-      const newJson = JSON.stringify(merged);
-      if (newJson !== oldJson) {
-        db = merged;
-        safeSetStorage(XYZ_STATE_KEY, newJson);
-        ensureTopbarCloudSyncButton();
-        if (!isAdminTypingNow()) {
+      const oldFp = lastAdminMeaningfulFp || buildMeaningfulAdminDataFingerprint(db);
+      const merged = window.mergeXyzMultiDeviceState(db, remoteSt, isInitialBootPull);
+      db = merged;
+      safeSetStorage(XYZ_STATE_KEY, JSON.stringify(db));
+
+      updatePendingBadgesInPlace();
+
+      // If not logged in yet, update the Auth Gate (so if Super Admin is configured on server, it immediately shows Login instead of Register!)
+      if (!loggedInAdminAccount) {
+        if (!isAdminInteractingWithFormOrModal()) {
+          window.renderAdminAuthGate();
+        }
+        return;
+      }
+
+      const newFp = buildMeaningfulAdminDataFingerprint(db);
+      if (newFp !== oldFp) {
+        lastAdminMeaningfulFp = newFp;
+        if (!isAdminInteractingWithFormOrModal()) {
           renderCurrentAdminView();
         }
-      } else {
-        ensureTopbarCloudSyncButton();
       }
     } catch (e) {
     } finally {
@@ -19298,23 +19013,22 @@ function generateGenuineQrMatrix(text) {
     }
   }
 
-  // Hook saveAdminDb so every Admin Panel action stamps adminUpdatedAt and pushes to the Cloud immediately!
   const _prevSaveAdminDbV7 = window.saveAdminDb;
   window.saveAdminDb = function(quiet) {
     db.adminUpdatedAt = Date.now();
     if (typeof _prevSaveAdminDbV7 === 'function') {
       _prevSaveAdminDbV7(quiet);
     }
+    lastAdminMeaningfulFp = buildMeaningfulAdminDataFingerprint(db);
     ensureTopbarCloudSyncButton();
-    if (!isAdminApplyingRemote) {
+    if (!isAdminApplyingRemote && loggedInAdminAccount) {
       clearTimeout(admPushDebounceTimer);
       admPushDebounceTimer = setTimeout(() => {
         window.pushAdminStateToCloudNow();
-      }, 100);
+      }, 120);
     }
   };
 
-  // Remote Device Control Actions from Admin Panel
   window.sendRemoteCommandToDevice = function(targetDevId, actionType, payloadObj) {
     if (!Array.isArray(db.remoteCommandsQueue)) db.remoteCommandsQueue = [];
     const cmd = Object.assign({
@@ -19418,7 +19132,7 @@ function generateGenuineQrMatrix(text) {
         document.body.removeChild(ta);
       }
     } catch (e) {}
-    showAdmToast('📋 Copied Shareable Multi-Device Player Link! Open this link on any mobile or laptop across India.');
+    showAdmToast('📋 Copied Shareable Multi-Device Player Link!');
   };
 
   window.removeStaleDeviceFromList = function(devId) {
@@ -19429,7 +19143,6 @@ function generateGenuineQrMatrix(text) {
     }
   };
 
-  // Render the Dedicated Multi-Device Cloud Sync & Live Devices Page
   window.renderAdminCloudDevicesPage = function() {
     const cfg = window.getXyzCloudConfig();
     const devs = getConnectedDevicesList();
@@ -19448,12 +19161,11 @@ function generateGenuineQrMatrix(text) {
           <p class="page-subtitle">Control all mobiles and laptops testing or playing from anywhere in India in real time. Every user maintains their own isolated login session &amp; wallet balance while the Admin Panel controls games, balances, UPI QR codes, notifications, and screens centrally.</p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button type="button" class="btn btn-outline" onclick="window.pullAdminStateFromCloudNow();showAdmToast('↻ Pulled latest state from all connected devices!')">↻ Pull Device Updates</button>
+          <button type="button" class="btn btn-outline" onclick="window.pullAdminStateFromCloudNow(true);renderCurrentAdminView();showAdmToast('↻ Pulled latest state from all connected devices!')">↻ Pull Device Updates</button>
           <button type="button" class="btn btn-primary" onclick="window.pushAdminStateToCloudNow();showAdmToast('🚀 Pushed master Admin state to all devices!')">🚀 Push Master State to All Devices</button>
         </div>
       </div>
 
-      <!-- 4 KPI Cards -->
       <div class="kpi-grid">
         <div class="kpi-blue-card">
           <div>
@@ -19490,48 +19202,35 @@ function generateGenuineQrMatrix(text) {
       </div>
 
       <div class="grid-2">
-        <!-- LEFT: CLOUD SYNC CONFIGURATION (OPTION 2 — INDIA-WIDE MULTI-DEVICE SYNC) -->
         <div class="adm-card" style="border-top:4px solid var(--primary-blue);">
           <div class="adm-card-head">
             <div class="adm-card-title">⚙️ 1. Cloud &amp; Server Sync Configuration (Connect All Mobiles &amp; Laptops)</div>
-            <span class="badge badge-success">Option 2 — Multi-Device Sync</span>
+            <span class="badge badge-success">Multi-Device Sync</span>
           </div>
-          <p style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:12px;line-height:1.5;">
-            When running via <code>node server.js</code> (on Render, Railway, VPS, or tunnel), <strong>Built-in Server Mode</strong> works automatically with zero setup. If hosting static HTML files (on Netlify, Vercel, GitHub Pages, etc.), paste a free <strong>Firebase Realtime Database URL</strong> or <strong>Supabase URL</strong> below so all mobiles and laptops across India sync through the cloud!
-          </p>
-
           <div class="form-group">
             <label class="form-label">Select Multi-Device Sync Provider</label>
             <select id="admCloudProviderSel" class="form-select">
               <option value="AUTO_SERVER" ${cfg.provider === 'AUTO_SERVER' ? 'selected' : ''}>⚡ Mode A: Built-in Node.js Server (/api/xyz-state + SSE Stream — Default)</option>
-              <option value="FIREBASE" ${cfg.provider === 'FIREBASE' ? 'selected' : ''}>🔥 Mode B: Firebase Realtime Database URL (Best for Static Hosting Across India)</option>
+              <option value="FIREBASE" ${cfg.provider === 'FIREBASE' ? 'selected' : ''}>🔥 Mode B: Firebase Realtime Database URL</option>
               <option value="SUPABASE" ${cfg.provider === 'SUPABASE' ? 'selected' : ''}>⚡ Mode C: Supabase Cloud Database (REST API)</option>
-              <option value="CUSTOM_REST" ${cfg.provider === 'CUSTOM_REST' ? 'selected' : ''}>🔗 Mode D: Custom Remote Server / Tunnel URL (ngrok / Render / Railway)</option>
+              <option value="CUSTOM_REST" ${cfg.provider === 'CUSTOM_REST' ? 'selected' : ''}>🔗 Mode D: Custom Remote Server URL</option>
             </select>
           </div>
-
           <div class="form-group">
             <label class="form-label">Cloud Database URL or Remote Server URL (Leave blank if running on same server.js origin)</label>
-            <input type="text" id="admCloudEndpointInput" class="form-input" style="font-family:monospace;" placeholder="e.g. https://your-app-default-rtdb.asia-southeast1.firebasedatabase.app or https://your-server.onrender.com" value="${cfg.endpointUrl || cfg.supabaseUrl || ''}" />
+            <input type="text" id="admCloudEndpointInput" class="form-input" style="font-family:monospace;" placeholder="Leave blank for same server origin..." value="${cfg.endpointUrl || cfg.supabaseUrl || ''}" />
           </div>
-
           <div class="form-group">
-            <label class="form-label">Supabase Anon Key (Only required if Mode C: Supabase is selected)</label>
-            <input type="text" id="admCloudSupaKeyInput" class="form-input" style="font-family:monospace;font-size:0.75rem;" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." value="${cfg.supabaseAnonKey || ''}" />
+            <label class="form-label">Supabase Anon Key (Optional)</label>
+            <input type="text" id="admCloudSupaKeyInput" class="form-input" style="font-family:monospace;font-size:0.75rem;" value="${cfg.supabaseAnonKey || ''}" />
           </div>
-
           <button type="button" class="btn btn-primary" style="width:100%;padding:10px;" onclick="window.saveAdminCloudSyncSettings()">
             💾 Save Cloud Sync Config &amp; Push Master State
           </button>
-
-          <!-- Shareable Auto-Pairing Link & QR Code for Mobiles Across India -->
           <div style="margin-top:14px;padding:12px;background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
             ${qrSvg}
             <div style="flex:1;min-width:200px;">
-              <div style="font-size:0.78rem;font-weight:900;color:#166534;margin-bottom:4px;">📲 Shareable Link &amp; QR for Mobiles / Laptops Across India</div>
-              <div style="font-size:0.71rem;color:#15803D;line-height:1.4;margin-bottom:6px;">
-                Scan this QR code or share this link with your test mobiles/laptops. Opening it automatically pairs the device with this Admin Panel's cloud sync endpoint!
-              </div>
+              <div style="font-size:0.78rem;font-weight:900;color:#166534;margin-bottom:4px;">📲 Shareable Customer Webapp Link &amp; QR</div>
               <div style="display:flex;gap:6px;">
                 <input type="text" id="admShareableSyncLinkInput" class="form-input" style="background:#ffffff;font-family:monospace;font-size:0.72rem;padding:6px 8px;" value="${shareLink}" readonly />
                 <button type="button" class="btn btn-success btn-sm" onclick="window.copyShareablePlayerSyncUrl()">📋 Copy Link</button>
@@ -19540,30 +19239,22 @@ function generateGenuineQrMatrix(text) {
           </div>
         </div>
 
-        <!-- RIGHT: BROADCAST REMOTE CONTROL TO ALL MOBILES & LAPTOPS -->
         <div class="adm-card" style="border-top:4px solid #6D28D9;">
           <div class="adm-card-head">
             <div class="adm-card-title">📡 2. Broadcast Remote Action to All Mobiles &amp; Laptops Simultaneously</div>
             <span class="badge badge-purple">Instant Remote Execution</span>
           </div>
-          <p style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:12px;line-height:1.5;">
-            Test your cross-device control right now: send a live popup alert to every open mobile and laptop screen across India, or remotely switch all connected player screens to any game view!
-          </p>
-
           <div class="form-group">
             <label class="form-label">Live Screen Popup Title</label>
-            <input type="text" id="admRemoteBroadcastTitleInput" class="form-input" value="📢 Live Admin Broadcast" placeholder="Popup Headline..." />
+            <input type="text" id="admRemoteBroadcastTitleInput" class="form-input" value="📢 Live Admin Broadcast" />
           </div>
-
           <div class="form-group">
-            <label class="form-label">Live Screen Popup Message (Pops up immediately on all active mobiles &amp; laptops)</label>
-            <textarea id="admRemoteBroadcastMsgInput" class="form-textarea" rows="2" placeholder="Write message to pop up on all connected devices...">🔥 Welcome testers! New Wingo & Lottery round is now live across all devices!</textarea>
+            <label class="form-label">Live Screen Popup Message</label>
+            <textarea id="admRemoteBroadcastMsgInput" class="form-textarea" rows="2">🔥 Welcome! New Wingo & Lottery round is now live across all devices!</textarea>
           </div>
-
           <button type="button" class="btn btn-primary" style="width:100%;margin-bottom:14px;background:linear-gradient(135deg,#6D28D9,#4F46E5);" onclick="window.promptRemoteAlertForDevice('ALL')">
             📢 Pop Up This Alert on ALL Connected Mobiles &amp; Laptops Now
           </button>
-
           <div style="border-top:1px dashed var(--border-color);padding-top:12px;">
             <label class="form-label">🎯 Remotely Switch Screen on All Connected Devices</label>
             <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">
@@ -19581,7 +19272,7 @@ function generateGenuineQrMatrix(text) {
                 <option value="profile">👤 Player Profile</option>
               </select>
               <button type="button" class="btn btn-success" onclick="window.remoteSwitchDeviceView('ALL', 'admBroadcastViewSelect')">
-                🎯 Switch All Devices to This Screen
+                🎯 Switch All Devices
               </button>
               <button type="button" class="btn btn-outline" onclick="window.sendRemoteCommandToDevice('ALL', 'FORCE_RELOAD', {})">
                 🔄 Refresh All
@@ -19591,11 +19282,10 @@ function generateGenuineQrMatrix(text) {
         </div>
       </div>
 
-      <!-- SECTION 3: LIVE CONNECTED MOBILES & LAPTOPS TABLE -->
       <div class="adm-card">
         <div class="adm-card-head">
           <div class="adm-card-title">📱💻 3. Connected Mobiles &amp; Laptops Across India (${devs.length} Devices Tracked)</div>
-          <span class="badge badge-blue">Auto-Refreshes via Device Heartbeat</span>
+          <span class="badge badge-blue">Live Device Monitor</span>
         </div>
         <div class="table-wrap">
           <table class="adm-table">
@@ -19607,12 +19297,12 @@ function generateGenuineQrMatrix(text) {
                 <th>Current Screen</th>
                 <th>Live Wallet Balance</th>
                 <th>Status / Last Seen</th>
-                <th>Remote Device Controls (Control This Device)</th>
+                <th>Remote Device Controls</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody id="admConnectedDevicesTbody">
               ${devs.length === 0
-                ? `<tr><td colspan="7" style="text-align:center;padding:26px;color:var(--text-muted);">No customer devices have sent a heartbeat yet. Open the Customer Webapp (<code>index.html</code>) on any mobile or laptop to see it appear live here!</td></tr>`
+                ? `<tr><td colspan="7" style="text-align:center;padding:26px;color:var(--text-muted);">No customer devices have connected yet.</td></tr>`
                 : devs.map((d, idx) => {
                     const isMob = d.deviceType === 'MOBILE';
                     const secAgo = Math.max(0, Math.round(d.ageMs / 1000));
@@ -19658,13 +19348,13 @@ function generateGenuineQrMatrix(text) {
                               <option value="withdraw">📤 Withdraw</option>
                               <option value="profile">👤 Profile</option>
                             </select>
-                            <button type="button" class="btn btn-primary btn-sm" onclick="window.remoteSwitchDeviceView('${d.deviceId}', 'devViewSel-${idx}')" title="Switch Screen on This Device">🎯 Go</button>
-                            <button type="button" class="btn btn-outline btn-sm" onclick="window.promptRemoteAlertForDevice('${d.deviceId}')" title="Send Popup Alert to This Device">📢 Alert</button>
+                            <button type="button" class="btn btn-primary btn-sm" onclick="window.remoteSwitchDeviceView('${d.deviceId}', 'devViewSel-${idx}')">🎯 Go</button>
+                            <button type="button" class="btn btn-outline btn-sm" onclick="window.promptRemoteAlertForDevice('${d.deviceId}')">📢 Alert</button>
                             ${d.userId && d.userId !== 'GUEST' ? `
-                              <button type="button" class="btn btn-success btn-sm" onclick="window.remoteCreditDeviceUserBalance('${d.userId}', 500)" title="Instant +₹500 to This Device User">+₹500</button>
+                              <button type="button" class="btn btn-success btn-sm" onclick="window.remoteCreditDeviceUserBalance('${d.userId}', 500)">+₹500</button>
                             ` : ''}
-                            <button type="button" class="btn btn-warning btn-sm" onclick="window.sendRemoteCommandToDevice('${d.deviceId}', 'FORCE_LOGOUT', {})" title="Force Logout This Device">🚪</button>
-                            <button type="button" class="btn btn-danger btn-sm" onclick="window.removeStaleDeviceFromList('${d.deviceId}')" title="Remove Device Entry">🗑️</button>
+                            <button type="button" class="btn btn-warning btn-sm" onclick="window.sendRemoteCommandToDevice('${d.deviceId}', 'FORCE_LOGOUT', {})">🚪</button>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="window.removeStaleDeviceFromList('${d.deviceId}')">🗑️</button>
                           </div>
                         </td>
                       </tr>
@@ -19678,7 +19368,6 @@ function generateGenuineQrMatrix(text) {
     `;
   };
 
-  // Hook into renderCurrentAdminView & syncTopbarAndShellForActiveAdmin
   const _prevSyncTopbarV7 = window.syncTopbarAndShellForActiveAdmin;
   window.syncTopbarAndShellForActiveAdmin = function() {
     if (typeof _prevSyncTopbarV7 === 'function') _prevSyncTopbarV7();
@@ -19706,21 +19395,21 @@ function generateGenuineQrMatrix(text) {
     }
   };
 
-  // Setup real-time SSE stream for Admin Panel if running on server.js
   function initAdminSseStream() {
     const cfg = window.getXyzCloudConfig();
     if (window.location.protocol === 'file:' && !cfg.endpointUrl) return;
-    if (cfg.provider !== 'AUTO_SERVER' && cfg.provider !== 'CUSTOM_REST') return;
     if (typeof window.EventSource !== 'function') return;
     try {
       const base = cfg.endpointUrl ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+      const myDevId = getOrCreateAdminDeviceId();
       const es = new EventSource(`${base}/api/xyz-stream`);
       es.onmessage = function(ev) {
         try {
           const payload = JSON.parse(ev.data);
+          if (payload && payload.sourceDeviceId === myDevId) return; // Ignore own echo!
           if (payload && payload.state) {
             admServerApiAvailable = true;
-            applyIncomingRemoteToAdmin(payload.state);
+            applyIncomingRemoteToAdmin(payload.state, false);
           }
         } catch (e) {}
       };
@@ -19730,22 +19419,57 @@ function generateGenuineQrMatrix(text) {
     } catch (e) {}
   }
 
-  window.addEventListener('DOMContentLoaded', () => {
-    ensureTopbarCloudSyncButton();
-    window.pullAdminStateFromCloudNow();
-    setTimeout(() => {
-      window.pushAdminStateToCloudNow();
-      initAdminSseStream();
-    }, 500);
-    setInterval(() => {
-      window.pullAdminStateFromCloudNow();
-    }, 2200);
+  window.addEventListener('storage', function(ev) {
+    if (ev.key === XYZ_STATE_KEY && ev.newValue && !isAdminApplyingRemote) {
+      try {
+        const parsed = JSON.parse(ev.newValue);
+        if (parsed && typeof parsed === 'object') {
+          applyIncomingRemoteToAdmin(parsed, false);
+        }
+      } catch (e) {}
+    }
   });
 
-  if (typeof renderSidebarTree === 'function' && loggedInAdminAccount) {
+  // Boot sequence: FIRST pull authoritative server state before deciding First-Time Setup vs Login!
+  async function bootAdminMultiDeviceSync() {
     ensureTopbarCloudSyncButton();
-    renderSidebarTree('');
-    renderCurrentAdminView();
+    await window.pullAdminStateFromCloudNow(true);
+    window.__admInitialCloudSyncDone = true;
+    // Re-evaluate session or Auth Gate now that server state (including superAdminConfigured & staffAdmins) is loaded!
+    if (!loggedInAdminAccount && window.isSuperAdminConfigured()) {
+      try {
+        const rawSess = window.__xyzSafeStorage.getItem(XYZ_ADMIN_SESSION_KEY);
+        if (rawSess) {
+          const parsed = JSON.parse(rawSess);
+          const found = (db.staffAdmins || []).find(a => a && a.loginId.toLowerCase() === String(parsed.loginId || '').toLowerCase() && a.status === 'ACTIVE');
+          if (found) {
+            loggedInAdminAccount = found;
+            activeAdminRole = (found.isMasterSuperAdmin || found.fullControl) ? 'SUPER_ADMIN' : (found.roleKey || 'CUSTOM_ROLE');
+            const savedPage = parsed.currentPage || '';
+            currentAdminPage = (savedPage && window.isPageAllowedForCurrentRole(savedPage))
+              ? savedPage
+              : window.getDefaultPageForAdminAccount(found);
+          }
+        }
+      } catch (e) {}
+    }
+    window.syncTopbarAndShellForActiveAdmin();
+    if (loggedInAdminAccount) {
+      renderSidebarTree('');
+      renderCurrentAdminView();
+    } else {
+      window.renderAdminAuthGate();
+    }
+    initAdminSseStream();
+    setInterval(() => {
+      window.pullAdminStateFromCloudNow(false);
+    }, 3000);
+  }
+
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', bootAdminMultiDeviceSync);
+  } else {
+    bootAdminMultiDeviceSync();
   }
 })();
 </script>

@@ -14014,6 +14014,23 @@
 
   <script>
         window.__xyzMemStore = window.__xyzMemStore || {};
+    const XYZ_DEVICE_THEME_KEY = 'XYZ_DEVICE_THEME_DARK_V1';
+    window.__xyzGetDeviceDarkMode = function() {
+      try {
+        const v = window.localStorage ? window.localStorage.getItem(XYZ_DEVICE_THEME_KEY) : window.__xyzMemStore[XYZ_DEVICE_THEME_KEY];
+        if (v === '1' || v === 'true') return true;
+        if (v === '0' || v === 'false') return false;
+      } catch (e) {}
+      return Boolean(window.__xyzMemStore[XYZ_DEVICE_THEME_KEY] === '1');
+    };
+    window.__xyzSetDeviceDarkMode = function(isDark) {
+      const val = isDark ? '1' : '0';
+      window.__xyzMemStore[XYZ_DEVICE_THEME_KEY] = val;
+      try {
+        if (window.localStorage) window.localStorage.setItem(XYZ_DEVICE_THEME_KEY, val);
+      } catch (e) {}
+    };
+
     window.__xyzSafeStorage = (function() {
       let nativeLS = null;
       try {
@@ -14032,11 +14049,48 @@
         }
       } catch (e) {}
 
-      function normalizeAndSyncUserBalance(rawStr) {
+      function rawRead(k) {
         try {
-          const st = JSON.parse(rawStr);
-          if (!st || typeof st !== 'object') return rawStr;
-          const uid = st.activeUserId || 'USR-001';
+          if (nativeLS) {
+            const val = nativeLS.getItem(k);
+            if (val !== null) return val;
+          }
+        } catch (e) {}
+        return Object.prototype.hasOwnProperty.call(window.__xyzMemStore, k) ? window.__xyzMemStore[k] : null;
+      }
+
+      function normalizeAndMergeState(incomingRawStr) {
+        try {
+          const inc = JSON.parse(incomingRawStr);
+          if (!inc || typeof inc !== 'object') return incomingRawStr;
+          let existing = {};
+          try {
+            const exRaw = rawRead('XYZ_GAMES_SHARED_STATE_V1');
+            if (exRaw) existing = JSON.parse(exRaw) || {};
+          } catch (e2) {}
+
+          // Preserve authoritative admin keys from existing state if incoming is a partial module save
+          const st = Object.assign({}, existing, inc);
+          const adminPreserveKeys = [
+            'websiteConfig', 'paymentGatewayConfig', 'upiId', 'usdtAddress', 'currencyConfig',
+            'wingoModesConfig', 'wingoRules', 'manualOverrides', 'ludoConfig', 'unoConfig',
+            'mathConfig', 'aviatorConfig', 'promoConfig', 'quizQuestions', 'staffAdmins',
+            'superAdminConfigured', 'systemToggles', 'auditModalConfig', 'adminNotifications',
+            'adminPromotions', 'lotteryDraws', 'ludoTournaments', 'unoTournaments', 'mathTournaments',
+            'ludoManualMatches', 'unoManualMatches', 'mathManualMatches', 'adminUpdatedAt'
+          ];
+          adminPreserveKeys.forEach(k => {
+            if (!window.__isApplyingRemoteCloudState && existing[k] !== undefined) {
+              st[k] = existing[k];
+            } else if (existing[k] !== undefined && inc[k] === undefined) {
+              st[k] = existing[k];
+            }
+          });
+
+          // Always enforce device-local dark mode so no module closure can revert dark mode to light mode
+          st.darkMode = window.__xyzGetDeviceDarkMode();
+
+          const uid = st.activeUserId || existing.activeUserId || 'USR-001';
           if (typeof st.balance === 'number' && !Number.isNaN(st.balance)) {
             const bal = Math.max(0, +Number(st.balance).toFixed(2));
             st.balance = bal;
@@ -14045,6 +14099,7 @@
               st.adminUsersList.forEach(u => {
                 if (u && u.userId === uid) {
                   u.cashBalanceInr = bal;
+                  u.lastUserBalanceUpdateAt = Date.now();
                 }
               });
             }
@@ -14052,52 +14107,36 @@
               st.registeredAccounts.forEach(a => {
                 if (a && a.userId === uid) {
                   a.cashBalanceInr = bal;
+                  a.lastUserBalanceUpdateAt = Date.now();
                 }
               });
             }
           }
           return JSON.stringify(st);
         } catch (e) {
-          return rawStr;
-        }
-      }
-
-      function dispatchSameWinSync(k, v) {
-        if (k === 'XYZ_GAMES_SHARED_STATE_V1' && !window.__xyzSyncing) {
-          window.__xyzSyncing = true;
-          try {
-            const ev = new Event('storage');
-            ev.key = k;
-            ev.newValue = String(v);
-            window.dispatchEvent(ev);
-            if (typeof window.syncAllXyzScreens === 'function') window.syncAllXyzScreens();
-            if (__globalBc) {
-              try { __globalBc.postMessage({ type: 'SYNC', state: JSON.parse(v) }); } catch (e) {}
-            }
-          } catch (err) {
-          } finally {
-            window.__xyzSyncing = false;
-          }
+          return incomingRawStr;
         }
       }
 
       return {
         getItem: function(k) {
-          try {
-            if (nativeLS) {
-              const val = nativeLS.getItem(k);
-              if (val !== null) return val;
-            }
-          } catch (e) {}
-          return Object.prototype.hasOwnProperty.call(window.__xyzMemStore, k) ? window.__xyzMemStore[k] : null;
+          const val = rawRead(k);
+          if (k === 'XYZ_GAMES_SHARED_STATE_V1' && val) {
+            try {
+              const parsed = JSON.parse(val);
+              parsed.darkMode = window.__xyzGetDeviceDarkMode();
+              return JSON.stringify(parsed);
+            } catch (e) {}
+          }
+          return val;
         },
         setItem: function(k, v) {
-          const strVal = (k === 'XYZ_GAMES_SHARED_STATE_V1') ? normalizeAndSyncUserBalance(String(v)) : String(v);
+          const strVal = (k === 'XYZ_GAMES_SHARED_STATE_V1') ? normalizeAndMergeState(String(v)) : String(v);
           window.__xyzMemStore[k] = strVal;
           try {
             if (nativeLS) nativeLS.setItem(k, strVal);
           } catch (e) {}
-          dispatchSameWinSync(k, strVal);
+          // Cross-tab and multi-device sync is handled cleanly by V7 applyIncomingRemoteState
         },
         removeItem: function(k) {
           delete window.__xyzMemStore[k];
@@ -14126,56 +14165,7 @@
     const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
     const XYZ_SAVED_CREDS_KEY = 'XYZ_SAVED_LOGIN_CREDS_V1';
     const XYZ_SESSION_USER_KEY = 'XYZ_ACTIVE_AUTH_SESSION_V1';
-    const XYZ_CLEAN_SLATE_KEY = 'XYZ_PRODUCTION_CLEAN_V2';
-    (function ensureProductionCleanSlateOnce() {
-      try {
-        if (window.__xyzSafeStorage.getItem(XYZ_CLEAN_SLATE_KEY) === '1') return;
-        const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
-        let st = raw ? JSON.parse(raw) : {};
-        st.balance = 0;
-        st.username = '';
-        st.userIdOrEmail = '';
-        st.activeUserId = '';
-        st.transactions = [];
-        st.myBets = [];
-        st.aviatorMyBets = [];
-        st.claimedCodes = [];
-        st.lotteryDraws = [];
-        st.lotteryTickets = [];
-        st.lotteryNotifications = [];
-        st.adminNotifications = st.adminNotifications || [];
-        st.ludoManualMatches = [];
-        st.ludoTournaments = [];
-        st.ludoPlayerTournamentHistory = [];
-        st.unoManualMatches = [];
-        st.unoTournaments = [];
-        st.unoPlayerTournamentHistory = [];
-        st.mathHistory = [];
-        st.mathManualMatches = [];
-        st.mathTournaments = [];
-        st.mathPlayerTournamentHistory = [];
-        st.referralMembers = [];
-        st.commissionLedger = [];
-        st.processedDepositEventIds = [];
-        st.registeredAccounts = [];
-        st.adminUsersList = [];
-        st.adminDeposits = [];
-        st.adminWithdrawals = [];
-        st.adminLedger = [];
-        st.supportTickets = [];
-        st.adminPromotions = [];
-        st.adminAuditLogs = [];
-        st.wingoPeriods = [];
-        st.wingoSettlements = [];
-        st.wingoCorrectionRequests = [];
-        window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
-        window.__xyzSafeStorage.removeItem(XYZ_SAVED_CREDS_KEY);
-        window.__xyzSafeStorage.removeItem(XYZ_SESSION_USER_KEY);
-        window.__xyzSafeStorage.setItem(XYZ_CLEAN_SLATE_KEY, '1');
-      } catch (e) {}
-    })();
-
-    // Emergency fallback definitions so splash screen buttons work even at 0ms
+// Emergency fallback definitions so splash screen buttons work even at 0ms
     window.skipXyzSplashNow = function() {
       const sp = document.getElementById('xyz-view-splash');
       const au = document.getElementById('xyz-view-auth');
@@ -14452,7 +14442,7 @@ function toggleMenuDrawer(show) {
 function showToast(msg) { window.showToast(msg); }
 
 window.addEventListener('DOMContentLoaded', renderBalance);
-window.addEventListener('storage', renderBalance);
+// handled by V7 refreshActiveViewGently
 
   
   if (typeof getSharedState === 'function') window.getSharedState = getSharedState;
@@ -14639,21 +14629,7 @@ window.addEventListener('storage', renderBalance);
       } catch (e) {}
     }
 
-    if (syncChannel) {
-      syncChannel.onmessage = (ev) => {
-        if (ev.data && ev.data.type === 'SYNC') {
-          state = ev.data.state;
-          renderEverything();
-        }
-      };
-    }
-
-    window.addEventListener('storage', (ev) => {
-      if (ev.key === XYZ_STATE_KEY && ev.newValue) {
-        state = JSON.parse(ev.newValue);
-        renderEverything();
-      }
-    });
+    // Wingo sync handled cleanly by V7 refreshActiveViewGently
 
     function getLiveWingoRules() {
       const r = (state && state.wingoRules) ? state.wingoRules : {};
@@ -15111,7 +15087,13 @@ window.addEventListener('storage', renderBalance);
 
     init10BallsGrid();
     setTimeout(() => { if (typeof window.renderEverything === 'function') window.renderEverything(); else renderEverything(); }, 0);
-    setInterval(() => { if (typeof window.renderEverything === 'function') window.renderEverything(); else renderEverything(); }, 1000);
+    setInterval(() => {
+      const gv = document.getElementById('xyz-view-games');
+      if (gv && gv.classList.contains('active')) {
+        if (typeof window.renderEverything === 'function') window.renderEverything();
+        else renderEverything();
+      }
+    }, 1000);
   
   if (typeof getSlotUtcClock === 'function') window.getSlotUtcClock = getSlotUtcClock;
   if (typeof hashPeriodWinner === 'function') window.hashPeriodWinner = hashPeriodWinner;
@@ -15209,23 +15191,7 @@ window.addEventListener('storage', renderBalance);
       } catch (e) {}
     }
 
-    if (syncChannel) {
-      syncChannel.onmessage = (ev) => {
-        if (ev.data && ev.data.type === 'SYNC') {
-          lState = ev.data.state;
-          purgeExpiredTickets48h();
-          renderLottoAll();
-        }
-      };
-    }
-
-    window.addEventListener('storage', (ev) => {
-      if (ev.key === XYZ_STATE_KEY && ev.newValue) {
-        lState = JSON.parse(ev.newValue);
-        purgeExpiredTickets48h();
-        renderLottoAll();
-      }
-    });
+    // Lottery sync handled cleanly by V7 refreshActiveViewGently
 
     function fmtLottoAmt(inrVal) {
       const n = Number(inrVal || 0);
@@ -15768,7 +15734,12 @@ window.addEventListener('storage', renderBalance);
     init100Grid();
     renderNumberSelectionUI();
     renderLottoAll();
-    setInterval(renderLottoAll, 15000);
+    setInterval(() => {
+      const lv = document.getElementById('xyz-view-lottery');
+      if (lv && lv.classList.contains('active') && (!selectedNumbers || selectedNumbers.length === 0)) {
+        renderLottoAll();
+      }
+    }, 15000);
   
   if (typeof getDefaultLotteryDraws === 'function') window.getDefaultLotteryDraws = getDefaultLotteryDraws;
   if (typeof loadLottoState === 'function') window.loadLottoState = loadLottoState;
@@ -17469,7 +17440,7 @@ window.addEventListener('storage', renderBalance);
     function showToast(msg) { window.showToast(msg); }
 
     window.addEventListener('DOMContentLoaded', renderLobbyUI);
-    window.addEventListener('storage', renderLobbyUI);
+    // handled by V7 refreshActiveViewGently
   
   window.toggleUnoSound = toggleUnoSound;
   window.setUnoCurrency = setUnoCurrency;
@@ -18174,6 +18145,11 @@ window.addEventListener('storage', renderBalance);
 
       // 3. Handle Phase Logic
       const now = Date.now();
+      if (!isAviatorViewActive()) {
+        avRound.waitStartMs = Date.now();
+        requestAnimationFrame(renderAviatorCanvasFrame);
+        return;
+      }
       if (avRound.phase === 'WAITING') {
         const elapsed = now - avRound.waitStartMs;
         const pctLeft = Math.max(0, 100 - (elapsed / avRound.waitDurationMs) * 100);
@@ -18283,7 +18259,7 @@ window.addEventListener('storage', renderBalance);
       startWaitingCountdown();
       requestAnimationFrame(renderAviatorCanvasFrame);
     });
-    window.addEventListener('storage', renderAviatorUI);
+    // handled by V7 refreshActiveViewGently
   
   if (typeof getAvAudio === 'function') window.getAvAudio = getAvAudio;
   if (typeof playAvTone === 'function') window.playAvTone = playAvTone;
@@ -20317,7 +20293,7 @@ window.addEventListener('storage', renderBalance);
     render3DDiceFace('myDiceBtn', 6);
     render3DDiceFace('oppDiceBox', 6);
     window.addEventListener('DOMContentLoaded', renderHubUI);
-    window.addEventListener('storage', renderHubUI);
+    // handled by V7 refreshActiveViewGently
   
   window.toggleLudoSound = toggleLudoSound;
   window.sendLudoQuickEmoji = sendLudoQuickEmoji;
@@ -21863,7 +21839,7 @@ window.addEventListener('storage', renderBalance);
     });
 
     window.addEventListener('DOMContentLoaded', renderMathLobbyUI);
-    window.addEventListener('storage', renderMathLobbyUI);
+    // handled by V7 refreshActiveViewGently
   
   window.toggleMathSound = toggleMathSound;
   window.setMathCurrency = setMathCurrency;
@@ -22275,7 +22251,7 @@ window.addEventListener('storage', renderBalance);
     function showToast(msg) { window.showToast(msg); }
 
     window.addEventListener('DOMContentLoaded', renderDepositPage);
-    window.addEventListener('storage', renderDepositPage);
+    // handled by V7 refreshActiveViewGently
   
   if (typeof loadDepositState === 'function') window.loadDepositState = loadDepositState;
   if (typeof getDefaultDepositTransactions === 'function') window.getDefaultDepositTransactions = getDefaultDepositTransactions;
@@ -22663,7 +22639,7 @@ window.addEventListener('storage', renderBalance);
     function showToast(msg) { window.showToast(msg); }
 
     window.addEventListener('DOMContentLoaded', renderWithdrawPage);
-    window.addEventListener('storage', renderWithdrawPage);
+    // handled by V7 refreshActiveViewGently
   
   if (typeof loadWithdrawState === 'function') window.loadWithdrawState = loadWithdrawState;
   if (typeof saveWithdrawState === 'function') window.saveWithdrawState = saveWithdrawState;
@@ -22998,12 +22974,14 @@ window.addEventListener('storage', renderBalance);
     }
 
     function toggleDarkMode() {
+      const nextDark = !window.__xyzGetDeviceDarkMode();
+      window.__xyzSetDeviceDarkMode(nextDark);
       pState = loadProfileState();
-      pState.darkMode = !pState.darkMode;
+      pState.darkMode = nextDark;
       saveProfileState();
       renderProfilePage();
       if (typeof window.applyGlobalTheme === 'function') {
-        window.applyGlobalTheme(pState.darkMode);
+        window.applyGlobalTheme(nextDark);
       }
     }
 
@@ -23364,7 +23342,7 @@ window.addEventListener('storage', renderBalance);
     function showToast(msg) { window.showToast(msg); }
 
     window.addEventListener('DOMContentLoaded', renderProfilePage);
-    window.addEventListener('storage', renderProfilePage);
+    // handled by V7 refreshActiveViewGently
   
   if (typeof buildSeedTransactions === 'function') window.buildSeedTransactions = buildSeedTransactions;
   if (typeof buildSeedBets === 'function') window.buildSeedBets = buildSeedBets;
@@ -24192,7 +24170,7 @@ window.addEventListener('storage', renderBalance);
   window.__syncPromo = renderPromoAll;
 
   window.addEventListener('DOMContentLoaded', renderPromoAll);
-  window.addEventListener('storage', renderPromoAll);
+  // handled by V7 refreshActiveViewGently
 })();
 
 
@@ -24213,12 +24191,9 @@ window.addEventListener('storage', renderBalance);
       try {
         if (typeof explicitDark === 'boolean') {
           isDark = explicitDark;
+          window.__xyzSetDeviceDarkMode(isDark);
         } else {
-          const raw = window.__xyzSafeStorage.getItem('XYZ_GAMES_SHARED_STATE_V1');
-          if (raw) {
-            const st = JSON.parse(raw);
-            isDark = !!st.darkMode;
-          }
+          isDark = window.__xyzGetDeviceDarkMode();
         }
       } catch (e) {}
 
@@ -26761,46 +26736,7 @@ window.addEventListener('storage', renderBalance);
 
     // 2. Listen to BroadcastChannel from Admin Panel so any Admin Panel change (UPI ID, Deposit Approval, Lottery Launch, etc.)
     //    immediately updates localStorage (if different) and refreshes all Customer Webapp views!
-    if (liveSyncChannel) {
-      liveSyncChannel.onmessage = function(ev) {
-        if (ev.data && ev.data.type === 'SYNC' && ev.data.state) {
-          try {
-            window.__xyzSyncing = true;
-            const serialized = JSON.stringify(ev.data.state);
-            window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, serialized);
-          } catch (e) {
-          } finally {
-            window.__xyzSyncing = false;
-          }
-          if (typeof window.pickRandomGatewayCredentialsForDeposit === 'function') {
-            window.pickRandomGatewayCredentialsForDeposit(false);
-          }
-          if (typeof window.renderBalance === 'function') window.renderBalance();
-          if (typeof window.renderEverything === 'function') window.renderEverything();
-          if (typeof window.renderLottoAll === 'function') window.renderLottoAll();
-          if (typeof window.renderLobbyUI === 'function') window.renderLobbyUI();
-          if (typeof window.renderHubUI === 'function') window.renderHubUI();
-          if (typeof window.renderMathLobbyUI === 'function') window.renderMathLobbyUI();
-          if (typeof window.renderDepositPage === 'function') window.renderDepositPage();
-          if (typeof window.renderWithdrawPage === 'function') window.renderWithdrawPage();
-          if (typeof window.renderProfilePage === 'function') window.renderProfilePage();
-          if (typeof window.renderPromoAll === 'function') window.renderPromoAll();
-          if (typeof window.renderLobbyBanners === 'function') window.renderLobbyBanners(false);
-        }
-      };
-    }
-
-    // 3. Also refresh random UPI / USDT pool whenever storage event fires from Admin Panel tab
-    window.addEventListener('storage', function(ev) {
-      if (!ev.key || ev.key === XYZ_STATE_KEY) {
-        if (typeof window.pickRandomGatewayCredentialsForDeposit === 'function') {
-          window.pickRandomGatewayCredentialsForDeposit(false);
-        }
-        if (typeof window.renderDepositPage === 'function') {
-          window.renderDepositPage();
-        }
-      }
-    });
+    // Cross-tab & cloud sync handled by V7 applyIncomingRemoteState
   })();
   </script>
 <!-- === END XYZ CUSTOMER QA FIXES V3 === -->
@@ -27594,68 +27530,27 @@ function generateGenuineQrMatrix(text) {
   </div>
 </div>
 
-<div id="xyzCloudConfigModal" style="position:fixed;inset:0;background:rgba(6,9,20,0.75);backdrop-filter:blur(5px);z-index:10090;display:none;align-items:center;justify-content:center;padding:18px;" onclick="window.toggleCustomerCloudModal(false)">
-  <div style="background:#ffffff;color:#0f172a;border-radius:22px;padding:20px 18px;max-width:390px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,0.45);border:1.5px solid #cbd5e1;" onclick="event.stopPropagation()">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #e2e8f0;">
-      <strong style="font-size:0.95rem;font-weight:900;">🌐 Multi-Device Cloud Sync</strong>
-      <button type="button" onclick="window.toggleCustomerCloudModal(false)" style="width:28px;height:28px;border-radius:999px;background:#f1f5f9;border:none;font-weight:800;cursor:pointer;">✕</button>
-    </div>
-    <div style="font-size:0.75rem;color:#475569;line-height:1.45;margin-bottom:10px;">
-      Connect this mobile/laptop to your central Admin Panel cloud database so the Admin Panel can control all devices across India in real time.
-    </div>
-    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:8px 10px;margin-bottom:10px;font-size:0.72rem;">
-      <div><strong>This Device ID:</strong> <code id="custCloudModalDevId" style="color:#4f46e5;font-weight:800;">DEV-...</code></div>
-      <div style="margin-top:3px;"><strong>Sync Status:</strong> <span id="custCloudModalStatus" style="font-weight:800;color:#16a34a;">Active</span></div>
-    </div>
-    <div style="margin-bottom:10px;">
-      <label style="font-size:0.72rem;font-weight:800;color:#334155;display:block;margin-bottom:4px;">Cloud Sync Provider</label>
-      <select id="custCloudProviderSel" style="width:100%;padding:9px 10px;border-radius:10px;border:1.5px solid #cbd5e1;font-size:0.8rem;font-weight:700;background:#f8fafc;">
-        <option value="AUTO_SERVER">⚡ Built-in Server (/api/xyz-state — Default)</option>
-        <option value="FIREBASE">🔥 Firebase Realtime DB URL</option>
-        <option value="SUPABASE">⚡ Supabase Cloud DB</option>
-        <option value="CUSTOM_REST">🔗 Custom Cloud REST URL</option>
-      </select>
-    </div>
-    <div style="margin-bottom:10px;">
-      <label style="font-size:0.72rem;font-weight:800;color:#334155;display:block;margin-bottom:4px;">Cloud / Server URL (Optional if same server)</label>
-      <input type="text" id="custCloudUrlInput" placeholder="https://your-project-default-rtdb.firebaseio.com or https://your-server.com" style="width:100%;padding:9px 10px;border-radius:10px;border:1.5px solid #cbd5e1;font-size:0.78rem;font-family:monospace;" />
-    </div>
-    <div style="margin-bottom:12px;">
-      <label style="font-size:0.72rem;font-weight:800;color:#334155;display:block;margin-bottom:4px;">Supabase Anon Key (Only if using Supabase)</label>
-      <input type="text" id="custCloudSupaKeyInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..." style="width:100%;padding:8px 10px;border-radius:10px;border:1.5px solid #cbd5e1;font-size:0.74rem;font-family:monospace;" />
-    </div>
-    <div style="display:flex;gap:8px;">
-      <button type="button" onclick="window.saveCustomerCloudConfigFromModal()" style="flex:1;padding:11px;border-radius:12px;border:none;background:linear-gradient(135deg,#6366f1,#ec4899);color:#ffffff;font-weight:800;font-size:0.82rem;cursor:pointer;">
-        💾 Save &amp; Sync Now
-      </button>
-    </div>
-  </div>
-</div>
-
 <script>
-
 (function() {
   const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
   const XYZ_CLOUD_CFG_KEY = 'XYZ_CLOUD_SYNC_CONFIG_V1';
   const XYZ_DEVICE_ID_KEY = 'XYZ_DEVICE_ID_V1';
   const XYZ_LOCAL_SESS_KEY = 'XYZ_ACTIVE_AUTH_SESSION_V1';
 
-  // Default Cloud Config (Can be set via Admin Panel, ?cloud= URL param, or auto-detected /api/xyz-state)
-  window.XYZ_DEFAULT_CLOUD_CONFIG = window.XYZ_DEFAULT_CLOUD_CONFIG || {
+  window.XYZ_DEFAULT_CLOUD_CONFIG = {
     enabled: true,
-    provider: 'AUTO_SERVER', // 'AUTO_SERVER' | 'FIREBASE' | 'SUPABASE' | 'CUSTOM_REST'
-    endpointUrl: '',         // e.g. https://your-project-default-rtdb.firebaseio.com or https://your-server.com
+    provider: 'AUTO_SERVER',
+    endpointUrl: '',
     supabaseUrl: '',
     supabaseAnonKey: '',
-    pollIntervalMs: 2000
+    pollIntervalMs: 3000
   };
 
   function getOrCreateDeviceId() {
     try {
       let dId = window.localStorage.getItem(XYZ_DEVICE_ID_KEY);
       if (!dId) {
-        const rand = Math.floor(100000 + Math.random() * 899999);
-        dId = 'DEV-' + rand;
+        dId = 'DEV-' + Math.floor(100000 + Math.random() * 899999);
         window.localStorage.setItem(XYZ_DEVICE_ID_KEY, dId);
       }
       return dId;
@@ -27691,38 +27586,6 @@ function generateGenuineQrMatrix(text) {
 
   window.getXyzDeviceInfo = detectDeviceInfo;
 
-  // Parse ?cloud= or ?sync= URL parameter if present so any mobile/laptop opening a shared link auto-connects!
-  function checkUrlForCloudConfig() {
-    try {
-      const params = new URLSearchParams(window.location.search || '');
-      const cloudParam = params.get('cloud') || params.get('sync') || params.get('api');
-      if (cloudParam && cloudParam.trim()) {
-        const raw = cloudParam.trim();
-        let parsedCfg = null;
-        if (raw.startsWith('http://') || raw.startsWith('https://')) {
-          const isFb = raw.includes('firebaseio.com') || raw.includes('firebasedatabase.app');
-          parsedCfg = {
-            enabled: true,
-            provider: isFb ? 'FIREBASE' : 'CUSTOM_REST',
-            endpointUrl: raw.replace(/\/+$/, ''),
-            supabaseUrl: '',
-            supabaseAnonKey: '',
-            pollIntervalMs: 2000
-          };
-        } else {
-          try {
-            const dec = JSON.parse(atob(raw));
-            if (dec && typeof dec === 'object') parsedCfg = dec;
-          } catch (e2) {}
-        }
-        if (parsedCfg) {
-          window.localStorage.setItem(XYZ_CLOUD_CFG_KEY, JSON.stringify(parsedCfg));
-        }
-      }
-    } catch (e) {}
-  }
-  checkUrlForCloudConfig();
-
   window.getXyzCloudConfig = function() {
     try {
       const raw = window.localStorage.getItem(XYZ_CLOUD_CFG_KEY);
@@ -27733,15 +27596,6 @@ function generateGenuineQrMatrix(text) {
     return Object.assign({}, window.XYZ_DEFAULT_CLOUD_CONFIG);
   };
 
-  window.saveXyzCloudConfig = function(newCfg) {
-    const merged = Object.assign({}, window.getXyzCloudConfig(), newCfg || {});
-    try {
-      window.localStorage.setItem(XYZ_CLOUD_CFG_KEY, JSON.stringify(merged));
-    } catch (e) {}
-    return merged;
-  };
-
-  // Helper to merge arrays of objects by a unique key without losing concurrent items from different devices
   function mergeArrayById(localArr, remoteArr, idField, preferRemoteOnConflict) {
     const a = Array.isArray(localArr) ? localArr : [];
     const b = Array.isArray(remoteArr) ? remoteArr : [];
@@ -27755,21 +27609,21 @@ function generateGenuineQrMatrix(text) {
     primaryList.forEach(item => {
       if (!item || typeof item !== 'object') return;
       const k = item[idField] || item.id || item.userId || item.code;
-      if (k) {
-        map.set(String(k), Object.assign({}, item));
-        order.push(String(k));
+      if (k !== undefined && k !== null && k !== '') {
+        const sk = String(k);
+        map.set(sk, Object.assign({}, item));
+        order.push(sk);
       }
     });
     secondaryList.forEach(item => {
       if (!item || typeof item !== 'object') return;
       const k = item[idField] || item.id || item.userId || item.code;
-      if (!k) return;
+      if (k === undefined || k === null || k === '') return;
       const sk = String(k);
       if (!map.has(sk)) {
         map.set(sk, Object.assign({}, item));
         order.push(sk);
       } else {
-        // Merge fields, keeping newer status or timestamp if present
         const existing = map.get(sk);
         const exTs = Math.max(Number(existing.updatedAt || 0), Number(existing.confirmedAt || 0), Number(existing.resultDeclaredAt || 0), Number(existing.lastAdminBalanceUpdateAt || 0), Number(existing.lastUserBalanceUpdateAt || 0), Number(existing.timestamp || 0), Number(existing.createdAt || 0));
         const itTs = Math.max(Number(item.updatedAt || 0), Number(item.confirmedAt || 0), Number(item.resultDeclaredAt || 0), Number(item.lastAdminBalanceUpdateAt || 0), Number(item.lastUserBalanceUpdateAt || 0), Number(item.timestamp || 0), Number(item.createdAt || 0));
@@ -27783,44 +27637,32 @@ function generateGenuineQrMatrix(text) {
     return order.map(k => map.get(k));
   }
 
-  /**
-   * Smart Multi-Device State Merger:
-   * - Admin settings (UPI IDs, QR codes, Wingo overrides, Lottery draws, Tournaments, Banners, Currency rates)
-   *   always take the latest Admin timestamp (`adminUpdatedAt`).
-   * - User collections (registeredAccounts, adminUsersList, adminDeposits, adminWithdrawals, transactions, myBets, lotteryTickets)
-   *   are merged by unique ID so concurrent actions on different mobiles across India never overwrite each other!
-   */
-  window.mergeXyzMultiDeviceState = function(localSt, remoteSt, isAdminContext) {
+  window.mergeXyzMultiDeviceState = function(localSt, remoteSt) {
     if (!remoteSt || typeof remoteSt !== 'object') return localSt || {};
     if (!localSt || typeof localSt !== 'object') return remoteSt;
 
-    const locAdminTs = Number(localSt.adminUpdatedAt || 0);
-    const remAdminTs = Number(remoteSt.adminUpdatedAt || 0);
-    const remoteAdminIsNewer = remAdminTs >= locAdminTs;
+    // Preserve device-local preferences from localSt!
+    const base = Object.assign({}, localSt);
 
-    const base = Object.assign({}, localSt, remoteSt);
-
-    // Admin-controlled configurations: use whichever has the newer adminUpdatedAt (or remote if pulled from server)
+    // Always accept authoritative Admin configurations from the server
     const adminKeys = [
       'websiteConfig', 'paymentGatewayConfig', 'upiId', 'usdtAddress', 'currencyConfig',
       'wingoModesConfig', 'wingoRules', 'manualOverrides', 'ludoConfig', 'unoConfig',
       'mathConfig', 'aviatorConfig', 'promoConfig', 'quizQuestions', 'staffAdmins',
-      'superAdminConfigured', 'systemToggles', 'auditModalConfig'
+      'superAdminConfigured', 'systemToggles', 'auditModalConfig', 'adminNotifications',
+      'adminPromotions', 'lotteryDraws', 'ludoManualMatches', 'ludoTournaments',
+      'unoManualMatches', 'unoTournaments', 'mathManualMatches', 'mathTournaments',
+      'remoteCommandsQueue', 'adminUpdatedAt'
     ];
     adminKeys.forEach(k => {
-      if (remoteAdminIsNewer && remoteSt[k] !== undefined) {
+      if (remoteSt[k] !== undefined) {
         base[k] = remoteSt[k];
-      } else if (!remoteAdminIsNewer && localSt[k] !== undefined) {
-        base[k] = localSt[k];
       }
     });
-    base.adminUpdatedAt = Math.max(locAdminTs, remAdminTs);
 
-    // Merge user accounts & balances carefully (respecting per-user balance timestamps)
-    base.adminUsersList = mergeArrayById(localSt.adminUsersList, remoteSt.adminUsersList, 'userId', remoteAdminIsNewer);
-    base.registeredAccounts = mergeArrayById(localSt.registeredAccounts, remoteSt.registeredAccounts, 'userId', remoteAdminIsNewer);
+    base.adminUsersList = mergeArrayById(localSt.adminUsersList, remoteSt.adminUsersList, 'userId', true);
+    base.registeredAccounts = mergeArrayById(localSt.registeredAccounts, remoteSt.registeredAccounts, 'userId', true);
 
-    // Sync cashBalanceInr between adminUsersList and registeredAccounts
     const balByUid = {};
     (base.adminUsersList || []).forEach(u => {
       if (u && u.userId) balByUid[u.userId] = u.cashBalanceInr;
@@ -27831,41 +27673,31 @@ function generateGenuineQrMatrix(text) {
       }
     });
 
-    // Merge operational collections by ID
     base.adminDeposits = mergeArrayById(localSt.adminDeposits, remoteSt.adminDeposits, 'depositId', true);
     base.adminWithdrawals = mergeArrayById(localSt.adminWithdrawals, remoteSt.adminWithdrawals, 'withdrawalId', true);
     base.transactions = mergeArrayById(localSt.transactions, remoteSt.transactions, 'id', true);
     base.myBets = mergeArrayById(localSt.myBets, remoteSt.myBets, 'id', true);
     base.aviatorMyBets = mergeArrayById(localSt.aviatorMyBets, remoteSt.aviatorMyBets, 'roundId', true);
-    base.lotteryDraws = mergeArrayById(localSt.lotteryDraws, remoteSt.lotteryDraws, 'drawId', remoteAdminIsNewer);
     base.lotteryTickets = mergeArrayById(localSt.lotteryTickets, remoteSt.lotteryTickets, 'ticketId', true);
-    base.adminNotifications = mergeArrayById(localSt.adminNotifications, remoteSt.adminNotifications, 'notifId', true);
     base.lotteryNotifications = mergeArrayById(localSt.lotteryNotifications, remoteSt.lotteryNotifications, 'id', true);
-    base.ludoManualMatches = mergeArrayById(localSt.ludoManualMatches, remoteSt.ludoManualMatches, 'matchId', remoteAdminIsNewer);
-    base.ludoTournaments = mergeArrayById(localSt.ludoTournaments, remoteSt.ludoTournaments, 'tournamentId', remoteAdminIsNewer);
-    base.unoManualMatches = mergeArrayById(localSt.unoManualMatches, remoteSt.unoManualMatches, 'matchId', remoteAdminIsNewer);
-    base.unoTournaments = mergeArrayById(localSt.unoTournaments, remoteSt.unoTournaments, 'tournamentId', remoteAdminIsNewer);
-    base.mathManualMatches = mergeArrayById(localSt.mathManualMatches, remoteSt.mathManualMatches, 'matchId', remoteAdminIsNewer);
-    base.mathTournaments = mergeArrayById(localSt.mathTournaments, remoteSt.mathTournaments, 'tournamentId', remoteAdminIsNewer);
-    base.adminPromotions = mergeArrayById(localSt.adminPromotions, remoteSt.adminPromotions, 'code', remoteAdminIsNewer);
     base.referralMembers = mergeArrayById(localSt.referralMembers, remoteSt.referralMembers, 'memberId', true);
     base.commissionLedger = mergeArrayById(localSt.commissionLedger, remoteSt.commissionLedger, 'ledgerId', true);
-    base.adminLedger = mergeArrayById(localSt.adminLedger, remoteSt.adminLedger, 'txCode', true);
+    base.adminLedger = mergeArrayById(localSt.adminLedger, incomingSt_or(remoteSt.adminLedger), 'txCode', true);
     base.supportTickets = mergeArrayById(localSt.supportTickets, remoteSt.supportTickets, 'ticketId', true);
     base.wingoPeriods = mergeArrayById(localSt.wingoPeriods, remoteSt.wingoPeriods, 'periodId', true);
     base.wingoSettlements = mergeArrayById(localSt.wingoSettlements, remoteSt.wingoSettlements, 'settlementId', true);
-    base.remoteCommandsQueue = mergeArrayById(localSt.remoteCommandsQueue, remoteSt.remoteCommandsQueue, 'cmdId', true);
 
-    // Merge connectedDevices map
-    base.connectedDevices = Object.assign({}, localSt.connectedDevices || {}, remoteSt.connectedDevices || {});
+    // Strictly preserve this device's dark mode, active slot, currency, and language!
+    base.darkMode = window.__xyzGetDeviceDarkMode();
+    if (localSt.currency) base.currency = localSt.currency;
+    if (localSt.activeSlot) base.activeSlot = localSt.activeSlot;
+    if (localSt.language) base.language = localSt.language;
 
     return base;
   };
-})();
 
-(function() {
-  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
-  const XYZ_LOCAL_SESS_KEY = 'XYZ_ACTIVE_AUTH_SESSION_V1';
+  function incomingSt_or(arr) { return Array.isArray(arr) ? arr : []; }
+
   const executedCmdIds = new Set();
 
   function getLocalDeviceUserSession() {
@@ -27881,10 +27713,9 @@ function generateGenuineQrMatrix(text) {
     return null;
   }
 
-  // Overlay this device's logged-in user session onto the shared state so multiple mobiles across India
-  // never overwrite each other's activeUserId or wallet balance!
   function applyDeviceSessionOverlay(stObj) {
     if (!stObj || typeof stObj !== 'object') return stObj;
+    stObj.darkMode = window.__xyzGetDeviceDarkMode();
     const sess = getLocalDeviceUserSession();
     if (sess && (sess.userId || sess.identity)) {
       stObj.activeUserId = sess.userId || stObj.activeUserId || 'USR-001';
@@ -27901,20 +27732,22 @@ function generateGenuineQrMatrix(text) {
 
       if (matchedUser) {
         if (matchedUser.status === 'BLOCKED' || matchedUser.status === 'SUSPENDED') {
-          // Admin blocked this user remotely!
           setTimeout(() => {
             if (typeof window.performXyzLogoutToAuth === 'function') {
               window.performXyzLogoutToAuth();
             }
           }, 50);
         } else if (typeof matchedUser.cashBalanceInr === 'number' && !Number.isNaN(matchedUser.cashBalanceInr)) {
-          stObj.balance = Math.max(0, +Number(matchedUser.cashBalanceInr).toFixed(2));
+          const adminTs = Number(matchedUser.lastAdminBalanceUpdateAt || 0);
+          const userTs = Number(matchedUser.lastUserBalanceUpdateAt || 0);
+          if (adminTs >= userTs || stObj.balance === undefined) {
+            stObj.balance = Math.max(0, +Number(matchedUser.cashBalanceInr).toFixed(2));
+          }
         }
         if (matchedUser.avatarId) stObj.avatarId = matchedUser.avatarId;
         if (matchedUser.avatarUrl) stObj.avatarUrl = matchedUser.avatarUrl;
       }
     } else {
-      // No local session on this device yet
       stObj.isLoggedIn = false;
     }
     return stObj;
@@ -27922,7 +27755,6 @@ function generateGenuineQrMatrix(text) {
 
   window.applyDeviceSessionOverlay = applyDeviceSessionOverlay;
 
-  // Stamp device heartbeat into stObj.connectedDevices
   function stampDeviceHeartbeat(stObj) {
     if (!stObj || typeof stObj !== 'object') return;
     const dev = window.getXyzDeviceInfo();
@@ -27947,7 +27779,6 @@ function generateGenuineQrMatrix(text) {
     };
   }
 
-  // Execute any remote commands sent from Admin Panel to this device or ALL devices
   function checkAndExecuteRemoteCommands(stObj) {
     if (!stObj || !Array.isArray(stObj.remoteCommandsQueue)) return;
     const dev = window.getXyzDeviceInfo();
@@ -27983,14 +27814,11 @@ function generateGenuineQrMatrix(text) {
           window.performXyzLogoutToAuth();
         }
       } else if (cmd.action === 'FORCE_RELOAD') {
-        if (typeof window.syncAllXyzScreens === 'function') {
-          window.syncAllXyzScreens();
-        }
+        refreshActiveViewGently();
       }
     });
   }
 
-  // Wrap window.__xyzSafeStorage.getItem & setItem so per-device session overlay and cloud push work automatically
   const _origGetItem = window.__xyzSafeStorage.getItem.bind(window.__xyzSafeStorage);
   const _origSetItem = window.__xyzSafeStorage.setItem.bind(window.__xyzSafeStorage);
 
@@ -28013,6 +27841,7 @@ function generateGenuineQrMatrix(text) {
     if (k === XYZ_STATE_KEY) {
       try {
         const st = JSON.parse(String(v));
+        st.darkMode = window.__xyzGetDeviceDarkMode();
         const sess = getLocalDeviceUserSession();
         const uid = (sess && sess.userId) ? sess.userId : (st.activeUserId || '');
         if (uid && typeof st.balance === 'number' && !Number.isNaN(st.balance)) {
@@ -28055,95 +27884,28 @@ function generateGenuineQrMatrix(text) {
       clearTimeout(cloudPushTimer);
       cloudPushTimer = setTimeout(() => {
         window.pushCustomerStateToCloud();
-      }, 180);
+      }, 250);
     }
   };
 
-  // Cloud Transport Implementation
-  let serverApiAvailable = null; // null = unknown, true = /api/xyz-state works, false = not on server.js
+  let serverApiAvailable = null;
 
   function buildCloudRequestInfo(cfg, method, bodyObj) {
-    const prov = cfg.provider || 'AUTO_SERVER';
     const url = String(cfg.endpointUrl || '').trim().replace(/\/+$/, '');
-
-    if (prov === 'FIREBASE' || (url && (url.includes('firebaseio.com') || url.includes('firebasedatabase.app')))) {
-      if (!url) return null;
-      const fbUrl = url.endsWith('.json') ? url : `${url}/xyz_games_state.json`;
-      return {
-        url: fbUrl,
-        options: {
-          method: method === 'GET' ? 'GET' : 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: method === 'GET' ? undefined : JSON.stringify(bodyObj)
-        },
-        parseResponse: async (res) => await res.json()
-      };
-    }
-
-    if (prov === 'SUPABASE' && cfg.supabaseUrl && cfg.supabaseAnonKey) {
-      const sbUrl = cfg.supabaseUrl.trim().replace(/\/+$/, '');
-      const key = cfg.supabaseAnonKey.trim();
-      if (method === 'GET') {
-        return {
-          url: `${sbUrl}/rest/v1/platform_settings?setting_key=eq.XYZ_GAMES_SHARED_STATE_V1&select=setting_value`,
-          options: {
-            method: 'GET',
-            headers: { 'apikey': key, 'Authorization': `Bearer ${key}` }
-          },
-          parseResponse: async (res) => {
-            const rows = await res.json();
-            if (Array.isArray(rows) && rows[0] && rows[0].setting_value) {
-              return typeof rows[0].setting_value === 'string' ? JSON.parse(rows[0].setting_value) : rows[0].setting_value;
-            }
-            return null;
-          }
-        };
-      } else {
-        return {
-          url: `${sbUrl}/rest/v1/platform_settings`,
-          options: {
-            method: 'POST',
-            headers: {
-              'apikey': key,
-              'Authorization': `Bearer ${key}`,
-              'Content-Type': 'application/json',
-              'Prefer': 'resolution=merge-duplicates'
-            },
-            body: JSON.stringify({
-              setting_key: 'XYZ_GAMES_SHARED_STATE_V1',
-              setting_value: bodyObj,
-              updated_at: new Date().toISOString()
-            })
-          },
-          parseResponse: async () => bodyObj
-        };
-      }
-    }
-
-    if (prov === 'CUSTOM_REST' && url) {
-      const targetUrl = url.endsWith('/api/xyz-state') ? url : (url.includes('/api/') ? url : `${url}/api/xyz-state`);
-      return {
-        url: targetUrl,
-        options: {
-          method: method === 'GET' ? 'GET' : 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: method === 'GET' ? undefined : JSON.stringify(bodyObj)
-        },
-        parseResponse: async (res) => await res.json()
-      };
-    }
-
-    // Default AUTO_SERVER: use same-origin /api/xyz-state (or endpointUrl if provided)
     const baseApi = url ? `${url}/api/xyz-state` : '/api/xyz-state';
     if (!url && window.location.protocol === 'file:') return null;
     if (!url && serverApiAvailable === false) return null;
-
+    const dev = window.getXyzDeviceInfo();
     return {
       url: baseApi,
       options: {
         method: method === 'GET' ? 'GET' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: method === 'GET' ? undefined : JSON.stringify(bodyObj)
+        headers: { 'Content-Type': 'application/json', 'X-XYZ-Source': 'CUSTOMER_WEBAPP' },
+        body: method === 'GET' ? undefined : JSON.stringify({
+          isAdminPush: false,
+          sourceDeviceId: dev.deviceId,
+          state: bodyObj
+        })
       },
       parseResponse: async (res) => await res.json()
     };
@@ -28162,14 +27924,11 @@ function generateGenuineQrMatrix(text) {
       const res = await fetch(reqInfo.url, reqInfo.options);
       if (res.ok) {
         serverApiAvailable = true;
-        updateCloudStatusIndicators(true);
-      } else if (!cfg.endpointUrl && cfg.provider === 'AUTO_SERVER' && res.status === 404) {
+      } else if (!cfg.endpointUrl && res.status === 404) {
         serverApiAvailable = false;
       }
     } catch (e) {
-      if (!cfg.endpointUrl && cfg.provider === 'AUTO_SERVER') {
-        serverApiAvailable = false;
-      }
+      if (!cfg.endpointUrl) serverApiAvailable = false;
     }
   };
 
@@ -28181,110 +27940,142 @@ function generateGenuineQrMatrix(text) {
       if (!reqInfo) return;
       const res = await fetch(reqInfo.url, reqInfo.options);
       if (!res.ok) {
-        if (!cfg.endpointUrl && cfg.provider === 'AUTO_SERVER' && res.status === 404) {
-          serverApiAvailable = false;
-        }
+        if (!cfg.endpointUrl && res.status === 404) serverApiAvailable = false;
         return;
       }
       serverApiAvailable = true;
-      updateCloudStatusIndicators(true);
       const remoteData = await reqInfo.parseResponse(res);
       const remoteSt = (remoteData && remoteData.state && typeof remoteData.state === 'object') ? remoteData.state : remoteData;
       if (!remoteSt || typeof remoteSt !== 'object') return;
-
       applyIncomingRemoteState(remoteSt);
     } catch (e) {
-      if (!cfg.endpointUrl && cfg.provider === 'AUTO_SERVER') {
-        serverApiAvailable = false;
-      }
+      if (!cfg.endpointUrl) serverApiAvailable = false;
     }
   };
+
+  // Build a fingerprint of meaningful shared state (excluding connectedDevices heartbeats and local UI flags)
+  function buildMeaningfulCustomerFingerprint(st) {
+    if (!st || typeof st !== 'object') return '';
+    return JSON.stringify({
+      bal: st.balance,
+      adminTs: st.adminUpdatedAt,
+      banners: (st.websiteConfig && st.websiteConfig.lobbyBanners) ? st.websiteConfig.lobbyBanners.map(b => b.id + ':' + b.active + ':' + (b.imageUrl || '').length) : [],
+      cards: (st.websiteConfig && st.websiteConfig.cards) ? st.websiteConfig.cards : [],
+      upiIds: (st.paymentGatewayConfig && st.paymentGatewayConfig.upiIds) ? st.paymentGatewayConfig.upiIds : [],
+      upiQr: (st.paymentGatewayConfig && st.paymentGatewayConfig.upiQrConfig) ? Object.keys(st.paymentGatewayConfig.upiQrConfig).map(k => k + ':' + st.paymentGatewayConfig.upiQrConfig[k].qrMode + ':' + (st.paymentGatewayConfig.upiQrConfig[k].customQrDataUrl || '').length) : [],
+      usdtAddrs: (st.paymentGatewayConfig && st.paymentGatewayConfig.usdtAddresses) ? st.paymentGatewayConfig.usdtAddresses : [],
+      currCfg: st.currencyConfig,
+      wingoRules: st.wingoRules,
+      overrides: st.manualOverrides,
+      lottoDraws: (st.lotteryDraws || []).map(d => d.drawId + ':' + d.status + ':' + (d.winningNumbers || []).join(',')),
+      ludoTrn: (st.ludoTournaments || []).length,
+      unoTrn: (st.unoTournaments || []).length,
+      mathTrn: (st.mathTournaments || []).length,
+      notifs: (st.adminNotifications || []).length + ':' + (st.lotteryNotifications || []).length,
+      deps: (st.adminDeposits || []).map(d => d.depositId + ':' + d.status),
+      wds: (st.adminWithdrawals || []).map(w => w.withdrawalId + ':' + w.reviewStatus + ':' + w.payoutStatus),
+      promos: (st.adminPromotions || []).map(p => p.code + ':' + p.status + ':' + p.claimedCount)
+    });
+  }
+
+  function isCustomerInteractingWithForm() {
+    const a = document.activeElement;
+    if (a) {
+      const tag = (a.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    }
+    const openPopup = document.querySelector('.bet-popup-backdrop.show, .drawer-backdrop.show, .modal-backdrop.show');
+    if (openPopup) return true;
+    return false;
+  }
+
+  function refreshActiveViewGently() {
+    try { window.applyGlobalTheme(); } catch (e) {}
+    try { window.renderLobbyBanners(false); } catch (e) {}
+    try { window.applyGlobalWebappLanguage(); } catch (e) {}
+    try { if (typeof window.renderBalance === 'function') window.renderBalance(); } catch (e) {}
+    try { if (typeof window.updateProfileNotificationBadges === 'function') window.updateProfileNotificationBadges(); } catch (e) {}
+
+    // If user is currently typing in an input or has a modal/drawer open, do not clobber the active form DOM!
+    if (isCustomerInteractingWithForm()) return;
+
+    const curView = window.__xyzCurrentActiveView || 'homepage';
+    try {
+      if (curView === 'games' && typeof window.__syncGames === 'function') window.__syncGames();
+      else if (curView === 'lottery' && typeof window.__syncLottery === 'function') window.__syncLottery();
+      else if (curView === 'cards' && typeof window.__syncCards === 'function') window.__syncCards();
+      else if (curView === 'aviator' && typeof window.__syncAviator === 'function') window.__syncAviator();
+      else if (curView === 'contest' && typeof window.__syncContest === 'function') window.__syncContest();
+      else if (curView === 'math' && typeof window.__syncMath === 'function') window.__syncMath();
+      else if (curView === 'deposit' && typeof window.onAmountInputChanged === 'function') {
+        window.pickRandomGatewayCredentialsForDeposit(false);
+        window.onAmountInputChanged();
+        if (typeof window.renderDepositHistoryList === 'function') window.renderDepositHistoryList();
+      }
+      else if (curView === 'withdraw' && typeof window.__syncWithdraw === 'function') window.__syncWithdraw();
+      else if (curView === 'profile' && typeof window.__syncProfile === 'function') window.__syncProfile();
+      else if (curView === 'promo' && typeof window.__syncPromo === 'function') window.__syncPromo();
+    } catch (e) {}
+  }
+
+  let lastMeaningfulFp = '';
+
+  window.addEventListener('storage', function(ev) {
+    if (ev.key === XYZ_STATE_KEY && ev.newValue && !isApplyingRemoteCloudState) {
+      try {
+        const parsed = JSON.parse(ev.newValue);
+        if (parsed && typeof parsed === 'object') {
+          applyIncomingRemoteState(parsed);
+        }
+      } catch (e) {}
+    }
+  });
 
   function applyIncomingRemoteState(remoteSt) {
     try {
       isApplyingRemoteCloudState = true;
+      window.__isApplyingRemoteCloudState = true;
       const rawLocal = _origGetItem(XYZ_STATE_KEY);
       const localSt = rawLocal ? JSON.parse(rawLocal) : {};
-      const merged = window.mergeXyzMultiDeviceState(localSt, remoteSt, false);
+      const oldFp = lastMeaningfulFp || buildMeaningfulCustomerFingerprint(localSt);
+
+      const merged = window.mergeXyzMultiDeviceState(localSt, remoteSt);
       applyDeviceSessionOverlay(merged);
       stampDeviceHeartbeat(merged);
       checkAndExecuteRemoteCommands(merged);
 
+      const newFp = buildMeaningfulCustomerFingerprint(merged);
       const newStr = JSON.stringify(merged);
-      if (newStr !== rawLocal) {
-        _origSetItem(XYZ_STATE_KEY, newStr);
+      _origSetItem(XYZ_STATE_KEY, newStr);
+
+      if (newFp !== oldFp) {
+        lastMeaningfulFp = newFp;
         if (typeof window.pickRandomGatewayCredentialsForDeposit === 'function') {
           window.pickRandomGatewayCredentialsForDeposit(false);
         }
-        if (typeof window.syncAllXyzScreens === 'function') {
-          window.syncAllXyzScreens();
-        }
+        refreshActiveViewGently();
       }
     } catch (e) {
     } finally {
       isApplyingRemoteCloudState = false;
+      window.__isApplyingRemoteCloudState = false;
     }
   }
 
-  function updateCloudStatusIndicators(isConnected) {
-    const stEl = document.getElementById('custCloudModalStatus');
-    if (stEl) {
-      stEl.textContent = isConnected ? '🟢 Connected to Live Cloud Sync' : '🟡 Local Mode (Set Cloud URL to Sync Across India)';
-      stEl.style.color = isConnected ? '#16a34a' : '#d97706';
-    }
-  }
-
-  window.toggleCustomerCloudModal = function(show) {
-    const m = document.getElementById('xyzCloudConfigModal');
-    if (!m) return;
-    if (show) {
-      const cfg = window.getXyzCloudConfig();
-      const dev = window.getXyzDeviceInfo();
-      const devEl = document.getElementById('custCloudModalDevId');
-      if (devEl) devEl.textContent = `${dev.deviceId} (${dev.deviceType} • ${dev.platformName})`;
-      const pSel = document.getElementById('custCloudProviderSel');
-      if (pSel) pSel.value = cfg.provider || 'AUTO_SERVER';
-      const uInp = document.getElementById('custCloudUrlInput');
-      if (uInp) uInp.value = cfg.endpointUrl || cfg.supabaseUrl || '';
-      const kInp = document.getElementById('custCloudSupaKeyInput');
-      if (kInp) kInp.value = cfg.supabaseAnonKey || '';
-    }
-    m.style.display = show ? 'flex' : 'none';
-  };
-
-  window.saveCustomerCloudConfigFromModal = function() {
-    const prov = document.getElementById('custCloudProviderSel')?.value || 'AUTO_SERVER';
-    const url = (document.getElementById('custCloudUrlInput')?.value || '').trim().replace(/\/+$/, '');
-    const key = (document.getElementById('custCloudSupaKeyInput')?.value || '').trim();
-    serverApiAvailable = null;
-    window.saveXyzCloudConfig({
-      enabled: true,
-      provider: prov,
-      endpointUrl: url,
-      supabaseUrl: prov === 'SUPABASE' ? url : '',
-      supabaseAnonKey: key
-    });
-    window.toggleCustomerCloudModal(false);
-    window.pullCustomerStateFromCloud();
-    window.pushCustomerStateToCloud();
-  };
-
-  // Setup real-time SSE stream if running on Node.js server.js
   function initSseStreamIfAvailable() {
     const cfg = window.getXyzCloudConfig();
     if (window.location.protocol === 'file:' && !cfg.endpointUrl) return;
-    if (cfg.provider !== 'AUTO_SERVER' && cfg.provider !== 'CUSTOM_REST') return;
     if (typeof window.EventSource !== 'function') return;
     try {
       const base = cfg.endpointUrl ? cfg.endpointUrl.replace(/\/+$/, '') : '';
-      const streamUrl = `${base}/api/xyz-stream`;
-      const es = new EventSource(streamUrl);
+      const dev = window.getXyzDeviceInfo();
+      const es = new EventSource(`${base}/api/xyz-stream`);
       es.onmessage = function(ev) {
         try {
           const payload = JSON.parse(ev.data);
+          if (payload && payload.sourceDeviceId === dev.deviceId) return; // Ignore own echo
           if (payload && payload.state) {
             serverApiAvailable = true;
-            updateCloudStatusIndicators(true);
             applyIncomingRemoteState(payload.state);
           }
         } catch (e) {}
@@ -28295,46 +28086,19 @@ function generateGenuineQrMatrix(text) {
     } catch (e) {}
   }
 
-  // Inject a subtle 🌐 Cloud Sync button on the Auth topbar so testers on any mobile can also configure it manually
-  function injectCloudSyncButtonInWebapp() {
-    const authActions = document.querySelector('#xyz-view-auth .auth-top-actions');
-    if (authActions && !document.getElementById('authCloudSyncBtn')) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.id = 'authCloudSyncBtn';
-      btn.className = 'xyz-subpage-theme-btn';
-      btn.title = 'Multi-Device Cloud Sync Settings';
-      btn.innerHTML = '🌐';
-      btn.onclick = function() { window.toggleCustomerCloudModal(true); };
-      authActions.insertBefore(btn, authActions.firstChild);
-    }
-    const lobbyActions = document.querySelector('#xyz-view-homepage .header-right-actions');
-    if (lobbyActions && !document.getElementById('lobbyCloudSyncBtn')) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.id = 'lobbyCloudSyncBtn';
-      btn.className = 'btn-theme-glass';
-      btn.title = 'Multi-Device Cloud Sync Settings';
-      btn.innerHTML = '🌐';
-      btn.onclick = function() { window.toggleCustomerCloudModal(true); };
-      lobbyActions.insertBefore(btn, lobbyActions.firstChild);
-    }
-  }
-
   window.addEventListener('DOMContentLoaded', () => {
-    injectCloudSyncButtonInWebapp();
+    // Ensure any stray cloud sync buttons from older versions are removed
+    ['authCloudSyncBtn', 'lobbyCloudSyncBtn', 'xyzCloudConfigModal'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    });
     window.pullCustomerStateFromCloud();
     setTimeout(() => {
-      window.pushCustomerStateToCloud();
       initSseStreamIfAvailable();
-    }, 400);
+    }, 300);
     setInterval(() => {
       window.pullCustomerStateFromCloud();
-    }, 2200);
-    // Heartbeat every 6s so Admin Panel sees live active status
-    setInterval(() => {
-      window.pushCustomerStateToCloud();
-    }, 6000);
+    }, 3000);
   });
 })();
 </script>
