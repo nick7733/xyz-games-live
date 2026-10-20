@@ -20197,9 +20197,24 @@ function generateGenuineQrMatrix(text) {
     showAdmToast('🔒 Logged out of Admin Panel.');
   };
 
-  loggedInAdminAccount = null;
-  window.__currentAdminSessionId = null;
-  try { window.__xyzSafeStorage.removeItem(XYZ_ADMIN_SESSION_KEY); } catch (e) {}
+  // V11 Fix: Preserve active admin session across reloads & state syncs so Admin Panel never auto-logs out!
+  try {
+    const savedSessRaw = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_SESSION_KEY)) ||
+                         window.__xyzSafeStorage.getItem(XYZ_ADMIN_SESSION_KEY);
+    if (savedSessRaw && !loggedInAdminAccount) {
+      const savedSess = JSON.parse(savedSessRaw);
+      if (savedSess && savedSess.loginId) {
+        const foundAdm = (db.staffAdmins || []).find(
+          a => a && a.loginId && a.loginId.toLowerCase() === String(savedSess.loginId).toLowerCase() && a.status === 'ACTIVE'
+        );
+        if (foundAdm) {
+          loggedInAdminAccount = foundAdm;
+          window.__currentAdminSessionId = savedSess.sessionId || ('ASESS-' + Date.now());
+          activeAdminRole = (foundAdm.isMasterSuperAdmin || foundAdm.fullControl) ? 'SUPER_ADMIN' : (foundAdm.roleKey || 'CUSTOM_ROLE');
+        }
+      }
+    }
+  } catch (e) {}
   window.syncTopbarAndShellForActiveAdmin();
 
   setInterval(() => {
@@ -23168,6 +23183,1627 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ ADMIN V10 WINGO PERIOD SYNC & DEPOSIT MIN CONFIG === -->
+
+<!-- === START XYZ ADMIN V11 COMPLETE FIXES === -->
+<style>
+  .wingo-exp-mode-bar {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .wingo-exp-mode-tab {
+    background: #F8FAFC;
+    border: 1.5px solid var(--border-color);
+    border-radius: 11px;
+    padding: 10px 12px;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .wingo-exp-mode-tab.active {
+    background: linear-gradient(135deg, #1E3A8A 0%, #3563F5 100%);
+    color: #FFFFFF;
+    border-color: #1D4ED8;
+    box-shadow: 0 6px 16px rgba(53, 99, 245, 0.25);
+  }
+  .wingo-exp-num-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .wingo-exp-num-card {
+    background: #FFFFFF;
+    border: 2px solid var(--border-color);
+    border-radius: 12px;
+    padding: 10px;
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    position: relative;
+  }
+  .wingo-exp-num-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+  }
+  .wingo-exp-num-card.selected-num {
+    outline: 3px solid var(--primary-blue);
+    background: #EFF6FF;
+  }
+  .wingo-exp-num-card.lowest-exp {
+    border-color: #16A36A;
+    background: #F0FDF4;
+  }
+  .wingo-exp-num-card.highest-exp {
+    border-color: #DC3545;
+    background: #FEF2F2;
+  }
+  @media (max-width: 900px) {
+    .wingo-exp-mode-bar {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .wingo-exp-num-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+</style>
+<script>
+(function() {
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const XYZ_ADMIN_SESSION_KEY = 'XYZ_ACTIVE_ADMIN_SESSION_V5';
+  const admBcV11 = window.__xyzCreateBroadcastChannel ? window.__xyzCreateBroadcastChannel('xyz_games_live_channel') : null;
+
+  const CANONICAL_MODES = {
+    '30SEC': { key: '30SEC', name: 'Wingo 30 Seconds', short: '30s', duration: 30,  cutoff: 5,  code: '05' },
+    '1MIN':  { key: '1MIN',  name: 'Wingo 1 Minute',   short: '1m',  duration: 60,  cutoff: 5,  code: '10' },
+    '2MIN':  { key: '2MIN',  name: 'Wingo 2 Minutes',  short: '2m',  duration: 120, cutoff: 8,  code: '20' },
+    '3MIN':  { key: '3MIN',  name: 'Wingo 3 Minutes',  short: '3m',  duration: 180, cutoff: 10, code: '30' },
+    '5MIN':  { key: '5MIN',  name: 'Wingo 5 Minutes',  short: '5m',  duration: 300, cutoff: 30, code: '50' }
+  };
+
+  // ===========================================================================
+  // 1. FIX ADMIN PANEL AUTO-LOGOUT ROOT CAUSE
+  //    - Persist session in both sessionStorage & localStorage
+  //    - Never auto-evict from localStorage.adminActiveSessions mismatches
+  //    - Auto-re-register session on heartbeat check
+  // ===========================================================================
+  function saveAdminSessionPersisted(acc, sessId) {
+    if (!acc) return;
+    const payload = JSON.stringify({
+      loginId: acc.loginId,
+      username: acc.username,
+      roleKey: acc.roleKey,
+      isMasterSuperAdmin: Boolean(acc.isMasterSuperAdmin),
+      sessionId: sessId || window.__currentAdminSessionId || ('ASESS-' + Date.now()),
+      currentPage: currentAdminPage || 'dashboard',
+      loggedInAt: Date.now()
+    });
+    try {
+      if (window.sessionStorage) window.sessionStorage.setItem(XYZ_ADMIN_SESSION_KEY, payload);
+      if (window.localStorage) window.localStorage.setItem(XYZ_ADMIN_SESSION_KEY, payload);
+      window.__xyzSafeStorage.setItem(XYZ_ADMIN_SESSION_KEY, payload);
+    } catch (e) {}
+  }
+
+  function restorePersistedAdminSessionIfAvailable() {
+    if (loggedInAdminAccount && window.__currentAdminSessionId) return true;
+    try {
+      const raw = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_SESSION_KEY)) ||
+                  (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_SESSION_KEY)) ||
+                  window.__xyzSafeStorage.getItem(XYZ_ADMIN_SESSION_KEY);
+      if (!raw) return false;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.loginId) return false;
+      const found = (db.staffAdmins || []).find(
+        a => a && a.loginId && a.loginId.toLowerCase() === String(parsed.loginId).toLowerCase() && a.status === 'ACTIVE'
+      );
+      if (!found) return false;
+      loggedInAdminAccount = found;
+      window.__currentAdminSessionId = parsed.sessionId || ('ASESS-' + Date.now());
+      activeAdminRole = (found.isMasterSuperAdmin || found.fullControl) ? 'SUPER_ADMIN' : (found.roleKey || 'CUSTOM_ROLE');
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Override checkActiveAdminSessionValidity so it NEVER falsely evicts the Admin!
+  window.checkActiveAdminSessionValidity = async function() {
+    if (!loggedInAdminAccount) {
+      restorePersistedAdminSessionIfAvailable();
+    }
+    if (!loggedInAdminAccount || !window.__currentAdminSessionId) return true;
+
+    // Check if this sub-admin account was explicitly BLOCKED by Master Super Admin
+    const latestAcc = (db.staffAdmins || []).find(
+      a => a && a.loginId && a.loginId.toLowerCase() === String(loggedInAdminAccount.loginId || '').toLowerCase()
+    );
+    if (latestAcc && latestAcc.status !== 'ACTIVE' && !latestAcc.isMasterSuperAdmin) {
+      window.logoutAdminSessionToGate();
+      return false;
+    }
+
+    const isSuper = Boolean(loggedInAdminAccount.isMasterSuperAdmin || loggedInAdminAccount.roleKey === 'SUPER_ADMIN');
+    const maxDevices = isSuper ? 5 : 30;
+
+    try {
+      const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
+      const base = cfg.endpointUrl ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+      if (window.location.protocol !== 'file:' || base) {
+        const res = await fetch((base || '') + '/api/xyz-admin-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'CHECK',
+            loginId: loggedInAdminAccount.loginId,
+            isSuperAdmin: isSuper,
+            sessionId: window.__currentAdminSessionId,
+            deviceId: localStorage.getItem('XYZ_ADMIN_DEVICE_ID_V1') || 'ADM-DEV'
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.valid === false) {
+            window.forceEvictAdminSession(maxDevices, isSuper);
+            return false;
+          }
+        }
+      }
+    } catch (e) {}
+    return true;
+  };
+
+  // Hook login functions so they always persist XYZ_ADMIN_SESSION_KEY
+  const _origSubmitAdminGateLogin = window.submitAdminGateLogin;
+  window.submitAdminGateLogin = async function() {
+    await _origSubmitAdminGateLogin();
+    if (loggedInAdminAccount) {
+      saveAdminSessionPersisted(loggedInAdminAccount, window.__currentAdminSessionId);
+    }
+  };
+
+  const _origQuickFillAndLoginRole = window.quickFillAndLoginRole;
+  window.quickFillAndLoginRole = function(loginId, pwd) {
+    _origQuickFillAndLoginRole(loginId, pwd);
+    if (loggedInAdminAccount) {
+      saveAdminSessionPersisted(loggedInAdminAccount, window.__currentAdminSessionId);
+    }
+  };
+
+  const _origCompleteFirstTime = window.completeFirstTimeSuperAdminSetup;
+  window.completeFirstTimeSuperAdminSetup = async function() {
+    await _origCompleteFirstTime();
+    if (loggedInAdminAccount) {
+      saveAdminSessionPersisted(loggedInAdminAccount, window.__currentAdminSessionId);
+    }
+  };
+
+  const _origLogoutAdminSessionToGate = window.logoutAdminSessionToGate;
+  window.logoutAdminSessionToGate = function() {
+    try {
+      if (window.sessionStorage) window.sessionStorage.removeItem(XYZ_ADMIN_SESSION_KEY);
+      if (window.localStorage) window.localStorage.removeItem(XYZ_ADMIN_SESSION_KEY);
+      window.__xyzSafeStorage.removeItem(XYZ_ADMIN_SESSION_KEY);
+    } catch (e) {}
+    if (typeof _origLogoutAdminSessionToGate === 'function') {
+      _origLogoutAdminSessionToGate();
+    }
+  };
+
+  // ===========================================================================
+  // 2. FIX WINGO CLOCK & PERIOD SYNC IN ADMIN PANEL (ZERO LAG, 100% MATCH)
+  // ===========================================================================
+  window.__xyzTrueAdminNtpOffsetMs = 0;
+  window.__xyzServerClockOffsetMs = 0;
+  window.getAuthoritativeUtcNowMs = function() {
+    return Date.now() + (Number(window.__xyzTrueAdminNtpOffsetMs) || 0);
+  };
+
+  async function syncAdminNtpOffsetOnce() {
+    try {
+      if (window.location.protocol === 'file:') return;
+      const t0 = Date.now();
+      const res = await fetch('/api/' + 'xyz-time', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const t1 = Date.now();
+      if (data && typeof data.serverNowMs === 'number') {
+        const rtt = t1 - t0;
+        const est = data.serverNowMs + Math.round(rtt / 2);
+        const diff = est - t1;
+        window.__xyzTrueAdminNtpOffsetMs = Math.abs(diff) < 1500 ? 0 : diff;
+      }
+    } catch (e) {}
+  }
+  syncAdminNtpOffsetOnce();
+
+  // Default selectedManualMode to match Webapp's active slot (or '30SEC')
+  if (!CANONICAL_MODES[selectedManualMode] || selectedManualMode === '1MIN') {
+    const initialSlot = (db && (db.webappActiveWingoSlot || db.activeSlot));
+    selectedManualMode = (initialSlot && CANONICAL_MODES[initialSlot]) ? initialSlot : '30SEC';
+  }
+
+  // Ensure mergeXyzMultiDeviceState never sets a stale serverNowMs offset and merges all 6 game histories + forceLogoutMap
+  function mergeArrayByIdV11(localArr, remoteArr, idField) {
+    const a = Array.isArray(localArr) ? localArr : [];
+    const b = Array.isArray(remoteArr) ? remoteArr : [];
+    if (a.length === 0) return b;
+    if (b.length === 0) return a;
+    const map = new Map();
+    const order = [];
+    [...b, ...a].forEach(item => {
+      if (!item || typeof item !== "object") return;
+      const k = String(item[idField] || item.id || item.matchId || item.ticketId || item.roundId || "");
+      if (!k) return;
+      if (!map.has(k)) {
+        map.set(k, Object.assign({}, item));
+        order.push(k);
+      } else {
+        map.set(k, Object.assign({}, item, map.get(k)));
+      }
+    });
+    return order.map(k => map.get(k));
+  }
+  window.mergeArrayById = mergeArrayByIdV11;
+
+  const _origMergeAdminV10 = window.mergeXyzMultiDeviceState;
+  window.mergeXyzMultiDeviceState = function(localSt, remoteSt, isInitialBootPull) {
+    if (remoteSt) delete remoteSt.serverNowMs;
+    if (localSt) delete localSt.serverNowMs;
+    const merged = _origMergeAdminV10 ? _origMergeAdminV10(localSt, remoteSt, isInitialBootPull) : Object.assign({}, localSt, remoteSt);
+    delete merged.serverNowMs;
+    window.__xyzServerClockOffsetMs = 0;
+
+    // Merge forceLogoutMap
+    merged.forceLogoutMap = Object.assign({}, localSt?.forceLogoutMap || {}, remoteSt?.forceLogoutMap || {});
+
+    // Merge all game histories so Admin Betting Records & Live Exposure are always up-to-date
+    if (typeof mergeArrayByIdV11 === 'function') {
+      merged.myBets = mergeArrayByIdV11(localSt?.myBets, remoteSt?.myBets, 'id', true);
+      merged.lotteryTickets = mergeArrayByIdV11(localSt?.lotteryTickets, remoteSt?.lotteryTickets, 'ticketId', true);
+      merged.unoHistory = mergeArrayByIdV11(localSt?.unoHistory, remoteSt?.unoHistory, 'matchId', true);
+      merged.ludoHistory = mergeArrayByIdV11(localSt?.ludoHistory, remoteSt?.ludoHistory, 'matchId', true);
+      merged.mathHistory = mergeArrayByIdV11(localSt?.mathHistory, remoteSt?.mathHistory, 'matchId', true);
+      merged.aviatorMyBets = mergeArrayByIdV11(localSt?.aviatorMyBets, remoteSt?.aviatorMyBets, 'id', true);
+      merged.ludoPlayerTournamentHistory = mergeArrayByIdV11(localSt?.ludoPlayerTournamentHistory, remoteSt?.ludoPlayerTournamentHistory, 'matchId', true);
+      merged.unoPlayerTournamentHistory = mergeArrayByIdV11(localSt?.unoPlayerTournamentHistory, remoteSt?.unoPlayerTournamentHistory, 'matchId', true);
+      merged.mathPlayerTournamentHistory = mergeArrayByIdV11(localSt?.mathPlayerTournamentHistory, remoteSt?.mathPlayerTournamentHistory, 'matchId', true);
+    }
+    return merged;
+  };
+
+  // ===========================================================================
+  // 3. LIVE CURRENT-PERIOD BET EXPOSURE & PAYOUT LIABILITY CALCULATOR
+  //    (Shows exact bets on Numbers 0–9, Colors Green/Violet/Red, Big/Small,
+  //     total payout liability per number 0–9, and Sbse Kam vs Sbse Zyada!)
+  // ===========================================================================
+  window.computeLivePeriodBetExposure = function(modeKey, periodId) {
+    const mKey = (modeKey && CANONICAL_MODES[modeKey]) ? modeKey : (selectedManualMode || '30SEC');
+    const utc = window.getWingoModeUtcState(mKey, db.wingoModesConfig?.[mKey]);
+    const targetPid = periodId || utc.periodId;
+
+    // Read latest bets from both db.myBets and localStorage so no cross-tab bet is missed
+    let allBets = Array.isArray(db.myBets) ? [...db.myBets] : [];
+    try {
+      const raw = safeGetStorage(XYZ_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.myBets)) {
+          const seenIds = new Set(allBets.map(b => b && b.id));
+          parsed.myBets.forEach(b => {
+            if (b && b.id && !seenIds.has(b.id)) {
+              allBets.unshift(b);
+              seenIds.add(b.id);
+            }
+          });
+          db.myBets = allBets;
+        }
+      }
+    } catch (e) {}
+
+    const periodBets = allBets.filter(b =>
+      b && String(b.periodId) === String(targetPid) && (!b.slotKey || b.slotKey === mKey)
+    );
+
+    const rules = db.wingoRules || {};
+    const greenM = Number(rules.greenMultiplier ?? 1.9);
+    const redM   = Number(rules.redMultiplier ?? 2.0);
+    const violM  = Number(rules.violetMultiplier ?? 4.5);
+    const halfM  = Number(rules.halfColorMultiplier ?? 1.5);
+    const numM   = Number(rules.numberMultiplier ?? 9.0);
+    const zfM    = Number(rules.zeroFiveNumberMultiplier ?? 20.0);
+    const bsM    = Number(rules.bigSmallMultiplier ?? 2.0);
+
+    const colorsExp = {
+      GREEN:  { key: 'Green',  amount: 0, count: 0, colorHex: '#16A36A', bgHex: '#DCFCE7' },
+      VIOLET: { key: 'Violet', amount: 0, count: 0, colorHex: '#7C3AED', bgHex: '#EDE9FE' },
+      RED:    { key: 'Red',    amount: 0, count: 0, colorHex: '#DC3545', bgHex: '#FEE2E2' }
+    };
+    const sizeExp = {
+      BIG:   { key: 'Big (5–9)',   amount: 0, count: 0, colorHex: '#D97706', bgHex: '#FEF3C7' },
+      SMALL: { key: 'Small (0–4)', amount: 0, count: 0, colorHex: '#2563EB', bgHex: '#DBEAFE' }
+    };
+    const numberDirect = {};
+    for (let n = 0; n <= 9; n++) {
+      numberDirect[n] = { number: n, directAmount: 0, directCount: 0, totalPayoutIfWins: 0, netHouseProfit: 0 };
+    }
+
+    let totalPoolInr = 0;
+
+    periodBets.forEach(bet => {
+      const amt = Math.max(0, Number(bet.amount || 0));
+      const pick = String(bet.selection || '').trim().toUpperCase();
+      totalPoolInr = +(totalPoolInr + amt).toFixed(2);
+
+      if (pick === 'GREEN') {
+        colorsExp.GREEN.amount = +(colorsExp.GREEN.amount + amt).toFixed(2);
+        colorsExp.GREEN.count += 1;
+      } else if (pick === 'VIOLET') {
+        colorsExp.VIOLET.amount = +(colorsExp.VIOLET.amount + amt).toFixed(2);
+        colorsExp.VIOLET.count += 1;
+      } else if (pick === 'RED') {
+        colorsExp.RED.amount = +(colorsExp.RED.amount + amt).toFixed(2);
+        colorsExp.RED.count += 1;
+      } else if (pick === 'BIG') {
+        sizeExp.BIG.amount = +(sizeExp.BIG.amount + amt).toFixed(2);
+        sizeExp.BIG.count += 1;
+      } else if (pick === 'SMALL') {
+        sizeExp.SMALL.amount = +(sizeExp.SMALL.amount + amt).toFixed(2);
+        sizeExp.SMALL.count += 1;
+      } else {
+        const parsedNum = Number(pick.replace('NUMBER', '').trim());
+        if (Number.isInteger(parsedNum) && parsedNum >= 0 && parsedNum <= 9) {
+          numberDirect[parsedNum].directAmount = +(numberDirect[parsedNum].directAmount + amt).toFixed(2);
+          numberDirect[parsedNum].directCount += 1;
+        }
+      }
+    });
+
+    // Compute Total Payout Liability & Net House Profit for each possible winning number 0..9
+    let minPayoutVal = Infinity;
+    let maxPayoutVal = -1;
+    let minDirectNumVal = Infinity;
+    let maxDirectNumVal = -1;
+
+    for (let n = 0; n <= 9; n++) {
+      let payout = 0;
+      // 1. Direct number bets on n
+      payout += numberDirect[n].directAmount * ((n === 0 || n === 5) ? zfM : numM);
+      // 2. Color bets matching n
+      if ([1, 3, 7, 9].includes(n)) payout += colorsExp.GREEN.amount * greenM;
+      if (n === 5) payout += (colorsExp.GREEN.amount * halfM) + (colorsExp.VIOLET.amount * violM);
+      if ([2, 4, 6, 8].includes(n)) payout += colorsExp.RED.amount * redM;
+      if (n === 0) payout += (colorsExp.RED.amount * halfM) + (colorsExp.VIOLET.amount * violM);
+      // 3. Big/Small bets matching n
+      if (n >= 5) payout += sizeExp.BIG.amount * bsM;
+      else payout += sizeExp.SMALL.amount * bsM;
+
+      payout = +payout.toFixed(2);
+      numberDirect[n].totalPayoutIfWins = payout;
+      numberDirect[n].netHouseProfit = +(totalPoolInr - payout).toFixed(2);
+
+      if (payout < minPayoutVal) minPayoutVal = payout;
+      if (payout > maxPayoutVal) maxPayoutVal = payout;
+      if (numberDirect[n].directAmount < minDirectNumVal) minDirectNumVal = numberDirect[n].directAmount;
+      if (numberDirect[n].directAmount > maxDirectNumVal) maxDirectNumVal = numberDirect[n].directAmount;
+    }
+
+    const numbersArray = Object.values(numberDirect);
+    const lowestPayoutNumbers = numbersArray.filter(x => x.totalPayoutIfWins === minPayoutVal).map(x => x.number);
+    const highestPayoutNumbers = numbersArray.filter(x => x.totalPayoutIfWins === maxPayoutVal && maxPayoutVal > 0).map(x => x.number);
+
+    // Color min/max
+    const colorArr = [colorsExp.GREEN, colorsExp.VIOLET, colorsExp.RED];
+    const minColorAmt = Math.min(...colorArr.map(c => c.amount));
+    const maxColorAmt = Math.max(...colorArr.map(c => c.amount));
+
+    // Size min/max
+    const minSizeAmt = Math.min(sizeExp.BIG.amount, sizeExp.SMALL.amount);
+    const maxSizeAmt = Math.max(sizeExp.BIG.amount, sizeExp.SMALL.amount);
+
+    return {
+      modeKey: mKey,
+      periodId: targetPid,
+      timeLeft: utc.timeLeft,
+      isLocked: utc.isLocked,
+      totalBetsCount: periodBets.length,
+      totalPoolInr,
+      colorsExp,
+      minColorAmt,
+      maxColorAmt,
+      sizeExp,
+      minSizeAmt,
+      maxSizeAmt,
+      numbersArray,
+      minPayoutVal,
+      maxPayoutVal,
+      minDirectNumVal,
+      maxDirectNumVal,
+      lowestPayoutNumbers,
+      highestPayoutNumbers,
+      recommendedBestNumber: lowestPayoutNumbers[0] ?? 1,
+      periodBets
+    };
+  };
+
+  window.buildWingoLiveExposureHtml = function(modeKey) {
+    const exp = window.computeLivePeriodBetExposure(modeKey);
+    const webappSlot = db.webappActiveWingoSlot || db.activeSlot || '30SEC';
+    const currentOverride = (db.manualOverrides && db.manualOverrides[exp.periodId] !== undefined)
+      ? db.manualOverrides[exp.periodId]
+      : null;
+
+    // 5-Mode Switcher Bar with Live Period ID & Bet Pool
+    const modesBarHtml = ['30SEC', '1MIN', '2MIN', '3MIN', '5MIN'].map(mKey => {
+      const mMeta = CANONICAL_MODES[mKey];
+      const mUtc = window.getWingoModeUtcState(mKey, db.wingoModesConfig?.[mKey]);
+      const mExp = (mKey === exp.modeKey) ? exp : window.computeLivePeriodBetExposure(mKey, mUtc.periodId);
+      const isSelected = (mKey === exp.modeKey);
+      const isWebappActive = (mKey === webappSlot);
+      const mm = String(Math.floor(mUtc.timeLeft / 60)).padStart(2, '0');
+      const ss = String(mUtc.timeLeft % 60).padStart(2, '0');
+      return `
+        <button type="button" class="wingo-exp-mode-tab ${isSelected ? 'active' : ''}" onclick="window.selectAdminManualResultMode('${mKey}')">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;">
+            <strong style="font-size:0.82rem;">⏱️ ${mMeta.name}</strong>
+            <span style="font-family:monospace;font-weight:900;font-size:0.86rem;color:${isSelected ? '#FDE047' : (mUtc.isLocked ? '#DC3545' : '#3563F5')};" data-live-clock="${mKey}">${mm}:${ss}</span>
+          </div>
+          <div style="font-family:monospace;font-size:0.72rem;opacity:0.9;margin-top:3px;">
+            Period: <strong data-live-period="${mKey}">${mUtc.periodId}</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;font-size:0.68rem;font-weight:800;">
+            <span>Bets: ${mExp.totalBetsCount} (${fmtMoney(mExp.totalPoolInr)})</span>
+            ${isWebappActive ? `<span style="background:${isSelected ? 'rgba(255,255,255,0.22)' : '#DCFCE7'};color:${isSelected ? '#FFFFFF' : '#166534'};padding:1px 6px;border-radius:999px;">📱 Webapp Active</span>` : ''}
+          </div>
+        </button>
+      `;
+    }).join('');
+
+    // Color Cards (Green / Violet / Red)
+    const colorCardsHtml = ['GREEN', 'VIOLET', 'RED'].map(cKey => {
+      const c = exp.colorsExp[cKey];
+      const pct = exp.totalPoolInr > 0 ? Math.round((c.amount / exp.totalPoolInr) * 100) : 0;
+      const isLowest = (c.amount === exp.minColorAmt);
+      const isHighest = (c.amount === exp.maxColorAmt && exp.maxColorAmt > 0);
+      return `
+        <div style="background:${c.bgHex};border:2px solid ${isHighest ? '#DC3545' : (isLowest ? '#16A36A' : c.colorHex)};border-radius:12px;padding:12px 14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+            <span style="font-weight:900;font-size:0.88rem;color:${c.colorHex};">🎨 Color: ${c.key}</span>
+            ${isLowest ? `<span class="badge badge-success">🟢 Sbse Kam (Lowest)</span>` : ''}
+            ${isHighest ? `<span class="badge badge-danger">🔴 Sbse Zyada (Highest)</span>` : ''}
+          </div>
+          <div style="font-size:1.22rem;font-weight:900;color:#0F172A;margin-top:6px;">
+            ${fmtMoney(c.amount)}
+          </div>
+          <div style="font-size:0.73rem;color:#334155;font-weight:700;margin-top:2px;">
+            ${c.count} Bet(s) Placed • ${pct}% of Period Pool
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Big / Small Cards
+    const sizeCardsHtml = ['BIG', 'SMALL'].map(sKey => {
+      const s = exp.sizeExp[sKey];
+      const pct = exp.totalPoolInr > 0 ? Math.round((s.amount / exp.totalPoolInr) * 100) : 0;
+      const isLowest = (s.amount === exp.minSizeAmt);
+      const isHighest = (s.amount === exp.maxSizeAmt && exp.maxSizeAmt > 0);
+      return `
+        <div style="background:${s.bgHex};border:2px solid ${isHighest ? '#DC3545' : (isLowest ? '#16A36A' : s.colorHex)};border-radius:12px;padding:12px 14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+            <span style="font-weight:900;font-size:0.88rem;color:${s.colorHex};">⚖️ Size: ${s.key}</span>
+            ${isLowest ? `<span class="badge badge-success">🟢 Sbse Kam (Lowest)</span>` : ''}
+            ${isHighest ? `<span class="badge badge-danger">🔴 Sbse Zyada (Highest)</span>` : ''}
+          </div>
+          <div style="font-size:1.22rem;font-weight:900;color:#0F172A;margin-top:6px;">
+            ${fmtMoney(s.amount)}
+          </div>
+          <div style="font-size:0.73rem;color:#334155;font-weight:700;margin-top:2px;">
+            ${s.count} Bet(s) Placed • ${pct}% of Period Pool
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Numbers 0 to 9 Cards
+    const numbersGridHtml = exp.numbersArray.map(nObj => {
+      const n = nObj.number;
+      const sp = BALL_OUTCOMES[n];
+      const isLowestPayout = exp.lowestPayoutNumbers.includes(n);
+      const isHighestPayout = exp.highestPayoutNumbers.includes(n);
+      const isSel = (Number(selectedManualNumber) === n);
+      const isLockedOverride = (currentOverride !== null && Number(currentOverride) === n);
+
+      return `
+        <div class="wingo-exp-num-card ${isSel ? 'selected-num' : ''} ${isLowestPayout ? 'lowest-exp' : (isHighestPayout ? 'highest-exp' : '')}"
+             onclick="window.quickSelectAndPreviewManualBall('${exp.modeKey}', '${exp.periodId}', ${n})">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span class="w-ball ${sp.badgeCls}" style="width:28px;height:28px;font-size:0.85rem;">${n}</span>
+            <span style="font-size:0.68rem;font-weight:800;color:var(--text-secondary);">${sp.size} • ${sp.colors.join('/')}</span>
+          </div>
+
+          <div style="font-size:0.72rem;color:var(--text-secondary);font-weight:700;">Direct Bet on #${n}:</div>
+          <div style="font-size:1.02rem;font-weight:900;color:var(--text-primary);margin-bottom:4px;">
+            ${fmtMoney(nObj.directAmount)} <span style="font-size:0.68rem;color:var(--text-muted);">(${nObj.directCount} bets)</span>
+          </div>
+
+          <div style="border-top:1px dashed var(--border-color);padding-top:5px;margin-top:4px;font-size:0.7rem;">
+            <div style="display:flex;justify-content:space-between;">
+              <span style="color:var(--text-secondary);">Total Payout if #${n} Wins:</span>
+              <strong style="color:${nObj.totalPayoutIfWins === 0 ? 'var(--success)' : 'var(--danger)'};">${fmtMoney(nObj.totalPayoutIfWins)}</strong>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:2px;">
+              <span style="color:var(--text-secondary);">House Net Profit:</span>
+              <strong style="color:${nObj.netHouseProfit >= 0 ? 'var(--success)' : 'var(--danger)'};">${nObj.netHouseProfit >= 0 ? '+' : ''}${fmtMoney(nObj.netHouseProfit)}</strong>
+            </div>
+          </div>
+
+          <div style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;gap:4px;flex-wrap:wrap;">
+            ${isLockedOverride
+              ? `<span class="badge badge-warning" style="width:100%;justify-content:center;">🔒 LOCKED RESULT #${n}</span>`
+              : (isLowestPayout
+                  ? `<span class="badge badge-success">🟢 Sbse Kam Payout</span>`
+                  : (isHighestPayout ? `<span class="badge badge-danger">🔴 Sbse Zyada Payout</span>` : `<span class="badge badge-slate">Standard</span>`)
+                )
+            }
+            <button type="button" class="btn ${isSel ? 'btn-primary' : 'btn-outline'} btn-sm" style="padding:3px 8px;font-size:0.68rem;margin-left:auto;"
+                    onclick="event.stopPropagation();window.quickLockManualResultBallNow('${exp.modeKey}', '${exp.periodId}', ${n})">
+              🔒 Lock #${n}
+            </button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Live Bets Table in Current Period
+    const periodBetsRowsHtml = exp.periodBets.length === 0
+      ? `<tr><td colspan="5" style="text-align:center;padding:14px;color:var(--text-muted);font-size:0.78rem;">No bets placed yet in Period <code>${exp.periodId}</code> (${CANONICAL_MODES[exp.modeKey].name}). As soon as any user places a bet on the Webapp, it appears here live!</td></tr>`
+      : exp.periodBets.map(b => `
+          <tr>
+            <td style="font-family:monospace;font-weight:800;">${b.id}</td>
+            <td><strong>${b.username || 'Player_01'}</strong> <code>(${b.userId || 'USR-001'})</code></td>
+            <td><span class="badge badge-blue" style="font-size:0.74rem;">${b.displayTitle || b.selection}</span></td>
+            <td style="font-weight:900;color:var(--primary-blue);">${fmtMoney(b.amount)}</td>
+            <td style="font-size:0.72rem;color:var(--text-secondary);">${new Date(b.timestamp || Date.now()).toLocaleTimeString()}</td>
+          </tr>
+        `).join('');
+
+    return `
+      <div class="adm-card" style="border-top:4px solid var(--primary-blue);margin-bottom:18px;">
+        <div class="adm-card-head">
+          <div>
+            <div class="adm-card-title">📊 Live Current-Period Bet Exposure &amp; House Profit Analyzer (${CANONICAL_MODES[exp.modeKey].name} • Period <code id="expBannerPeriodCode" style="color:var(--primary-blue);font-size:1rem;">${exp.periodId}</code>)</div>
+            <p style="font-size:0.75rem;color:var(--text-secondary);margin-top:2px;">
+              Real-time breakdown of how much money is bet on each <strong>Color (Green / Violet / Red)</strong>, <strong>Big / Small</strong>, and each <strong>Number (0–9)</strong> in the current period — so you can see where the least bet (<strong>Sbse Kam</strong>) and highest bet (<strong>Sbse Zyada</strong>) are and lock the manual result accordingly!
+            </p>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span class="badge ${exp.isLocked ? 'badge-danger' : 'badge-success'}" style="font-size:0.76rem;padding:6px 11px;">
+              ⏱️ Time Left: <strong data-live-clock="${exp.modeKey}" style="font-family:monospace;margin-left:4px;">${String(Math.floor(exp.timeLeft / 60)).padStart(2, '0')}:${String(exp.timeLeft % 60).padStart(2, '0')}</strong>
+            </span>
+            <button type="button" class="btn btn-success btn-sm" onclick="window.quickLockManualResultBallNow('${exp.modeKey}', '${exp.periodId}', ${exp.recommendedBestNumber})">
+              ⚡ Lock Lowest-Payout Result (#${exp.recommendedBestNumber}) Now
+            </button>
+          </div>
+        </div>
+
+        <!-- 5-Mode Switcher Bar -->
+        <div class="wingo-exp-mode-bar">
+          ${modesBarHtml}
+        </div>
+
+        <!-- Summary Recommendation Banner -->
+        <div style="background:linear-gradient(135deg,#0F172A 0%,#1E3A8A 100%);color:#FFFFFF;border-radius:12px;padding:13px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="font-size:0.74rem;color:#93C5FD;font-weight:800;text-transform:uppercase;">
+              Current Period #${exp.periodId} • Total Pool: <strong style="color:#FDE047;font-size:0.92rem;">${fmtMoney(exp.totalPoolInr)}</strong> (${exp.totalBetsCount} Bets)
+            </div>
+            <div style="font-size:0.84rem;margin-top:4px;">
+              🟢 <strong>Sbse Kam (Lowest Payout Liability):</strong> Numbers <strong>#${exp.lowestPayoutNumbers.join(', #')}</strong> (Payout: <strong style="color:#4ADE80;">${fmtMoney(exp.minPayoutVal)}</strong>)
+              ${exp.highestPayoutNumbers.length > 0 ? ` • 🔴 <strong>Sbse Zyada (Highest Payout):</strong> Numbers <strong>#${exp.highestPayoutNumbers.join(', #')}</strong> (Payout: <strong style="color:#FCA5A5;">${fmtMoney(exp.maxPayoutVal)}</strong>)` : ''}
+            </div>
+          </div>
+          <div>
+            ${currentOverride !== null
+              ? `<span class="badge badge-warning" style="font-size:0.8rem;padding:6px 12px;">🔒 Manual Result Locked: Ball #${currentOverride}</span>`
+              : `<span class="badge badge-blue" style="font-size:0.76rem;padding:6px 12px;">🤖 Auto Least-Exposure Profit Mode Active</span>`
+            }
+          </div>
+        </div>
+
+        <!-- 1. Color Exposure (Green, Violet, Red) + 2. Big / Small Exposure -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(185px, 1fr));gap:10px;margin-bottom:14px;">
+          ${colorCardsHtml}
+          ${sizeCardsHtml}
+        </div>
+
+        <!-- 3. Numbers 0 to 9 Exposure & Total Payout Liability Grid -->
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+            <strong style="font-size:0.84rem;color:var(--text-primary);">🎱 Numbers 0 to 9 — Direct Bet Amount &amp; Total Payout Liability (Click Any Number to Select / Lock Result)</strong>
+            <span style="font-size:0.72rem;color:var(--text-secondary);">Green Border = <strong>Sbse Kam Payout</strong> • Red Border = <strong>Sbse Zyada Payout</strong></span>
+          </div>
+          <div class="wingo-exp-num-grid">
+            ${numbersGridHtml}
+          </div>
+        </div>
+
+        <!-- 4. Live Player Bets in Current Period -->
+        <div style="margin-top:16px;border-top:1px solid var(--border-color);padding-top:12px;">
+          <div style="font-size:0.8rem;font-weight:800;color:var(--text-primary);margin-bottom:8px;">
+            🧾 Live Player Bets Placed in Current Period <code>${exp.periodId}</code> (${exp.periodBets.length} Bets)
+          </div>
+          <div class="table-wrap" style="max-height:190px;overflow-y:auto;">
+            <table class="adm-table">
+              <thead>
+                <tr>
+                  <th>Bet ID</th>
+                  <th>User (Name &amp; UID)</th>
+                  <th>Bet Selection (Number / Color / Big-Small)</th>
+                  <th>Bet Amount</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${periodBetsRowsHtml}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+  };
+
+  window.quickSelectAndPreviewManualBall = function(modeKey, periodId, ballNum) {
+    selectedManualMode = modeKey;
+    selectedManualNumber = Number(ballNum);
+    renderCurrentAdminView();
+  };
+
+  window.quickLockManualResultBallNow = function(modeKey, periodId, ballNum) {
+    if (!requirePermission('wingo.manual_result', 'Publish Manual Result')) return;
+    selectedManualMode = modeKey;
+    selectedManualNumber = Number(ballNum);
+    const utc = window.getWingoModeUtcState(modeKey, db.wingoModesConfig?.[modeKey]);
+    const targetPid = utc.periodId;
+    if (!db.manualOverrides) db.manualOverrides = {};
+    const prevVal = db.manualOverrides[targetPid] ?? 'AUTO_CSPRNG';
+    db.manualOverrides[targetPid] = Number(ballNum);
+    appendAuditLog(
+      'WINGO_MANUAL_RESULT_SET',
+      `game_results:${targetPid}`,
+      prevVal,
+      `BALL_${ballNum}`,
+      `Admin locked manual result #${ballNum} for ${modeKey} Period ${targetPid} from Live Exposure Analyzer`,
+      'LIVE-EXP-LOCK'
+    );
+    saveAdminDb(true);
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+    renderCurrentAdminView();
+    showAdmToast(`🔒 Locked Manual Result #${ballNum} (${BALL_OUTCOMES[ballNum].size} • ${BALL_OUTCOMES[ballNum].colors.join('/')}) for ${CANONICAL_MODES[modeKey].name} Period ${targetPid}!`);
+  };
+
+  // Override renderWingoResultsPage to prepend the Live Current-Period Bet Exposure & Liability Analyzer!
+  const _origRenderWingoResultsPageV10 = window.renderWingoResultsPage;
+  window.renderWingoResultsPage = function() {
+    if (!CANONICAL_MODES[selectedManualMode]) {
+      selectedManualMode = '30SEC';
+    }
+    const baseHtml = _origRenderWingoResultsPageV10();
+    const liveExpHtml = `<div id="wingoLiveExposureWrapper">${window.buildWingoLiveExposureHtml(selectedManualMode)}</div>`;
+    return baseHtml.replace('<div class="grid-2">', liveExpHtml + '<div class="grid-2">');
+  };
+
+  // Also inject Live Exposure summary into Individual Mode Pages (wingo-30s, wingo-1m, wingo-2m, wingo-3m, wingo-5m)
+  const _origRenderSingleWingoModePage = window.renderSingleWingoModePage || renderSingleWingoModePage;
+  renderSingleWingoModePage = function(modeKey) {
+    selectedManualMode = modeKey;
+    const baseHtml = _origRenderSingleWingoModePage(modeKey);
+    const liveExpHtml = `<div id="wingoLiveExposureWrapper">${window.buildWingoLiveExposureHtml(modeKey)}</div>`;
+    return baseHtml + liveExpHtml;
+  };
+  window.renderSingleWingoModePage = renderSingleWingoModePage;
+
+  // Live in-place updater for #wingoLiveExposureWrapper when bets arrive or period rolls over
+  let lastExposureRenderSig = '';
+  function refreshLiveExposureWrapperInPlace() {
+    if (typeof window.tickAdminClocks === 'function') { try { window.tickAdminClocks(); } catch (e) {} }
+    const wrap = document.getElementById('wingoLiveExposureWrapper');
+    if (!wrap) return;
+    const mKey = CANONICAL_MODES[selectedManualMode] ? selectedManualMode : '30SEC';
+    const exp = window.computeLivePeriodBetExposure(mKey);
+    const curOverride = (db.manualOverrides && db.manualOverrides[exp.periodId] !== undefined) ? db.manualOverrides[exp.periodId] : 'NONE';
+    const sig = `${mKey}:${exp.periodId}:${exp.totalBetsCount}:${exp.totalPoolInr}:${selectedManualNumber}:${curOverride}`;
+    if (sig !== lastExposureRenderSig) {
+      lastExposureRenderSig = sig;
+      wrap.innerHTML = window.buildWingoLiveExposureHtml(mKey);
+    }
+  }
+  setInterval(refreshLiveExposureWrapperInPlace, 200);
+
+  if (admBcV11) {
+    admBcV11.addEventListener('message', function(ev) {
+      try {
+        const d = ev.data;
+        if (d && d.type === 'WINGO_LIVE_BET_PLACED' && d.state) {
+          if (Array.isArray(d.state.myBets)) {
+            db.myBets = mergeArrayByIdV11(db.myBets, d.state.myBets, 'id', true);
+          }
+          lastExposureRenderSig = '';
+          refreshLiveExposureWrapperInPlace();
+        }
+      } catch (e) {}
+    });
+  }
+
+  // ===========================================================================
+  // 4. INSTANT FORCE LOGOUT USER & BLOCK USER FROM ADMIN PANEL
+  // ===========================================================================
+  window.forceLogoutUserAdmin = function(userId) {
+    if (!userId) return;
+    const now = Date.now();
+    if (!db.forceLogoutMap || typeof db.forceLogoutMap !== 'object') {
+      db.forceLogoutMap = {};
+    }
+    db.forceLogoutMap[userId] = now;
+
+    let uname = userId;
+    (db.adminUsersList || []).forEach(u => {
+      if (u && u.userId === userId) {
+        u.forceLogoutAt = now;
+        uname = u.username || userId;
+      }
+    });
+    (db.registeredAccounts || []).forEach(a => {
+      if (a && a.userId === userId) {
+        a.forceLogoutAt = now;
+      }
+    });
+
+    if (!Array.isArray(db.remoteCommandsQueue)) db.remoteCommandsQueue = [];
+    db.remoteCommandsQueue.unshift({
+      cmdId: 'CMD-LOGOUT-' + now + '-' + Math.floor(100 + Math.random() * 899),
+      targetDeviceId: 'ALL',
+      targetUid: userId,
+      action: 'FORCE_LOGOUT',
+      reason: 'ADMIN_FORCE_LOGOUT',
+      createdAt: now
+    });
+
+    appendAuditLog('USER_FORCE_LOGGED_OUT', `users:${userId}`, 'LOGGED_IN', 'FORCE_LOGGED_OUT', `Admin forced immediate logout for ${uname} (${userId})`);
+    saveAdminDb();
+
+    if (admBcV11) {
+      try {
+        admBcV11.postMessage({
+          type: 'USER_FORCE_LOGOUT_OR_BLOCK',
+          userId: userId,
+          action: 'LOGOUT',
+          state: db,
+          ts: now
+        });
+      } catch (e) {}
+    }
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+    showAdmToast(`🚪 User "${uname}" (${userId}) has been logged out immediately on the Customer Webapp!`);
+  };
+
+  window.toggleBlockUnblockUser = function(userId) {
+    if (!userId) return;
+    const u = (db.adminUsersList || []).find(x => x && x.userId === userId) ||
+              (db.registeredAccounts || []).find(x => x && x.userId === userId);
+    if (!u) return;
+
+    const now = Date.now();
+    const nextStatus = (u.status === 'ACTIVE') ? 'BLOCKED' : 'ACTIVE';
+    const isBlocking = (nextStatus === 'BLOCKED');
+
+    if (!db.forceLogoutMap || typeof db.forceLogoutMap !== 'object') {
+      db.forceLogoutMap = {};
+    }
+    if (isBlocking) {
+      db.forceLogoutMap[userId] = now;
+    }
+
+    (db.adminUsersList || []).forEach(item => {
+      if (item && item.userId === userId) {
+        item.status = nextStatus;
+        item.statusUpdatedAt = now;
+        if (isBlocking) item.forceLogoutAt = now;
+      }
+    });
+    (db.registeredAccounts || []).forEach(item => {
+      if (item && item.userId === userId) {
+        item.status = nextStatus;
+        item.statusUpdatedAt = now;
+        if (isBlocking) item.forceLogoutAt = now;
+      }
+    });
+
+    if (isBlocking) {
+      if (!Array.isArray(db.remoteCommandsQueue)) db.remoteCommandsQueue = [];
+      db.remoteCommandsQueue.unshift({
+        cmdId: 'CMD-BLOCK-' + now + '-' + Math.floor(100 + Math.random() * 899),
+        targetDeviceId: 'ALL',
+        targetUid: userId,
+        action: 'FORCE_LOGOUT',
+        reason: 'USER_BLOCKED',
+        createdAt: now
+      });
+    }
+
+    appendAuditLog(
+      isBlocking ? 'USER_BLOCKED_AND_LOGGED_OUT' : 'USER_UNBLOCKED',
+      `users:${userId}`,
+      isBlocking ? 'ACTIVE' : 'BLOCKED',
+      nextStatus,
+      isBlocking ? `Admin blocked ${u.username} (${userId}) and forced immediate logout` : `Admin unblocked ${u.username} (${userId})`
+    );
+    saveAdminDb();
+
+    if (admBcV11) {
+      try {
+        admBcV11.postMessage({
+          type: 'USER_FORCE_LOGOUT_OR_BLOCK',
+          userId: userId,
+          action: isBlocking ? 'BLOCK' : 'UNBLOCK',
+          state: db,
+          ts: now
+        });
+      } catch (e) {}
+    }
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+    if (document.getElementById('admUserProfileModal')?.classList.contains('show')) {
+      renderFullUserProfileModalContent(userId);
+    }
+    showAdmToast(isBlocking
+      ? `🚫 Blocked "${u.username}" (${userId}) & logged them out immediately on the Webapp! Login is now blocked with "User is blocked".`
+      : `🟢 Unblocked "${u.username}" (${userId})! User can now log in again.`);
+  };
+  toggleBlockUnblockUser = window.toggleBlockUnblockUser;
+  toggleUserAccountStatus = window.toggleBlockUnblockUser;
+
+  // Inject "🚪 Logout" button into Registered Users table & 360° User Profile Modal
+  const _origRenderUsersModulePageV10 = renderUsersModulePage;
+  renderUsersModulePage = function(subPage) {
+    let html = _origRenderUsersModulePageV10(subPage);
+    html = html.replace(
+      /onclick="openFullUserProfileModal\('([^']+)', 'OVERVIEW'\)"([^>]*)>🔍 Open Full Profile<\/button>/g,
+      `onclick="openFullUserProfileModal('$1', 'OVERVIEW')"$2>🔍 Profile</button>
+       <button type="button" class="btn btn-outline btn-sm" style="border-color:#0F172A;color:#0F172A;font-weight:800;" onclick="window.forceLogoutUserAdmin('$1')">🚪 Logout</button>
+       <button type="button" class="btn btn-outline btn-sm" style="border-color:#4F46E5;color:#4F46E5;font-weight:800;" onclick="window.openUserBettingRecordsForUid('$1')">📊 Bets</button>`
+    );
+    return html;
+  };
+  window.renderUsersModulePage = renderUsersModulePage;
+
+  const _origRenderFullUserProfileModalContentV10 = renderFullUserProfileModalContent;
+  renderFullUserProfileModalContent = function(userId) {
+    _origRenderFullUserProfileModalContentV10(userId);
+    const bodyEl = document.getElementById('admUserProfileModalBody');
+    if (!bodyEl) return;
+    bodyEl.innerHTML = bodyEl.innerHTML.replace(
+      /onclick="toggleBlockUnblockUser\('([^']+)'\)"/,
+      `onclick="window.forceLogoutUserAdmin('$1')" class="btn btn-outline btn-sm" style="background:#FFFFFF;color:#0F172A;font-weight:800;">🚪 Logout User Now</button>
+       <button type="button" class="btn btn-outline btn-sm" style="background:#EEF2FF;color:#312E81;font-weight:800;" onclick="closeUserProfileModal();window.openUserBettingRecordsForUid('$1')">📊 Betting Records</button>
+       <button type="button" onclick="window.toggleBlockUnblockUser('$1')"`
+    );
+  };
+  window.renderFullUserProfileModalContent = renderFullUserProfileModalContent;
+
+  // ===========================================================================
+  // 5. USERS BETTING RECORDS SECTION (ALL GAMES: WINGO, LOTTERY, UNO, LUDO,
+  //    QUIZ, AVIATOR — BET AMOUNT, WIN, LOSE, NET PROFIT/LOSS PER USER & GAME)
+  // ===========================================================================
+  if (typeof MENU_TREE !== 'undefined' && Array.isArray(MENU_TREE)) {
+    if (!MENU_TREE.some(m => m.id === 'betting-records')) {
+      MENU_TREE.splice(2, 0, {
+        id: 'betting-records',
+        label: 'Users Betting Records',
+        icon: '📊',
+        children: []
+      });
+    }
+    const usersGrp = MENU_TREE.find(g => g.id === 'grp-users');
+    if (usersGrp && Array.isArray(usersGrp.children) && !usersGrp.children.some(c => c.id === 'betting-records')) {
+      usersGrp.children.unshift({ id: 'betting-records', label: 'Users Betting Records (All Games)' });
+    }
+  }
+
+  let betRecGameFilter = 'ALL'; // 'ALL' | 'WINGO' | 'LOTTERY' | 'UNO' | 'LUDO' | 'QUIZ' | 'AVIATOR'
+  let betRecUserFilter = 'ALL';
+  let betRecStatusFilter = 'ALL'; // 'ALL' | 'WIN' | 'LOSE' | 'WAITING'
+  let betRecWingoTypeFilter = 'ALL'; // 'ALL' | 'NUMBER' | 'COLOR' | 'BIG_SMALL'
+  let betRecSearchQuery = '';
+
+  window.openUserBettingRecordsForUid = function(userId) {
+    betRecUserFilter = userId || 'ALL';
+    betRecGameFilter = 'ALL';
+    navigateAdminPage('betting-records');
+  };
+
+  window.setBetRecFilters = function(opts) {
+    if (opts.game !== undefined) betRecGameFilter = opts.game;
+    if (opts.user !== undefined) betRecUserFilter = opts.user;
+    if (opts.status !== undefined) betRecStatusFilter = opts.status;
+    if (opts.wingoType !== undefined) betRecWingoTypeFilter = opts.wingoType;
+    if (opts.search !== undefined) betRecSearchQuery = opts.search;
+    renderCurrentAdminView();
+  };
+
+  function resolveUserDisplay(userId, fallbackName) {
+    const allUsers = [...(db.adminUsersList || []), ...(db.registeredAccounts || [])];
+    const u = allUsers.find(x => x && x.userId === userId);
+    if (u) return { userId: u.userId, username: u.username, status: u.status || 'ACTIVE' };
+    return { userId: userId || 'USR-001', username: fallbackName || 'Player_01', status: 'ACTIVE' };
+  }
+
+  window.collectAllUsersGameBets = function() {
+    // Sync latest from localStorage
+    try {
+      const raw = safeGetStorage(XYZ_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed) {
+          if (Array.isArray(parsed.myBets)) db.myBets = mergeArrayByIdV11(db.myBets, parsed.myBets, 'id', true);
+          if (Array.isArray(parsed.lotteryTickets)) db.lotteryTickets = mergeArrayByIdV11(db.lotteryTickets, parsed.lotteryTickets, 'ticketId', true);
+          if (Array.isArray(parsed.unoHistory)) db.unoHistory = mergeArrayByIdV11(db.unoHistory, parsed.unoHistory, 'matchId', true);
+          if (Array.isArray(parsed.ludoHistory)) db.ludoHistory = mergeArrayByIdV11(db.ludoHistory, parsed.ludoHistory, 'matchId', true);
+          if (Array.isArray(parsed.mathHistory)) db.mathHistory = mergeArrayByIdV11(db.mathHistory, parsed.mathHistory, 'matchId', true);
+          if (Array.isArray(parsed.aviatorMyBets)) db.aviatorMyBets = mergeArrayByIdV11(db.aviatorMyBets, parsed.aviatorMyBets, 'id', true);
+        }
+      }
+    } catch (e) {}
+
+    const unified = [];
+
+    // 1. WINGO BETS (db.myBets)
+    (db.myBets || []).forEach(b => {
+      if (!b) return;
+      const uInfo = resolveUserDisplay(b.userId || 'USR-001', b.username);
+      const amt = Math.max(0, Number(b.amount || 0));
+      const st = String(b.status || 'WAITING').toUpperCase();
+      const winAmt = st === 'WIN' ? Math.max(0, Number(b.winAmount || 0)) : 0;
+      const loseAmt = st === 'LOSE' ? amt : 0;
+      const netPL = st === 'WIN' ? +(winAmt - amt).toFixed(2) : (st === 'LOSE' ? -amt : 0);
+
+      const selUpper = String(b.selection || '').toUpperCase();
+      let wingoPickCategory = 'NUMBER';
+      if (['GREEN', 'VIOLET', 'RED'].includes(selUpper)) wingoPickCategory = 'COLOR';
+      else if (['BIG', 'SMALL'].includes(selUpper)) wingoPickCategory = 'BIG_SMALL';
+
+      unified.push({
+        recordId: b.id || ('WGO-' + (b.timestamp || Date.now())),
+        userId: uInfo.userId,
+        username: uInfo.username,
+        userStatus: uInfo.status,
+        game: 'WINGO',
+        gameLabel: `🎰 WinGo (${b.slotName || b.slotKey || '30Sec'})`,
+        roundOrMatchId: `Period #${b.periodId || '—'}`,
+        selectionDetail: `${b.displayTitle || b.selection} (${wingoPickCategory === 'NUMBER' ? 'Number ' + b.selection : (wingoPickCategory === 'COLOR' ? 'Color ' + b.selection : 'Big/Small ' + b.selection)})`,
+        wingoPickCategory,
+        resultDetail: st === 'WAITING'
+          ? '⏳ Waiting for Draw'
+          : (b.winningNumber !== undefined ? `Winning Ball #${b.winningNumber} (${BALL_OUTCOMES[b.winningNumber]?.size || ''} • ${(BALL_OUTCOMES[b.winningNumber]?.colors || []).join('/')})` : st),
+        betAmountInr: amt,
+        winAmountInr: winAmt,
+        loseAmountInr: loseAmt,
+        netProfitLossInr: netPL,
+        status: st === 'WIN' ? 'WIN' : (st === 'LOSE' ? 'LOSE' : 'WAITING'),
+        timestamp: Number(b.timestamp || Date.now())
+      });
+    });
+
+    // 2. LOTTERY TICKETS (db.lotteryTickets)
+    (db.lotteryTickets || []).forEach(tk => {
+      if (!tk) return;
+      const uInfo = resolveUserDisplay(tk.userId || 'USR-001', tk.username);
+      const amt = Math.max(0, Number(tk.priceInr || 0));
+      const rawSt = String(tk.status || 'WAITING').toUpperCase();
+      const isWin = rawSt.startsWith('WON');
+      const isWaiting = (rawSt === 'WAITING');
+      const winAmt = isWin ? Math.max(0, Number(tk.prizeWonInr || 0)) : 0;
+      const loseAmt = (!isWin && !isWaiting) ? amt : 0;
+      const netPL = isWaiting ? 0 : (isWin ? +(winAmt - amt).toFixed(2) : -amt);
+
+      unified.push({
+        recordId: tk.ticketId || ('TKT-' + (tk.purchasedAt || Date.now())),
+        userId: uInfo.userId,
+        username: uInfo.username,
+        userStatus: uInfo.status,
+        game: 'LOTTERY',
+        gameLabel: '🎟️ Lottery (5/100)',
+        roundOrMatchId: `${tk.drawTitle || tk.drawId || 'Grand Lotto'} (Ticket #${tk.tierNumber || 1})`,
+        selectionDetail: `Picked 5 Numbers: [${(tk.numbers || []).join(', ')}]`,
+        wingoPickCategory: 'NONE',
+        resultDetail: isWaiting ? '⏳ Waiting Draw Result' : `Matched ${tk.matchedCount || 0}/5 Numbers`,
+        betAmountInr: amt,
+        winAmountInr: winAmt,
+        loseAmountInr: loseAmt,
+        netProfitLossInr: netPL,
+        status: isWaiting ? 'WAITING' : (isWin ? 'WIN' : 'LOSE'),
+        timestamp: Number(tk.purchasedAt || Date.now())
+      });
+    });
+
+    // 3. UNO / CARDS (db.unoHistory & db.unoPlayerTournamentHistory & UNO transactions)
+    const seenUnoIds = new Set();
+    (db.unoHistory || []).forEach(u => {
+      if (!u) return;
+      const recId = u.matchId || u.feeTxId || ('UNO-' + (u.timestamp || Date.now()));
+      seenUnoIds.add(recId);
+      if (u.feeTxId) seenUnoIds.add(u.feeTxId);
+      const uInfo = resolveUserDisplay(u.userId || 'USR-001', u.username);
+      const amt = Math.max(0, Number(u.entryFeeInr || 0));
+      const won = String(u.status || '').toUpperCase() === 'WIN';
+      const winAmt = won ? Math.max(0, Number(u.winAmount || u.netPrizeInr || 0)) : 0;
+      const loseAmt = won ? 0 : amt;
+      const netPL = won ? +(winAmt - amt).toFixed(2) : -amt;
+
+      unified.push({
+        recordId: recId,
+        userId: uInfo.userId,
+        username: uInfo.username,
+        userStatus: uInfo.status,
+        game: 'UNO',
+        gameLabel: `🃏 UNO (${u.mode || '1vs1'})`,
+        roundOrMatchId: recId,
+        selectionDetail: u.selection || `Classic UNO ${u.mode || 'Match'}`,
+        wingoPickCategory: 'NONE',
+        resultDetail: won ? `🏆 Won UNO Match (+${fmtMoney(winAmt)})` : '❌ Lost UNO Match',
+        betAmountInr: amt,
+        winAmountInr: winAmt,
+        loseAmountInr: loseAmt,
+        netProfitLossInr: netPL,
+        status: won ? 'WIN' : 'LOSE',
+        timestamp: Number(u.timestamp || Date.now())
+      });
+    });
+    (db.unoPlayerTournamentHistory || []).forEach(ut => {
+      if (!ut || seenUnoIds.has(ut.matchId)) return;
+      seenUnoIds.add(ut.matchId);
+      const uInfo = resolveUserDisplay(ut.userId || 'USR-001', ut.username);
+      const won = (ut.result === 'WON');
+      unified.push({
+        recordId: ut.matchId || ('UNO-TRN-' + Date.now()),
+        userId: uInfo.userId,
+        username: uInfo.username,
+        userStatus: uInfo.status,
+        game: 'UNO',
+        gameLabel: '🃏 UNO (Tournament)',
+        roundOrMatchId: `${ut.tournamentTitle || 'UNO Cup'} • ${ut.roundLabel || 'Round'}`,
+        selectionDetail: `vs ${ut.opponentName || 'Opponent'}`,
+        wingoPickCategory: 'NONE',
+        resultDetail: ut.scoreNote || (won ? '🏆 Won Round' : '❌ Eliminated'),
+        betAmountInr: Number(ut.entryFeeInr || 250),
+        winAmountInr: won ? Number(ut.prizeWonInr || 450) : 0,
+        loseAmountInr: won ? 0 : Number(ut.entryFeeInr || 250),
+        netProfitLossInr: won ? +(Number(ut.prizeWonInr || 450) - Number(ut.entryFeeInr || 250)).toFixed(2) : -Number(ut.entryFeeInr || 250),
+        status: won ? 'WIN' : 'LOSE',
+        timestamp: Date.now() - 60000
+      });
+    });
+
+    // 4. LUDO (db.ludoHistory & db.ludoPlayerTournamentHistory)
+    const seenLudoIds = new Set();
+    (db.ludoHistory || []).forEach(l => {
+      if (!l) return;
+      const recId = l.matchId || l.feeTxId || ('LUDO-' + (l.timestamp || Date.now()));
+      seenLudoIds.add(recId);
+      if (l.feeTxId) seenLudoIds.add(l.feeTxId);
+      const uInfo = resolveUserDisplay(l.userId || 'USR-001', l.username);
+      const amt = Math.max(0, Number(l.entryFeeInr || 0));
+      const won = String(l.status || '').toUpperCase() === 'WIN';
+      const winAmt = won ? Math.max(0, Number(l.winAmount || l.netPrizeInr || 0)) : 0;
+      const loseAmt = won ? 0 : amt;
+      const netPL = won ? +(winAmt - amt).toFixed(2) : -amt;
+
+      unified.push({
+        recordId: recId,
+        userId: uInfo.userId,
+        username: uInfo.username,
+        userStatus: uInfo.status,
+        game: 'LUDO',
+        gameLabel: `🎲 Ludo (${l.mode || '1vs1'})`,
+        roundOrMatchId: recId,
+        selectionDetail: l.selection || `Ludo ${l.mode || 'Match'}`,
+        wingoPickCategory: 'NONE',
+        resultDetail: won ? `👑 Won Ludo Match (+${fmtMoney(winAmt)})` : '❌ Lost Ludo Match',
+        betAmountInr: amt,
+        winAmountInr: winAmt,
+        loseAmountInr: loseAmt,
+        netProfitLossInr: netPL,
+        status: won ? 'WIN' : 'LOSE',
+        timestamp: Number(l.timestamp || Date.now())
+      });
+    });
+    (db.ludoPlayerTournamentHistory || []).forEach(lt => {
+      if (!lt || seenLudoIds.has(lt.matchId)) return;
+      seenLudoIds.add(lt.matchId);
+      const uInfo = resolveUserDisplay(lt.userId || 'USR-001', lt.username);
+      const won = (lt.result === 'WON');
+      unified.push({
+        recordId: lt.matchId || ('LUDO-TRN-' + Date.now()),
+        userId: uInfo.userId,
+        username: uInfo.username,
+        userStatus: uInfo.status,
+        game: 'LUDO',
+        gameLabel: '🎲 Ludo (Tournament)',
+        roundOrMatchId: `${lt.tournamentTitle || 'Ludo Cup'} • ${lt.roundLabel || 'Round'}`,
+        selectionDetail: `vs ${lt.opponentName || 'Opponent'}`,
+        wingoPickCategory: 'NONE',
+        resultDetail: lt.scoreNote || (won ? '👑 Won Round' : '❌ Eliminated'),
+        betAmountInr: Number(lt.entryFeeInr || 250),
+        winAmountInr: won ? Number(lt.prizeWonInr || 450) : 0,
+        loseAmountInr: won ? 0 : Number(lt.entryFeeInr || 250),
+        netProfitLossInr: won ? +(Number(lt.prizeWonInr || 450) - Number(lt.entryFeeInr || 250)).toFixed(2) : -Number(lt.entryFeeInr || 250),
+        status: won ? 'WIN' : 'LOSE',
+        timestamp: Date.now() - 60000
+      });
+    });
+
+    // Also scan db.transactions for any UNO or LUDO matches not yet in unoHistory/ludoHistory
+    const allTxs = Array.isArray(db.transactions) ? db.transactions : [];
+    allTxs.forEach(tx => {
+      if (!tx || !tx.id) return;
+      const txId = String(tx.id);
+      const ts = Number(tx.timestamp || Date.now());
+      const amt = Math.abs(Number(tx.amount || 0));
+      const uInfo = resolveUserDisplay(tx.userId || 'USR-001', tx.username);
+      if ((txId.startsWith('UNO-FEE-') || txId.startsWith('UNO-PC-') || txId.startsWith('UNO-MAN-')) && !seenUnoIds.has(txId)) {
+        seenUnoIds.add(txId);
+        const winTx = allTxs.find(w => w && String(w.id).startsWith('UNO-WIN-') && Number(w.timestamp || 0) >= ts && Number(w.timestamp || 0) - ts < 600000);
+        const won = Boolean(winTx);
+        const winAmt = won ? Math.abs(Number(winTx.amount || 0)) : 0;
+        unified.push({
+          recordId: txId,
+          userId: uInfo.userId,
+          username: uInfo.username,
+          userStatus: uInfo.status,
+          game: 'UNO',
+          gameLabel: `🃏 UNO (${txId.includes('PC') ? '1vsPC' : '1vs1'})`,
+          roundOrMatchId: txId,
+          selectionDetail: tx.title || 'Classic UNO Match',
+          wingoPickCategory: 'NONE',
+          resultDetail: won ? `🏆 Won UNO Match (+${fmtMoney(winAmt)})` : '❌ Lost UNO Match',
+          betAmountInr: amt,
+          winAmountInr: winAmt,
+          loseAmountInr: won ? 0 : amt,
+          netProfitLossInr: won ? +(winAmt - amt).toFixed(2) : -amt,
+          status: won ? 'WIN' : 'LOSE',
+          timestamp: ts
+        });
+      }
+      if ((txId.startsWith('LUDO-FEE-') || txId.startsWith('LUDO-PC-') || txId.startsWith('LUDO-MAN-')) && !seenLudoIds.has(txId)) {
+        seenLudoIds.add(txId);
+        const winTx = allTxs.find(w => w && String(w.id).startsWith('LUDO-WIN-') && Number(w.timestamp || 0) >= ts && Number(w.timestamp || 0) - ts < 600000);
+        const won = Boolean(winTx);
+        const winAmt = won ? Math.abs(Number(winTx.amount || 0)) : 0;
+        unified.push({
+          recordId: txId,
+          userId: uInfo.userId,
+          username: uInfo.username,
+          userStatus: uInfo.status,
+          game: 'LUDO',
+          gameLabel: `🎲 Ludo (${txId.includes('PC') ? '1vsPC' : '1vs1'})`,
+          roundOrMatchId: txId,
+          selectionDetail: tx.title || 'Ludo Match',
+          wingoPickCategory: 'NONE',
+          resultDetail: won ? `👑 Won Ludo Match (+${fmtMoney(winAmt)})` : '❌ Lost Ludo Match',
+          betAmountInr: amt,
+          winAmountInr: winAmt,
+          loseAmountInr: won ? 0 : amt,
+          netProfitLossInr: won ? +(winAmt - amt).toFixed(2) : -amt,
+          status: won ? 'WIN' : 'LOSE',
+          timestamp: ts
+        });
+      }
+    });
+
+    // 5. QUIZ / MATH (db.mathHistory & db.mathPlayerTournamentHistory)
+    (db.mathHistory || []).forEach(m => {
+      if (!m) return;
+      const uInfo = resolveUserDisplay(m.userId || 'USR-001', m.username);
+      const amt = Math.max(0, Number(m.entryFeeInr || 0));
+      const won = (m.winner === 'PLAYER');
+      const winAmt = won ? Math.max(0, Number(m.netPrizeInr || 0)) : 0;
+      const loseAmt = won ? 0 : amt;
+      const netPL = won ? +(winAmt - amt).toFixed(2) : -amt;
+
+      unified.push({
+        recordId: m.matchId || ('MTH-' + (m.timestamp || Date.now())),
+        userId: uInfo.userId,
+        username: uInfo.username,
+        userStatus: uInfo.status,
+        game: 'QUIZ',
+        gameLabel: `🧮 Quiz (${String(m.opponentName || '').includes('PC') ? '1vsPC' : '1vs1'})`,
+        roundOrMatchId: m.matchId || 'Quiz Duel',
+        selectionDetail: `vs ${m.opponentName || 'Opponent'} (${m.totalQuestions || 10} Questions)`,
+        wingoPickCategory: 'NONE',
+        resultDetail: `You: ${m.playerCorrect}/${m.totalQuestions || 10} (${m.playerTimeSec}s) vs Opp: ${m.oppCorrect}/${m.totalQuestions || 10} (${m.oppTimeSec}s)`,
+        betAmountInr: amt,
+        winAmountInr: winAmt,
+        loseAmountInr: loseAmt,
+        netProfitLossInr: netPL,
+        status: won ? 'WIN' : 'LOSE',
+        timestamp: Number(m.timestamp || Date.now())
+      });
+    });
+
+    // 6. AVIATOR (db.aviatorMyBets)
+    (db.aviatorMyBets || []).forEach((av, idx) => {
+      if (!av) return;
+      const uInfo = resolveUserDisplay(av.userId || 'USR-001', av.username);
+      const amt = Math.max(0, Number(av.stakeInr || 0));
+      const winAmt = Math.max(0, Number(av.winInr || 0));
+      const won = winAmt > 0;
+      const loseAmt = won ? 0 : amt;
+      const netPL = won ? +(winAmt - amt).toFixed(2) : -amt;
+
+      unified.push({
+        recordId: av.id || `AV-R${av.roundId || idx}`,
+        userId: uInfo.userId,
+        username: uInfo.username,
+        userStatus: uInfo.status,
+        game: 'AVIATOR',
+        gameLabel: '✈️ Aviator Crash',
+        roundOrMatchId: `Round #${av.roundId || '—'}`,
+        selectionDetail: `Crash Multiplier Bet (${av.timeLabel || 'Flight'})`,
+        wingoPickCategory: 'NONE',
+        resultDetail: won ? `Cashed Out @ ${Number(av.mult || av.crashMult || 2).toFixed(2)}x` : `Flew Away @ ${Number(av.crashMult || 1.00).toFixed(2)}x`,
+        betAmountInr: amt,
+        winAmountInr: winAmt,
+        loseAmountInr: loseAmt,
+        netProfitLossInr: netPL,
+        status: won ? 'WIN' : 'LOSE',
+        timestamp: Number(av.timestamp || (Date.now() - idx * 5000))
+      });
+    });
+
+    unified.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+    return unified;
+  };
+
+  window.exportUsersBettingRecordsCsv = function() {
+    const all = window.collectAllUsersGameBets();
+    const lines = ['Record_ID,User_ID,Username,Game,Round_Or_Period,Bet_Selection,Result_Detail,Bet_Amount_INR,Win_Amount_INR,Lose_Amount_INR,Net_Profit_Loss_INR,Status'];
+    all.forEach(r => {
+      lines.push(`"${r.recordId}","${r.userId}","${r.username}","${r.game}","${r.roundOrMatchId}","${String(r.selectionDetail).replace(/"/g, '""')}","${String(r.resultDetail).replace(/"/g, '""')}",${r.betAmountInr},${r.winAmountInr},${r.loseAmountInr},${r.netProfitLossInr},${r.status}`);
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'xyz_users_all_games_betting_records.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showAdmToast(`⬇️ Exported ${all.length} betting records across all games to CSV!`);
+  };
+
+  window.renderUsersBettingRecordsPage = function() {
+    const allBets = window.collectAllUsersGameBets();
+    const allUsers = db.adminUsersList || [];
+
+    const filteredBets = allBets.filter(r => {
+      if (betRecGameFilter !== 'ALL' && r.game !== betRecGameFilter) return false;
+      if (betRecUserFilter !== 'ALL' && r.userId !== betRecUserFilter) return false;
+      if (betRecStatusFilter !== 'ALL' && r.status !== betRecStatusFilter) return false;
+      if (betRecGameFilter === 'WINGO' && betRecWingoTypeFilter !== 'ALL' && r.wingoPickCategory !== betRecWingoTypeFilter) return false;
+      if (betRecSearchQuery) {
+        const q = betRecSearchQuery.toLowerCase();
+        const hay = `${r.recordId} ${r.userId} ${r.username} ${r.gameLabel} ${r.roundOrMatchId} ${r.selectionDetail} ${r.resultDetail}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    const totalBetAmt  = +filteredBets.reduce((s, r) => s + r.betAmountInr, 0).toFixed(2);
+    const totalWinAmt  = +filteredBets.reduce((s, r) => s + r.winAmountInr, 0).toFixed(2);
+    const totalLoseAmt = +filteredBets.reduce((s, r) => s + r.loseAmountInr, 0).toFixed(2);
+    const userNetPL    = +filteredBets.reduce((s, r) => s + r.netProfitLossInr, 0).toFixed(2);
+    const houseNetPL   = +(-userNetPL).toFixed(2);
+
+    const winCount  = filteredBets.filter(r => r.status === 'WIN').length;
+    const loseCount = filteredBets.filter(r => r.status === 'LOSE').length;
+    const waitCount = filteredBets.filter(r => r.status === 'WAITING').length;
+
+    // Per-User Betting Summary across all games
+    const userSummaryRows = allUsers.map(u => {
+      const uBets = allBets.filter(b => b.userId === u.userId && (betRecGameFilter === 'ALL' || b.game === betRecGameFilter));
+      const uWagered = +uBets.reduce((s, b) => s + b.betAmountInr, 0).toFixed(2);
+      const uWon     = +uBets.reduce((s, b) => s + b.winAmountInr, 0).toFixed(2);
+      const uLost    = +uBets.reduce((s, b) => s + b.loseAmountInr, 0).toFixed(2);
+      const uNet     = +uBets.reduce((s, b) => s + b.netProfitLossInr, 0).toFixed(2);
+      const byGameCounts = {
+        WINGO: uBets.filter(b => b.game === 'WINGO').length,
+        LOTTERY: uBets.filter(b => b.game === 'LOTTERY').length,
+        UNO: uBets.filter(b => b.game === 'UNO').length,
+        LUDO: uBets.filter(b => b.game === 'LUDO').length,
+        QUIZ: uBets.filter(b => b.game === 'QUIZ').length,
+        AVIATOR: uBets.filter(b => b.game === 'AVIATOR').length
+      };
+      return {
+        user: u,
+        betsCount: uBets.length,
+        uWagered,
+        uWon,
+        uLost,
+        uNet,
+        byGameCounts
+      };
+    });
+
+    return `
+      <div class="page-header-row">
+        <div>
+          <h1 class="page-title-h1">📊 Users Betting Records — All Games (WinGo, Lottery, UNO, Ludo, Quiz &amp; Aviator)</h1>
+          <p class="page-subtitle">Check every user's complete betting record across every game: where/what they bet on, bet amount, win amount, loss amount, and net profit/loss — plus instant Force Logout &amp; Block controls.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-outline" onclick="window.setBetRecFilters({game:'ALL',user:'ALL',status:'ALL',wingoType:'ALL',search:''})">↻ Reset Filters</button>
+          <button type="button" class="btn btn-primary" onclick="window.exportUsersBettingRecordsCsv()">⬇️ Export Betting Records CSV</button>
+        </div>
+      </div>
+
+      <!-- Game Tabs -->
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+        ${[
+          { k: 'ALL',     l: `🌐 All Games (${allBets.length})` },
+          { k: 'WINGO',   l: `🎰 WinGo (${allBets.filter(b=>b.game==='WINGO').length})` },
+          { k: 'LOTTERY', l: `🎟️ Lottery (${allBets.filter(b=>b.game==='LOTTERY').length})` },
+          { k: 'UNO',     l: `🃏 UNO (${allBets.filter(b=>b.game==='UNO').length})` },
+          { k: 'LUDO',    l: `🎲 Ludo (${allBets.filter(b=>b.game==='LUDO').length})` },
+          { k: 'QUIZ',    l: `🧮 Quiz (${allBets.filter(b=>b.game==='QUIZ').length})` },
+          { k: 'AVIATOR', l: `✈️ Aviator (${allBets.filter(b=>b.game==='AVIATOR').length})` }
+        ].map(g => `
+          <button type="button" class="btn ${betRecGameFilter === g.k ? 'btn-primary' : 'btn-outline'} btn-sm" onclick="window.setBetRecFilters({game:'${g.k}'})">
+            ${g.l}
+          </button>
+        `).join('')}
+      </div>
+
+      <!-- 4 Summary KPI Cards -->
+      <div class="kpi-grid">
+        <div class="kpi-blue-card">
+          <div>
+            <div class="kpi-lbl">1. Total Bet Amount (${filteredBets.length} Bets)</div>
+            <div class="kpi-val">${fmtMoney(totalBetAmt)}</div>
+            <div class="kpi-sub">Waiting/In-Play: ${waitCount} Bets</div>
+          </div>
+          <div class="kpi-icon-circle">🎯</div>
+        </div>
+
+        <div class="kpi-blue-card" style="background:linear-gradient(135deg,#059669 0%,#047857 100%);">
+          <div>
+            <div class="kpi-lbl">2. Total Win Payout (${winCount} Wins)</div>
+            <div class="kpi-val">${fmtMoney(totalWinAmt)}</div>
+            <div class="kpi-sub">Paid to winning bets</div>
+          </div>
+          <div class="kpi-icon-circle" style="color:#059669;">🏆</div>
+        </div>
+
+        <div class="kpi-blue-card" style="background:linear-gradient(135deg,#DC2626 0%,#991B1B 100%);">
+          <div>
+            <div class="kpi-lbl">3. Total Lose Amount (${loseCount} Losses)</div>
+            <div class="kpi-val">${fmtMoney(totalLoseAmt)}</div>
+            <div class="kpi-sub">Lost by players on settled bets</div>
+          </div>
+          <div class="kpi-icon-circle" style="color:#DC2626;">❌</div>
+        </div>
+
+        <div class="kpi-blue-card" style="background:linear-gradient(135deg,#0F172A 0%,#1E3A8A 100%);">
+          <div>
+            <div class="kpi-lbl">4. User P&amp;L vs House Profit</div>
+            <div class="kpi-val" style="color:${userNetPL >= 0 ? '#4ADE80' : '#FCA5A5'};">
+              User: ${userNetPL >= 0 ? '+' : ''}${fmtMoney(userNetPL)}
+            </div>
+            <div class="kpi-sub">House Net Profit: <strong style="color:${houseNetPL >= 0 ? '#4ADE80' : '#FCA5A5'};">${houseNetPL >= 0 ? '+' : ''}${fmtMoney(houseNetPL)}</strong></div>
+          </div>
+          <div class="kpi-icon-circle" style="color:#0F172A;">⚖️</div>
+        </div>
+      </div>
+
+      <!-- Per-User Betting Summary & Instant Force Logout / Block Table -->
+      <div class="adm-card">
+        <div class="adm-card-head">
+          <div class="adm-card-title">👥 Per-User Betting Summary Across All Games &amp; Instant Logout / Block Controls</div>
+          <span class="badge badge-blue">Click "🔍 View Bets" on any user to filter their exact bets below</span>
+        </div>
+        <div class="table-wrap">
+          <table class="adm-table">
+            <thead>
+              <tr>
+                <th>User ID &amp; Name</th>
+                <th>Status</th>
+                <th>Bets Breakdown (WinGo / Lotto / UNO / Ludo / Quiz / Aviator)</th>
+                <th>Total Bet</th>
+                <th>Total Win</th>
+                <th>Total Lose</th>
+                <th>User Net Profit / Loss</th>
+                <th>Actions (View Bets / Logout / Block)</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${userSummaryRows.map(r => {
+                const u = r.user;
+                const gc = r.byGameCounts;
+                return `
+                  <tr style="${betRecUserFilter === u.userId ? 'background:#EFF6FF;' : ''}">
+                    <td>
+                      <strong style="color:var(--primary-blue);">${u.username}</strong> <code>(${u.userId})</code>
+                      <div style="font-size:0.68rem;color:var(--text-muted);">${u.phone || ''} • Wallet: <strong>${fmtMoney(u.cashBalanceInr)}</strong></div>
+                    </td>
+                    <td><span class="badge ${u.status === 'ACTIVE' ? 'badge-success' : 'badge-danger'}">${u.status}</span></td>
+                    <td style="font-size:0.72rem;">
+                      <strong>${r.betsCount} Total:</strong>
+                      WinGo(${gc.WINGO}) • Lotto(${gc.LOTTERY}) • UNO(${gc.UNO}) • Ludo(${gc.LUDO}) • Quiz(${gc.QUIZ}) • Aviator(${gc.AVIATOR})
+                    </td>
+                    <td style="font-weight:800;">${fmtMoney(r.uWagered)}</td>
+                    <td style="font-weight:800;color:var(--success);">${fmtMoney(r.uWon)}</td>
+                    <td style="font-weight:800;color:var(--danger);">${fmtMoney(r.uLost)}</td>
+                    <td style="font-weight:900;color:${r.uNet >= 0 ? 'var(--success)' : 'var(--danger)'};">
+                      ${r.uNet >= 0 ? '+' : ''}${fmtMoney(r.uNet)}
+                    </td>
+                    <td>
+                      <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                        <button type="button" class="btn ${betRecUserFilter === u.userId ? 'btn-primary' : 'btn-outline'} btn-sm"
+                                onclick="window.setBetRecFilters({user: '${betRecUserFilter === u.userId ? 'ALL' : u.userId}'})">
+                          ${betRecUserFilter === u.userId ? '✔ Showing Bets' : '🔍 View Bets'}
+                        </button>
+                        <button type="button" class="btn btn-outline btn-sm" style="border-color:#0F172A;color:#0F172A;font-weight:800;"
+                                onclick="window.forceLogoutUserAdmin('${u.userId}')">
+                          🚪 Logout
+                        </button>
+                        <button type="button" class="btn ${u.status === 'ACTIVE' ? 'btn-danger' : 'btn-success'} btn-sm"
+                                onclick="window.toggleBlockUnblockUser('${u.userId}')">
+                          ${u.status === 'ACTIVE' ? '🚫 Block' : '🟢 Unblock'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Detailed Bet-by-Bet History Ledger with Filters -->
+      <div class="adm-card">
+        <div class="adm-card-head">
+          <div class="adm-card-title">🧾 Detailed Bet-by-Bet History (${filteredBets.length} Records Shown)</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <select class="top-select" onchange="window.setBetRecFilters({user:this.value})">
+              <option value="ALL" ${betRecUserFilter==='ALL'?'selected':''}>👤 All Users</option>
+              ${allUsers.map(u => `<option value="${u.userId}" ${betRecUserFilter===u.userId?'selected':''}>${u.username} (${u.userId})</option>`).join('')}
+            </select>
+
+            <select class="top-select" onchange="window.setBetRecFilters({status:this.value})">
+              <option value="ALL" ${betRecStatusFilter==='ALL'?'selected':''}>📊 All Outcomes</option>
+              <option value="WIN" ${betRecStatusFilter==='WIN'?'selected':''}>🏆 Win Only</option>
+              <option value="LOSE" ${betRecStatusFilter==='LOSE'?'selected':''}>❌ Lose Only</option>
+              <option value="WAITING" ${betRecStatusFilter==='WAITING'?'selected':''}>⏳ Waiting / Active</option>
+            </select>
+
+            ${betRecGameFilter === 'WINGO' ? `
+              <select class="top-select" onchange="window.setBetRecFilters({wingoType:this.value})">
+                <option value="ALL" ${betRecWingoTypeFilter==='ALL'?'selected':''}>🎰 All WinGo Bet Types</option>
+                <option value="NUMBER" ${betRecWingoTypeFilter==='NUMBER'?'selected':''}>🎱 Numbers (0–9)</option>
+                <option value="COLOR" ${betRecWingoTypeFilter==='COLOR'?'selected':''}>🎨 Colors (Green/Violet/Red)</option>
+                <option value="BIG_SMALL" ${betRecWingoTypeFilter==='BIG_SMALL'?'selected':''}>⚖️ Big / Small</option>
+              </select>
+            ` : ''}
+
+            <input type="text" class="top-select" style="width:220px;background:#FFFFFF;" placeholder="🔍 Search UID, Name, Period, Pick..." value="${betRecSearchQuery}" oninput="window.setBetRecFilters({search:this.value})" />
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="adm-table">
+            <thead>
+              <tr>
+                <th>Bet / Match ID &amp; Time</th>
+                <th>User (Name &amp; UID)</th>
+                <th>Game &amp; Mode</th>
+                <th>Period / Match / Round</th>
+                <th>Where / What Bet Was Placed On</th>
+                <th>Result / Outcome Detail</th>
+                <th>Bet Amount</th>
+                <th>Win Amount</th>
+                <th>Lose Amount</th>
+                <th>Net Profit / Loss</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filteredBets.length === 0 ? `
+                <tr><td colspan="11" style="text-align:center;padding:24px;color:var(--text-muted);">No betting records match the current filter.</td></tr>
+              ` : filteredBets.slice(0, 120).map(r => `
+                <tr>
+                  <td>
+                    <code style="font-weight:800;">${r.recordId}</code>
+                    <div style="font-size:0.68rem;color:var(--text-muted);">${fmtDateTime(r.timestamp)}</div>
+                  </td>
+                  <td>
+                    <strong>${r.username}</strong> <code>(${r.userId})</code>
+                  </td>
+                  <td><span class="badge badge-blue">${r.gameLabel}</span></td>
+                  <td style="font-family:monospace;font-weight:700;font-size:0.74rem;">${r.roundOrMatchId}</td>
+                  <td><strong style="color:var(--primary-blue);">${r.selectionDetail}</strong></td>
+                  <td style="font-size:0.74rem;">${r.resultDetail}</td>
+                  <td style="font-weight:800;">${fmtMoney(r.betAmountInr)}</td>
+                  <td style="font-weight:800;color:var(--success);">${r.winAmountInr > 0 ? '+' + fmtMoney(r.winAmountInr) : '₹0.00'}</td>
+                  <td style="font-weight:800;color:var(--danger);">${r.loseAmountInr > 0 ? '-' + fmtMoney(r.loseAmountInr) : '₹0.00'}</td>
+                  <td style="font-weight:900;color:${r.netProfitLossInr > 0 ? 'var(--success)' : (r.netProfitLossInr < 0 ? 'var(--danger)' : 'var(--text-muted)')};">
+                    ${r.netProfitLossInr > 0 ? '+' : ''}${fmtMoney(r.netProfitLossInr)}
+                  </td>
+                  <td>
+                    <span class="badge ${r.status === 'WIN' ? 'badge-success' : (r.status === 'LOSE' ? 'badge-danger' : 'badge-warning')}">
+                      ${r.status}
+                    </span>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  };
+
+  // Add Topbar Quick Button for "📊 Betting Records"
+  function ensureTopbarBettingRecordsBtn() {
+    if (document.getElementById('topBettingRecordsQuickBtn')) return;
+    const topRight = document.querySelector('.topbar-right');
+    const refBtn = document.getElementById('topGatewayQuickBtn');
+    if (topRight) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.id = 'topBettingRecordsQuickBtn';
+      btn.className = 'top-select';
+      btn.style.cssText = 'border-color:#2563EB;background:#EFF6FF;color:#1E3A8A;font-weight:800;cursor:pointer;';
+      btn.title = 'Inspect All Users Betting Records Across WinGo, Lottery, UNO, Ludo, Quiz & Aviator';
+      btn.innerHTML = '📊 Betting Records';
+      btn.onclick = function() { navigateAdminPage('betting-records'); };
+      if (refBtn) topRight.insertBefore(btn, refBtn);
+      else topRight.prepend(btn);
+    }
+  }
+
+  // Route 'betting-records' in renderCurrentAdminView
+  const _origRenderCurrentAdminViewV10 = window.renderCurrentAdminView;
+  window.renderCurrentAdminView = function() {
+    ensureTopbarBettingRecordsBtn();
+    if (currentAdminPage === 'betting-records') {
+      updateBreadcrumb('betting-records');
+      const container = document.getElementById('admViewContainer');
+      if (container) container.innerHTML = window.renderUsersBettingRecordsPage();
+      return;
+    }
+    if (typeof _origRenderCurrentAdminViewV10 === 'function') {
+      _origRenderCurrentAdminViewV10();
+    }
+  };
+
+  // Boot V11
+  restorePersistedAdminSessionIfAvailable();
+  ensureTopbarBettingRecordsBtn();
+  renderSidebarTree('');
+  if (loggedInAdminAccount) {
+    window.syncTopbarAndShellForActiveAdmin();
+    renderCurrentAdminView();
+  }
+})();
+</script>
+<!-- === END XYZ ADMIN V11 COMPLETE FIXES === -->
 
 </body>
 </html>

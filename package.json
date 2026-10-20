@@ -1,9 +1,8 @@
 {
-  "name": "xyz-games-cloud-server",
-  "version": "8.0.0",
-  "description": "XYZ Games — Zero-Dependency Multi-Device Real-Time Cloud Sync Server, Customer Webapp (index.html) & Super Admin Panel (admin_panel.html)",
+  "name": "xyz-games-platform",
+  "version": "11.0.0",
+  "description": "XYZ Games — Zero-Dependency Multi-Device Real-Time Cloud Sync Server (server.js), Customer Webapp (index.html), and Super Admin Panel (admin_panel.html)",
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
@@ -14,11 +13,12 @@
   "keywords": [
     "xyz-games",
     "wingo",
-    "ludo",
+    "lottery",
     "uno",
     "aviator",
-    "lottery",
+    "ludo",
     "quiz",
+    "admin-panel",
     "real-time-sync",
     "sse"
   ],

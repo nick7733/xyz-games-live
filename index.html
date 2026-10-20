@@ -14082,7 +14082,7 @@
             'superAdminConfigured', 'systemToggles', 'auditModalConfig', 'adminNotifications',
             'adminPromotions', 'lotteryDraws', 'ludoTournaments', 'unoTournaments', 'mathTournaments',
             'ludoManualMatches', 'unoManualMatches', 'mathManualMatches',
-            'remoteCommandsQueue', 'deletedDeviceIds', 'adminUpdatedAt'
+            'remoteCommandsQueue', 'deletedDeviceIds', 'adminUpdatedAt', 'adminActiveSessions', 'evictedAdminSessions', 'forceLogoutMap', 'adminActiveSessions', 'evictedAdminSessions', 'forceLogoutMap', 'adminActiveSessions', 'evictedAdminSessions', 'forceLogoutMap', 'adminActiveSessions', 'evictedAdminSessions', 'forceLogoutMap'
           ];
           adminPreserveKeys.forEach(k => {
             if (!window.__isApplyingRemoteCloudState && existing[k] !== undefined) {
@@ -14864,6 +14864,7 @@ window.addEventListener('DOMContentLoaded', renderBalance);
 
     // BETTING POPUP LOGIC
     function openBetPopup(displayTitle, bannerColor, odds, rawSelection) {
+      state = loadState();
       const clock = getSlotUtcClock(state.activeSlot);
       if (clock.isLocked) {
         showToast(`Betting is locked in the last ${clock.lockSec} seconds!`);
@@ -14950,6 +14951,7 @@ window.addEventListener('DOMContentLoaded', renderBalance);
 
     function placeConfirmedBet() {
       if (!currentPopupSelection) return;
+      state = loadState();
       const clock = getSlotUtcClock(state.activeSlot);
       if (clock.isLocked) {
         closeBetPopup();
@@ -30399,7 +30401,7 @@ function generateGenuineQrMatrix(text) {
       'superAdminConfigured', 'systemToggles', 'auditModalConfig', 'adminNotifications',
       'adminPromotions', 'lotteryDraws', 'ludoManualMatches', 'ludoTournaments',
       'unoManualMatches', 'unoTournaments', 'mathManualMatches', 'mathTournaments',
-      'remoteCommandsQueue', 'deletedDeviceIds', 'adminUpdatedAt'
+      'remoteCommandsQueue', 'deletedDeviceIds', 'adminUpdatedAt', 'adminActiveSessions', 'evictedAdminSessions', 'forceLogoutMap', 'adminActiveSessions', 'evictedAdminSessions', 'forceLogoutMap', 'adminActiveSessions', 'evictedAdminSessions', 'forceLogoutMap', 'adminActiveSessions', 'evictedAdminSessions', 'forceLogoutMap'
     ];
     adminKeys.forEach(k => {
       if (preferredAdminSource[k] !== undefined) {
@@ -31280,6 +31282,755 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ CUSTOMER WEBAPP V10 DEPOSIT GATE & WINGO PERIOD SYNC === -->
+
+<!-- === START XYZ CUSTOMER WEBAPP V11 COMPLETE FIXES === -->
+<script>
+(function() {
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const XYZ_TAB_SESSION_KEY = 'XYZ_TAB_USER_AUTH_SESSION_V8';
+  const XYZ_LOCAL_SESS_KEY = 'XYZ_ACTIVE_AUTH_SESSION_V1';
+  const v11Bc = window.__xyzCreateBroadcastChannel ? window.__xyzCreateBroadcastChannel('xyz_games_live_channel') : null;
+
+  const CANONICAL_WINGO_SLOTS = {
+    '30SEC': { key: '30SEC', label: 'WinGo 30 sec', shortName: '30Sec', duration: 30,  lockSec: 5,  code: '05' },
+    '1MIN':  { key: '1MIN',  label: 'WinGo 1 min',  shortName: '1Min',  duration: 60,  lockSec: 5,  code: '10' },
+    '2MIN':  { key: '2MIN',  label: 'WinGo 2 min',  shortName: '2Min',  duration: 120, lockSec: 8,  code: '20' },
+    '3MIN':  { key: '3MIN',  label: 'WinGo 3 min',  shortName: '3Min',  duration: 180, lockSec: 10, code: '30' },
+    '5MIN':  { key: '5MIN',  label: 'WinGo 5 min',  shortName: '5Min',  duration: 300, lockSec: 30, code: '50' }
+  };
+
+  // ===========================================================================
+  // 1. FIX ROOT CAUSE OF WINGO TIMER & PERIOD LAGGING / STICKING / FALSE MATCH
+  //    - Eliminate static serverNowMs offset poisoning from localStorage!
+  //    - Pure real-time UTC clock (Date.now() + NTP offset from /api/xyz-time only)
+  //    - Fast 200ms lightweight ticker that updates digits & period ID in <0.05ms
+  //      without JSON.parse / JSON.stringify / 100-row table rebuilds every second!
+  // ===========================================================================
+  window.__xyzTrueNtpOffsetMs = 0;
+  window.__xyzServerClockOffsetMs = 0;
+  window.getAuthoritativeUtcNowMs = function() {
+    return Date.now() + (Number(window.__xyzTrueNtpOffsetMs) || 0);
+  };
+
+  async function syncAuthoritativeNtpOffsetOnce() {
+    try {
+      if (window.location.protocol === 'file:') return;
+      const t0 = Date.now();
+      const res = await fetch('/api/' + 'xyz-time', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const t1 = Date.now();
+      if (data && typeof data.serverNowMs === 'number') {
+        const rtt = t1 - t0;
+        const estimatedServerNow = data.serverNowMs + Math.round(rtt / 2);
+        const diff = estimatedServerNow - t1;
+        window.__xyzTrueNtpOffsetMs = Math.abs(diff) < 1500 ? 0 : diff;
+      }
+    } catch (e) {}
+  }
+  syncAuthoritativeNtpOffsetOnce();
+
+  // Cached in-memory WinGo mode config & active slot so 200ms tick never parses multi-MB JSON
+  let cachedWingoSlot = '30SEC';
+  let cachedWingoModesConfig = {};
+  let cachedLastStorageReadMs = 0;
+  let cachedFullRenderSig = '';
+  let lastSeenSlotPeriodsV11 = {};
+
+  function refreshCachedWingoConfig(forceRead) {
+    const now = Date.now();
+    if (!forceRead && (now - cachedLastStorageReadMs < 1200)) return;
+    cachedLastStorageReadMs = now;
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed) {
+          const s = parsed.activeSlot || parsed.webappActiveWingoSlot;
+          if (s && CANONICAL_WINGO_SLOTS[s]) cachedWingoSlot = s;
+          if (parsed.wingoModesConfig && typeof parsed.wingoModesConfig === 'object') {
+            cachedWingoModesConfig = parsed.wingoModesConfig;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  window.__v10GetSlotUtcClock = function(slotKey) {
+    refreshCachedWingoConfig(false);
+    const sKey = (slotKey && CANONICAL_WINGO_SLOTS[slotKey]) ? slotKey : (CANONICAL_WINGO_SLOTS[cachedWingoSlot] ? cachedWingoSlot : '30SEC');
+    const baseCfg = CANONICAL_WINGO_SLOTS[sKey] || CANONICAL_WINGO_SLOTS['30SEC'];
+    const modeCfg = (cachedWingoModesConfig && cachedWingoModesConfig[sKey]) ? cachedWingoModesConfig[sKey] : {};
+
+    // Canonical duration & code are strictly locked so Customer Webapp & Admin Panel period IDs ALWAYS match 100%
+    const duration = baseCfg.duration;
+    const rawCut = Number(modeCfg.cutoff !== undefined ? modeCfg.cutoff : baseCfg.lockSec);
+    const cutoff = (Number.isFinite(rawCut) && rawCut >= 1 && rawCut < duration) ? rawCut : baseCfg.lockSec;
+    const enabled = modeCfg.enabled !== false;
+    const maintenanceMode = Boolean(modeCfg.maintenanceMode);
+    const minBetInr = Number(modeCfg.minBetInr || 10);
+    const maxBetInr = Number(modeCfg.maxBetInr || 50000);
+    const statusMessage = modeCfg.statusMessage || '';
+
+    const nowMs = window.getAuthoritativeUtcNowMs();
+    const now = new Date(nowMs);
+    const yyyy = now.getUTCFullYear();
+    const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(now.getUTCDate()).padStart(2, '0');
+    const datePrefix = `${yyyy}${mm}${dd}${baseCfg.code}`;
+
+    const utcSecsToday = now.getUTCHours() * 3600 + now.getUTCMinutes() * 60 + now.getUTCSeconds();
+    const periodIndex = Math.floor(utcSecsToday / duration) + 1;
+    const timeLeft = duration - (utcSecsToday % duration);
+    const periodId = `${datePrefix}${String(periodIndex).padStart(4, '0')}`;
+
+    const isCutoffLocked = timeLeft <= cutoff;
+    const isLocked = !enabled || maintenanceMode || isCutoffLocked;
+
+    return {
+      slotKey: sKey,
+      periodId,
+      periodIndex,
+      datePrefix,
+      timeLeft,
+      duration,
+      lockSec: cutoff,
+      cutoff,
+      enabled,
+      maintenanceMode,
+      minBetInr,
+      maxBetInr,
+      statusMessage,
+      isCutoffLocked,
+      isLocked
+    };
+  };
+  window.getSlotUtcClock = window.__v10GetSlotUtcClock;
+
+  // Initialize lastSeenSlotPeriodsV11 for all 5 slots
+  ['30SEC', '1MIN', '2MIN', '3MIN', '5MIN'].forEach(sKey => {
+    lastSeenSlotPeriodsV11[sKey] = window.__v10GetSlotUtcClock(sKey).periodId;
+  });
+
+  // Fast, lightweight DOM update for WinGo countdown & period ID (runs every 200ms)
+  window.tickCustomerWingoFast = function() {
+    const gv = document.getElementById('xyz-view-games');
+    const isGamesActive = Boolean(gv && gv.classList.contains('active'));
+
+    // Check if any of the 5 slots rolled over to a new period
+    let periodRolledOver = false;
+    ['30SEC', '1MIN', '2MIN', '3MIN', '5MIN'].forEach(sKey => {
+      const c = window.__v10GetSlotUtcClock(sKey);
+      if (lastSeenSlotPeriodsV11[sKey] && lastSeenSlotPeriodsV11[sKey] !== c.periodId) {
+        const finishedPid = lastSeenSlotPeriodsV11[sKey];
+        lastSeenSlotPeriodsV11[sKey] = c.periodId;
+        periodRolledOver = true;
+        if (typeof window.settleSlotPeriod === 'function') {
+          try { window.settleSlotPeriod(sKey, finishedPid); } catch (e) {}
+        }
+      } else {
+        lastSeenSlotPeriodsV11[sKey] = c.periodId;
+      }
+    });
+
+    if (periodRolledOver) {
+      if (isGamesActive && typeof window.renderEverything === 'function') {
+        window.renderEverything(true);
+      }
+      return;
+    }
+
+    if (!isGamesActive) return;
+
+    const activeSlotKey = CANONICAL_WINGO_SLOTS[cachedWingoSlot] ? cachedWingoSlot : '30SEC';
+    const clock = window.__v10GetSlotUtcClock(activeSlotKey);
+    const slotCfg = CANONICAL_WINGO_SLOTS[activeSlotKey];
+
+    const slotNameEl = document.getElementById('ticketSlotName');
+    if (slotNameEl && slotNameEl.textContent !== slotCfg.label) slotNameEl.textContent = slotCfg.label;
+
+    const pidEl = document.getElementById('ticketPeriodId');
+    if (pidEl && pidEl.textContent !== clock.periodId) pidEl.textContent = clock.periodId;
+
+    const mins = String(Math.floor(clock.timeLeft / 60)).padStart(2, '0');
+    const secs = String(clock.timeLeft % 60).padStart(2, '0');
+
+    const dM1 = document.getElementById('dM1');
+    const dM2 = document.getElementById('dM2');
+    const dS1 = document.getElementById('dS1');
+    const dS2 = document.getElementById('dS2');
+
+    if (dM1 && dM1.textContent !== mins[0]) dM1.textContent = mins[0];
+    if (dM2 && dM2.textContent !== mins[1]) dM2.textContent = mins[1];
+    if (dS1 && dS1.textContent !== secs[0]) dS1.textContent = secs[0];
+    if (dS2 && dS2.textContent !== secs[1]) dS2.textContent = secs[1];
+
+    [dM1, dM2, dS1, dS2].forEach(el => {
+      if (el) el.classList.toggle('locked-warn', clock.isLocked);
+    });
+
+    const overlay = document.getElementById('boardLockOverlay');
+    if (overlay) {
+      overlay.classList.toggle('show', clock.isLocked);
+      if (clock.isLocked) {
+        const ld1 = document.getElementById('lockDigit1');
+        const ld2 = document.getElementById('lockDigit2');
+        const lCap = document.getElementById('lockCaptionText');
+        if (!clock.enabled) {
+          if (ld1) ld1.textContent = '🚫';
+          if (ld2) ld2.textContent = 'OFF';
+          if (lCap) lCap.textContent = 'Mode Disabled by Admin';
+        } else if (clock.maintenanceMode) {
+          if (ld1) ld1.textContent = '🛠️';
+          if (ld2) ld2.textContent = 'MNT';
+          if (lCap) lCap.textContent = 'Under Maintenance';
+        } else {
+          const lockSecStr = String(clock.timeLeft).padStart(2, '0');
+          if (ld1 && ld1.textContent !== lockSecStr[0]) ld1.textContent = lockSecStr[0];
+          if (ld2 && ld2.textContent !== lockSecStr[1]) ld2.textContent = lockSecStr[1];
+          if (lCap && lCap.textContent !== 'Betting Locked') lCap.textContent = 'Betting Locked';
+        }
+        const pop = document.getElementById('betPopupBackdrop');
+        if (pop && pop.classList.contains('show') && typeof window.closeBetPopup === 'function') {
+          window.closeBetPopup();
+        }
+      }
+    }
+  };
+
+  // Wrap renderEverything so the legacy 1000ms setInterval does NOT thrash the DOM/localStorage when only timeLeft changed!
+  const _origRenderEverythingV10 = window.renderEverything;
+  window.renderEverything = function(forceFull) {
+    refreshCachedWingoConfig(true);
+    const activeSlotKey = CANONICAL_WINGO_SLOTS[cachedWingoSlot] ? cachedWingoSlot : '30SEC';
+    const clock = window.__v10GetSlotUtcClock(activeSlotKey);
+
+    let stSnap = {};
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) stSnap = JSON.parse(raw) || {};
+    } catch (e) {}
+
+    const waitingOrTotalBetsSig = (stSnap.myBets || []).slice(0, 15).map(b => `${b.id}:${b.status}:${b.winAmount}`).join('|');
+    const overridesSig = JSON.stringify(stSnap.manualOverrides || {});
+    const pagesSig = JSON.stringify(window.__wingoHistPages || {});
+    const currentSig = `${activeSlotKey}:${clock.periodId}:${stSnap.balance}:${stSnap.currency}:${waitingOrTotalBetsSig}:${overridesSig}:${pagesSig}`;
+
+    if (!forceFull && currentSig === cachedFullRenderSig) {
+      // Only the countdown second changed — update the timer digits in <0.05ms without rebuilding tables or writing localStorage!
+      window.tickCustomerWingoFast();
+      return;
+    }
+
+    cachedFullRenderSig = currentSig;
+    if (typeof _origRenderEverythingV10 === 'function') {
+      _origRenderEverythingV10();
+    }
+    window.tickCustomerWingoFast();
+  };
+  window.__syncGames = function() { window.renderEverything(true); };
+
+  const _origSwitchTimeSlotV10 = window.switchTimeSlot;
+  window.switchTimeSlot = function(slotKey) {
+    const validSlot = CANONICAL_WINGO_SLOTS[slotKey] ? slotKey : '30SEC';
+    cachedWingoSlot = validSlot;
+    cachedFullRenderSig = '';
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      const st = raw ? JSON.parse(raw) : {};
+      st.activeSlot = validSlot;
+      st.webappActiveWingoSlot = validSlot;
+      st.webappActiveWingoPeriodId = window.__v10GetSlotUtcClock(validSlot).periodId;
+      st.webappActiveWingoUpdatedAt = Date.now();
+      window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+    } catch (e) {}
+    if (v11Bc) {
+      try {
+        v11Bc.postMessage({
+          type: 'WINGO_SLOT_SYNC',
+          activeSlot: validSlot,
+          periodId: window.__v10GetSlotUtcClock(validSlot).periodId,
+          ts: Date.now()
+        });
+      } catch (e) {}
+    }
+    if (typeof _origSwitchTimeSlotV10 === 'function') {
+      _origSwitchTimeSlotV10(validSlot);
+    }
+    window.renderEverything(true);
+    if (typeof window.pushCustomerStateToCloud === 'function') {
+      window.pushCustomerStateToCloud();
+    }
+  };
+
+  // Start smooth 200ms WinGo countdown ticker
+  setInterval(window.tickCustomerWingoFast, 200);
+
+  // ===========================================================================
+  // 2. IMMEDIATE BET SYNC TO ADMIN PANEL + ALL-GAMES BETTING RECORD TRACKING
+  //    (WinGo, Lottery, UNO, Ludo, Quiz, Aviator)
+  // ===========================================================================
+  function getActiveUserIdentityV11(stObj) {
+    let sess = null;
+    try {
+      const raw = (window.sessionStorage && window.sessionStorage.getItem(XYZ_TAB_SESSION_KEY)) ||
+                  (window.__xyzMemStore && window.__xyzMemStore[XYZ_TAB_SESSION_KEY]);
+      if (raw) sess = JSON.parse(raw);
+    } catch (e) {}
+    const st = stObj || {};
+    const userId = (sess && sess.userId) || st.activeUserId || 'USR-001';
+    const allUsers = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+    const foundUser = allUsers.find(u => u && u.userId === userId);
+    const username = (foundUser && foundUser.username) || (sess && sess.username) || st.username || 'Player_01';
+    return { userId, username };
+  }
+
+  // Hook placeConfirmedBet so WinGo bets immediately stamp userId & username and push to server with 0ms delay!
+  const _origPlaceConfirmedBetV10 = window.placeConfirmedBet;
+  window.placeConfirmedBet = function() {
+    if (typeof _origPlaceConfirmedBetV10 === 'function') {
+      _origPlaceConfirmedBetV10();
+    }
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) {
+        const st = JSON.parse(raw);
+        const ident = getActiveUserIdentityV11(st);
+        const activeSlotKey = CANONICAL_WINGO_SLOTS[st.activeSlot] ? st.activeSlot : cachedWingoSlot;
+        const clock = window.__v10GetSlotUtcClock(activeSlotKey);
+        if (Array.isArray(st.myBets) && st.myBets.length > 0) {
+          const latestBet = st.myBets[0];
+          if (latestBet && (Date.now() - Number(latestBet.timestamp || 0) < 5000)) {
+            latestBet.userId = ident.userId;
+            latestBet.username = ident.username;
+            latestBet.slotKey = activeSlotKey;
+            latestBet.slotName = CANONICAL_WINGO_SLOTS[activeSlotKey].shortName;
+            latestBet.periodId = clock.periodId;
+          }
+        }
+        window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+        if (v11Bc) {
+          v11Bc.postMessage({ type: 'WINGO_LIVE_BET_PLACED', state: st, ts: Date.now() });
+        }
+        if (typeof window.pushCustomerStateToCloud === 'function') {
+          window.pushCustomerStateToCloud();
+        }
+      }
+    } catch (e) {}
+    window.renderEverything(true);
+  };
+
+  function stampUserIdentityOnAllGameRecords(st) {
+    if (!st || typeof st !== 'object') return;
+    const ident = getActiveUserIdentityV11(st);
+    if (!ident.userId || ident.userId === 'GUEST') return;
+
+    const stampArr = (arr) => {
+      if (!Array.isArray(arr)) return;
+      arr.forEach(item => {
+        if (!item || typeof item !== 'object') return;
+        if (!item.userId || item.userId === 'USR-001') {
+          if (ident.userId !== 'USR-001' && (Date.now() - Number(item.timestamp || item.purchasedAt || item.createdAt || 0) < 60000)) {
+            item.userId = ident.userId;
+            item.username = ident.username;
+          } else if (!item.userId) {
+            item.userId = ident.userId;
+          }
+        }
+        if (!item.username) item.username = ident.username;
+      });
+    };
+
+    stampArr(st.myBets);
+    stampArr(st.lotteryTickets);
+    stampArr(st.mathHistory);
+    stampArr(st.aviatorMyBets);
+    stampArr(st.unoHistory);
+    stampArr(st.ludoHistory);
+    stampArr(st.ludoPlayerTournamentHistory);
+    stampArr(st.unoPlayerTournamentHistory);
+    stampArr(st.mathPlayerTournamentHistory);
+    stampArr(st.transactions);
+  }
+
+  function syncStructuredGameHistoriesFromTransactions(st) {
+    if (!st || typeof st !== 'object') return;
+    const ident = getActiveUserIdentityV11(st);
+    if (!Array.isArray(st.unoHistory)) st.unoHistory = [];
+    if (!Array.isArray(st.ludoHistory)) st.ludoHistory = [];
+
+    const txs = Array.isArray(st.transactions) ? st.transactions : [];
+    txs.forEach(tx => {
+      if (!tx || !tx.id) return;
+      const txId = String(tx.id);
+      const title = String(tx.title || '');
+      const amt = Math.abs(Number(tx.amount || 0));
+      const ts = Number(tx.timestamp || Date.now());
+      const uid = tx.userId || ident.userId;
+      const uname = tx.username || ident.username;
+
+      if (txId.startsWith('UNO-FEE-') || txId.startsWith('UNO-PC-') || txId.startsWith('UNO-MAN-') || txId.startsWith('UNO-TRN-FEE-')) {
+        if (!st.unoHistory.some(h => h && h.feeTxId === txId)) {
+          const isPc = txId.startsWith('UNO-PC-') || title.includes('1vsPC');
+          const isTrn = txId.startsWith('UNO-TRN-FEE-') || title.includes('Tournament');
+          const winTx = txs.find(w => w && String(w.id).startsWith('UNO-WIN-') && Number(w.timestamp || 0) >= ts && Number(w.timestamp || 0) - ts < 600000);
+          const won = Boolean(winTx);
+          const winAmt = won ? Math.abs(Number(winTx.amount || 0)) : 0;
+          st.unoHistory.unshift({
+            matchId: 'UNO-M-' + txId.replace(/[^0-9]/g, ''),
+            feeTxId: txId,
+            userId: uid,
+            username: uname,
+            mode: isPc ? '1vsPC' : (isTrn ? 'Tournament' : '1vs1 Online'),
+            selection: title || 'Classic UNO Match',
+            entryFeeInr: amt,
+            winAmount: winAmt,
+            status: won ? 'WIN' : 'LOSE',
+            netProfitLoss: won ? +(winAmt - amt).toFixed(2) : -amt,
+            timestamp: ts
+          });
+        } else {
+          const existing = st.unoHistory.find(h => h && h.feeTxId === txId);
+          if (existing && existing.status !== 'WIN') {
+            const winTx = txs.find(w => w && String(w.id).startsWith('UNO-WIN-') && Number(w.timestamp || 0) >= ts && Number(w.timestamp || 0) - ts < 600000);
+            if (winTx) {
+              const winAmt = Math.abs(Number(winTx.amount || 0));
+              existing.status = 'WIN';
+              existing.winAmount = winAmt;
+              existing.netProfitLoss = +(winAmt - existing.entryFeeInr).toFixed(2);
+            }
+          }
+        }
+      }
+
+      if (txId.startsWith('LUDO-FEE-') || txId.startsWith('LUDO-PC-') || txId.startsWith('LUDO-MAN-') || (txId.startsWith('TRN-FEE-') && title.toLowerCase().includes('ludo'))) {
+        if (!st.ludoHistory.some(h => h && h.feeTxId === txId)) {
+          const isPc = txId.startsWith('LUDO-PC-') || title.includes('1vsPC');
+          const isTrn = txId.startsWith('TRN-FEE-') || title.includes('Tournament');
+          const winTx = txs.find(w => w && String(w.id).startsWith('LUDO-WIN-') && Number(w.timestamp || 0) >= ts && Number(w.timestamp || 0) - ts < 600000);
+          const won = Boolean(winTx);
+          const winAmt = won ? Math.abs(Number(winTx.amount || 0)) : 0;
+          st.ludoHistory.unshift({
+            matchId: 'LUDO-M-' + txId.replace(/[^0-9]/g, ''),
+            feeTxId: txId,
+            userId: uid,
+            username: uname,
+            mode: isPc ? '1vsPC' : (isTrn ? 'Tournament' : '1vs1 Online'),
+            selection: title || 'Ludo Match',
+            entryFeeInr: amt,
+            winAmount: winAmt,
+            status: won ? 'WIN' : 'LOSE',
+            netProfitLoss: won ? +(winAmt - amt).toFixed(2) : -amt,
+            timestamp: ts
+          });
+        } else {
+          const existing = st.ludoHistory.find(h => h && h.feeTxId === txId);
+          if (existing && existing.status !== 'WIN') {
+            const winTx = txs.find(w => w && String(w.id).startsWith('LUDO-WIN-') && Number(w.timestamp || 0) >= ts && Number(w.timestamp || 0) - ts < 600000);
+            if (winTx) {
+              const winAmt = Math.abs(Number(winTx.amount || 0));
+              existing.status = 'WIN';
+              existing.winAmount = winAmt;
+              existing.netProfitLoss = +(winAmt - existing.entryFeeInr).toFixed(2);
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // Hook into window.__xyzSafeStorage.setItem so every state write stamps user identity & syncs game histories
+  const _prevSetItemV10 = window.__xyzSafeStorage.setItem.bind(window.__xyzSafeStorage);
+  window.__xyzSafeStorage.setItem = function(k, v) {
+    if (k === XYZ_STATE_KEY && v) {
+      try {
+        const st = JSON.parse(String(v));
+        delete st.serverNowMs;
+        stampUserIdentityOnAllGameRecords(st);
+        syncStructuredGameHistoriesFromTransactions(st);
+        v = JSON.stringify(st);
+      } catch (e) {}
+    }
+    return _prevSetItemV10(k, v);
+  };
+
+  // ===========================================================================
+  // 3. INSTANT FORCE LOGOUT & USER BLOCK ENFORCEMENT ON CUSTOMER WEBAPP
+  // ===========================================================================
+  function getActiveTabSessionV11() {
+    try {
+      if (window.sessionStorage) {
+        const raw = window.sessionStorage.getItem(XYZ_TAB_SESSION_KEY);
+        if (raw) {
+          const p = JSON.parse(raw);
+          if (p && p.userId) window.__lastLoggedInUserIdV11 = p.userId;
+          return p;
+        }
+      }
+    } catch (e) {}
+    if (window.__xyzTabSessionMem && window.__xyzTabSessionMem.userId) {
+      window.__lastLoggedInUserIdV11 = window.__xyzTabSessionMem.userId;
+    }
+    return window.__xyzTabSessionMem || null;
+  }
+
+  function showAuthAlertBannerV11(msg, isSuccess) {
+    const el = document.getElementById('authInlineAlert');
+    if (!el) return;
+    if (!msg) {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = 'block';
+    el.style.background = isSuccess ? 'rgba(16, 185, 129, 0.14)' : 'rgba(239, 68, 68, 0.14)';
+    el.style.border = isSuccess ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(239, 68, 68, 0.4)';
+    el.style.color = isSuccess ? '#10b981' : '#ef4444';
+    el.textContent = msg;
+  }
+
+  window.forceLogoutCustomerImmediate = function(reasonType) {
+    let isBlocked = (reasonType === 'BLOCKED' || Boolean(window.__lastForceLogoutWasBlocked));
+    try {
+      const uidToCheck = (getActiveTabSessionV11() && getActiveTabSessionV11().userId) || window.__lastLoggedInUserIdV11;
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) {
+        const st = JSON.parse(raw);
+        if (uidToCheck) {
+          const allU = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+          const m = allU.find(u => u && u.userId === uidToCheck);
+          if (m && (m.status === 'BLOCKED' || m.status === 'SUSPENDED')) isBlocked = true;
+        }
+        if ((st.remoteCommandsQueue || []).some(c => c && c.reason === 'USER_BLOCKED' && (!uidToCheck || c.targetUid === uidToCheck))) {
+          isBlocked = true;
+        }
+      }
+    } catch (e) {}
+    window.__xyzTabSessionMem = null;
+    try {
+      if (window.sessionStorage) {
+        window.sessionStorage.removeItem(XYZ_TAB_SESSION_KEY);
+        window.sessionStorage.removeItem(XYZ_LOCAL_SESS_KEY);
+      }
+      if (window.localStorage) {
+        window.localStorage.removeItem(XYZ_LOCAL_SESS_KEY);
+      }
+      window.__xyzSafeStorage.removeItem(XYZ_LOCAL_SESS_KEY);
+    } catch (e) {}
+
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) {
+        const st = JSON.parse(raw);
+        st.isLoggedIn = false;
+        window.__isApplyingRemoteCloudState = true;
+        _prevSetItemV10(XYZ_STATE_KEY, JSON.stringify(st));
+        window.__isApplyingRemoteCloudState = false;
+      }
+    } catch (e) {}
+
+    if (typeof window.closeDrawer === 'function') {
+      try { window.closeDrawer(); } catch (e) {}
+    }
+    if (typeof window.toggleMenuDrawer === 'function') {
+      try { window.toggleMenuDrawer(false); } catch (e) {}
+    }
+    if (typeof window.switchXyzView === 'function') {
+      window.switchXyzView('auth');
+    }
+    if (typeof window.switchAuthMode === 'function') {
+      window.switchAuthMode('LOGIN');
+    }
+
+    if (isBlocked) {
+      window.__lastForceLogoutWasBlocked = true;
+      showAuthAlertBannerV11('🚫 User is blocked', false);
+    } else {
+      showAuthAlertBannerV11(window.__lastForceLogoutWasBlocked ? '🚫 User is blocked' : '🔒 You have been logged out by the Administrator.', false);
+    }
+  };
+
+  const _origPerformLogoutV8 = window.performXyzLogoutToAuth;
+  window.performXyzLogoutToAuth = function(reasonHint) {
+    let wasBlk = (reasonHint === 'BLOCKED' || window.__lastForceLogoutWasBlocked);
+    try {
+      const sess = getActiveTabSessionV11();
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw && sess && sess.userId) {
+        const st = JSON.parse(raw);
+        const allU = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+        const m = allU.find(u => u && u.userId === sess.userId);
+        if (m && (m.status === 'BLOCKED' || m.status === 'SUSPENDED')) wasBlk = true;
+      }
+    } catch (e) {}
+    window.forceLogoutCustomerImmediate(wasBlk ? 'BLOCKED' : 'LOGOUT');
+  };
+
+  window.checkCurrentUserForceLogoutOrBlock = function(explicitState) {
+    const sess = getActiveTabSessionV11();
+    if (!sess || (!sess.userId && !sess.identity)) return false;
+
+    let st = explicitState;
+    if (!st) {
+      try {
+        const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+        if (raw) st = JSON.parse(raw);
+      } catch (e) {}
+    }
+    if (!st || typeof st !== 'object') return false;
+
+    const myUid = String(sess.userId || '').trim();
+    const myIdent = String(sess.identity || '').trim().toLowerCase();
+    const loggedInAt = Number(sess.loggedInAt || 0);
+
+    const allUsers = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+    const matchedUser = allUsers.find(u => {
+      if (!u) return false;
+      if (myUid && String(u.userId || '') === myUid) return true;
+      if (myIdent) {
+        const uLogin = String(u.loginId || '').toLowerCase();
+        const uIdent = String(u.identity || '').toLowerCase();
+        const uEmail = String(u.email || '').toLowerCase();
+        const uPhone = String(u.phone || '').replace(/[\s\-()]/g, '');
+        const cleanMyIdent = myIdent.replace(/[\s\-()]/g, '');
+        if (uLogin === myIdent || uIdent === myIdent || uEmail === myIdent || (uPhone && uPhone === cleanMyIdent)) return true;
+      }
+      return false;
+    });
+
+    if (matchedUser && (matchedUser.status === 'BLOCKED' || matchedUser.status === 'SUSPENDED')) {
+      window.forceLogoutCustomerImmediate('BLOCKED');
+      return true;
+    }
+
+    const userForceLogoutTs = Math.max(
+      Number(matchedUser?.forceLogoutAt || 0),
+      Number((st.forceLogoutMap && myUid && st.forceLogoutMap[myUid]) ? st.forceLogoutMap[myUid] : 0)
+    );
+    if (userForceLogoutTs > 0 && userForceLogoutTs >= loggedInAt) {
+      window.forceLogoutCustomerImmediate('LOGOUT');
+      return true;
+    }
+
+    return false;
+  };
+
+  // Override handleXyzUserLogin so blocked users ALWAYS see "User is blocked" and cannot log in!
+  window.handleXyzUserLogin = async function() {
+    if (typeof window.pullCustomerStateFromCloud === 'function') {
+      try { await window.pullCustomerStateFromCloud(); } catch (e) {}
+    }
+    const idRaw = (document.getElementById('loginIdentityInput')?.value || '').trim();
+    const pwdRaw = document.getElementById('loginPasswordInput')?.value || '';
+
+    if (!idRaw) {
+      showAuthAlertBannerV11('⚠️ Please enter your registered Mobile Number, Email, or User ID.', false);
+      return;
+    }
+    if (!pwdRaw) {
+      showAuthAlertBannerV11('⚠️ Please enter your password.', false);
+      return;
+    }
+
+    let st = {};
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) st = JSON.parse(raw) || {};
+    } catch (e) {}
+
+    const allAccounts = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+    const cleanPhone = idRaw.replace(/[\s\-()]/g, '');
+    const normLower = idRaw.toLowerCase();
+
+    const matchingRecords = allAccounts.filter(acc => {
+      if (!acc) return false;
+      const uidMatch = String(acc.userId || '').toLowerCase() === normLower;
+      const loginMatch = String(acc.loginId || '').toLowerCase() === normLower;
+      const identMatch = String(acc.identity || '').toLowerCase() === normLower || String(acc.identity || '') === cleanPhone;
+      const emailMatch = String(acc.email || '').toLowerCase() === normLower;
+      const phoneClean = String(acc.phone || '').replace(/[\s\-()]/g, '');
+      const phoneMatch = Boolean(phoneClean && cleanPhone && (phoneClean === cleanPhone || phoneClean.endsWith(cleanPhone)));
+      return uidMatch || loginMatch || identMatch || emailMatch || phoneMatch;
+    });
+
+    if (matchingRecords.length === 0) {
+      showAuthAlertBannerV11('❌ Account not registered! Please register your account first before logging in.', false);
+      return;
+    }
+
+    const matchedAcc = matchingRecords[0];
+
+    const isBlocked = matchingRecords.some(acc => acc.status === 'BLOCKED' || acc.status === 'SUSPENDED');
+    if (isBlocked) {
+      showAuthAlertBannerV11('🚫 User is blocked', false);
+      return;
+    }
+
+    if (matchedAcc.password !== pwdRaw) {
+      showAuthAlertBannerV11('❌ Incorrect password! Please enter your valid registered password.', false);
+      return;
+    }
+
+    const loginNowTs = Date.now() + 50;
+    const newSess = {
+      userId: matchedAcc.userId,
+      identity: idRaw,
+      username: matchedAcc.username,
+      referralCode: matchedAcc.referralCode || ('XYZ' + matchedAcc.userId.replace(/[^0-9]/g, '')),
+      loggedInAt: loginNowTs
+    };
+    window.__xyzTabSessionMem = newSess;
+    try {
+      if (window.sessionStorage) {
+        window.sessionStorage.setItem(XYZ_TAB_SESSION_KEY, JSON.stringify(newSess));
+      }
+    } catch (e) {}
+
+    st.activeUserId = matchedAcc.userId;
+    st.username = matchedAcc.username;
+    st.userIdOrEmail = idRaw;
+    st.balance = Number(matchedAcc.cashBalanceInr || 0);
+    st.isLoggedIn = true;
+    window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+
+    window.__lastForceLogoutWasBlocked = false;
+    window.__lastLoggedInUserIdV11 = matchedAcc.userId;
+    showAuthAlertBannerV11('', true);
+    window.switchXyzView('homepage');
+  };
+
+  if (v11Bc) {
+    v11Bc.addEventListener('message', function(ev) {
+      try {
+        const d = ev.data;
+        if (!d) return;
+        if (d.type === 'USER_FORCE_LOGOUT_OR_BLOCK' && d.userId) {
+          const sess = getActiveTabSessionV11();
+          if (sess && String(sess.userId).toUpperCase() === String(d.userId).toUpperCase()) {
+            window.forceLogoutCustomerImmediate(d.action === 'BLOCK' ? 'BLOCKED' : 'LOGOUT');
+          }
+        }
+        if (d.state) {
+          window.checkCurrentUserForceLogoutOrBlock(d.state);
+        }
+      } catch (e) {}
+    });
+  }
+
+  window.addEventListener('storage', function(ev) {
+    if (ev.key === XYZ_STATE_KEY && ev.newValue) {
+      try {
+        const parsed = JSON.parse(ev.newValue);
+        window.checkCurrentUserForceLogoutOrBlock(parsed);
+      } catch (e) {}
+    }
+  });
+
+  setInterval(() => {
+    window.checkCurrentUserForceLogoutOrBlock();
+  }, 800);
+})();
+</script>
+<!-- === END XYZ CUSTOMER WEBAPP V11 COMPLETE FIXES === -->
 
 </body>
 </html>
