@@ -1,12 +1,12 @@
 {
-  "name": "xyz-games-server",
+  "name": "xyz-games-cloud-server",
   "version": "8.0.0",
-  "description": "XYZ Games — Zero-Dependency Multi-Device Real-Time Cloud Sync Server, Customer Webapp (index.html), and Super Admin Panel (admin_panel.html)",
+  "description": "XYZ Games — Zero-Dependency Multi-Device Real-Time Cloud Sync Server, Customer Webapp (index.html) & Super Admin Panel (admin_panel.html)",
   "main": "server.js",
+  "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js",
-    "reset-state": "node -e \"const fs=require('node:fs');if(fs.existsSync('xyz_cloud_state.json'))fs.unlinkSync('xyz_cloud_state.json');console.log('Cleared xyz_cloud_state.json');\""
+    "dev": "node --watch server.js"
   },
   "engines": {
     "node": ">=16.0.0"
@@ -14,15 +14,15 @@
   "keywords": [
     "xyz-games",
     "wingo",
-    "lottery",
+    "ludo",
     "uno",
     "aviator",
-    "ludo",
-    "quiz-game",
-    "admin-panel",
-    "sse-sync"
+    "lottery",
+    "quiz",
+    "real-time-sync",
+    "sse"
   ],
   "author": "XYZ Games",
-  "license": "UNLICENSED",
-  "private": true
+  "license": "MIT",
+  "dependencies": {}
 }

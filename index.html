@@ -14539,6 +14539,9 @@ window.addEventListener('DOMContentLoaded', renderBalance);
      * Refreshing the page has zero effect on the timer or period ID because it is derived from UTC Date.now()
      */
     function getSlotUtcClock(slotKey) {
+      if (typeof window.__v10GetSlotUtcClock === 'function') {
+        return window.__v10GetSlotUtcClock(slotKey);
+      }
       const cfg = SLOTS[slotKey] || SLOTS['30SEC'];
       const modeCfg = (state && state.wingoModesConfig && state.wingoModesConfig[slotKey]) ? state.wingoModesConfig[slotKey] : {};
       const effDuration = Number(modeCfg.duration || cfg.duration);
@@ -30745,5 +30748,538 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ CUSTOMER WEBAPP V9 FULL FIXES === -->
+<!-- === START XYZ CUSTOMER WEBAPP V10 DEPOSIT GATE & WINGO PERIOD SYNC === -->
+<style>
+  #depMinLimitGateNotice {
+    margin: 0 20px 18px;
+    padding: 15px 16px;
+    border-radius: 16px;
+    background: rgba(225, 29, 72, 0.10);
+    border: 1.5px solid #e11d48;
+    color: var(--text-main, #171412);
+    font-size: 0.86rem;
+    font-weight: 700;
+    line-height: 1.48;
+    text-align: center;
+    box-shadow: 0 4px 14px rgba(225, 29, 72, 0.08);
+  }
+  body.xyz-dark-mode #depMinLimitGateNotice {
+    background: rgba(225, 29, 72, 0.18);
+    border-color: #fb7185;
+    color: #f8fafc;
+  }
+  #xyz-view-deposit .amount-input-box.input-below-min {
+    border-color: #e11d48 !important;
+    box-shadow: 0 0 0 3px rgba(225, 29, 72, 0.15) !important;
+  }
+</style>
+<script>
+(function() {
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const wingoBcV10 = window.__xyzCreateBroadcastChannel ? window.__xyzCreateBroadcastChannel('xyz_games_live_channel') : null;
+
+  // Canonical Wingo Slot Metadata (Strictly locked durations & codes so Webapp and Admin Panel NEVER diverge)
+  const CANONICAL_WINGO_SLOTS = {
+    '30SEC': { key: '30SEC', label: 'WinGo 30 sec', shortName: '30Sec', duration: 30,  lockSec: 5,  code: '05' },
+    '1MIN':  { key: '1MIN',  label: 'WinGo 1 min',  shortName: '1Min',  duration: 60,  lockSec: 5,  code: '10' },
+    '2MIN':  { key: '2MIN',  label: 'WinGo 2 min',  shortName: '2Min',  duration: 120, lockSec: 8,  code: '20' },
+    '3MIN':  { key: '3MIN',  label: 'WinGo 3 min',  shortName: '3Min',  duration: 180, lockSec: 10, code: '30' },
+    '5MIN':  { key: '5MIN',  label: 'WinGo 5 min',  shortName: '5Min',  duration: 300, lockSec: 30, code: '50' }
+  };
+
+  window.__xyzServerClockOffsetMs = window.__xyzServerClockOffsetMs || 0;
+  window.getAuthoritativeUtcNowMs = function() {
+    return Date.now() + (Number(window.__xyzServerClockOffsetMs) || 0);
+  };
+
+  function getSharedStV10() {
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.serverNowMs === 'number' && parsed.serverNowMs > 1700000000000) {
+          const diff = parsed.serverNowMs - Date.now();
+          if (Math.abs(diff) < 3600000) {
+            window.__xyzServerClockOffsetMs = diff;
+          }
+        }
+        return parsed || {};
+      }
+    } catch (e) {}
+    return {};
+  }
+
+  function saveSharedStV10(st) {
+    try {
+      window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+    } catch (e) {}
+  }
+
+  // Upgrade mergeXyzMultiDeviceState in index.html to sync serverNowMs and activeSlot/webappActiveWingoSlot
+  const _origMergeCustV9 = window.mergeXyzMultiDeviceState;
+  window.mergeXyzMultiDeviceState = function(localSt, remoteSt) {
+    if (remoteSt && typeof remoteSt.serverNowMs === 'number' && remoteSt.serverNowMs > 1700000000000) {
+      const diff = remoteSt.serverNowMs - Date.now();
+      if (Math.abs(diff) < 3600000) {
+        window.__xyzServerClockOffsetMs = diff;
+      }
+    }
+    const merged = _origMergeCustV9 ? _origMergeCustV9(localSt, remoteSt) : Object.assign({}, localSt, remoteSt);
+    const locSlotTs = Number(localSt?.webappActiveWingoUpdatedAt || 0);
+    const remSlotTs = Number(remoteSt?.webappActiveWingoUpdatedAt || 0);
+    if (remSlotTs > locSlotTs && (remoteSt?.webappActiveWingoSlot || remoteSt?.activeSlot)) {
+      const s = remoteSt.webappActiveWingoSlot || remoteSt.activeSlot;
+      if (CANONICAL_WINGO_SLOTS[s]) {
+        merged.activeSlot = s;
+        merged.webappActiveWingoSlot = s;
+        merged.webappActiveWingoPeriodId = remoteSt.webappActiveWingoPeriodId || '';
+        merged.webappActiveWingoUpdatedAt = remSlotTs;
+      }
+    } else if (localSt?.webappActiveWingoSlot || localSt?.activeSlot) {
+      const s = localSt.webappActiveWingoSlot || localSt.activeSlot;
+      if (CANONICAL_WINGO_SLOTS[s]) {
+        merged.activeSlot = s;
+        merged.webappActiveWingoSlot = s;
+        merged.webappActiveWingoPeriodId = localSt.webappActiveWingoPeriodId || '';
+        merged.webappActiveWingoUpdatedAt = locSlotTs;
+      }
+    }
+    return merged;
+  };
+
+  // Unified, Canonical Wingo UTC Clock & Period Calculator
+  window.__v10GetSlotUtcClock = function(slotKey) {
+    const st = getSharedStV10();
+    const sKey = (slotKey && CANONICAL_WINGO_SLOTS[slotKey]) ? slotKey : (CANONICAL_WINGO_SLOTS[st.activeSlot] ? st.activeSlot : '30SEC');
+    const baseCfg = CANONICAL_WINGO_SLOTS[sKey] || CANONICAL_WINGO_SLOTS['30SEC'];
+    const modeCfg = (st.wingoModesConfig && st.wingoModesConfig[sKey]) ? st.wingoModesConfig[sKey] : {};
+
+    // Strictly use canonical duration & code so periodId is 100% deterministic and identical across Webapp & Admin Panel
+    const duration = baseCfg.duration;
+    const rawCut = Number(modeCfg.cutoff !== undefined ? modeCfg.cutoff : baseCfg.lockSec);
+    const cutoff = (Number.isFinite(rawCut) && rawCut >= 1 && rawCut < duration) ? rawCut : baseCfg.lockSec;
+    const enabled = modeCfg.enabled !== false;
+    const maintenanceMode = Boolean(modeCfg.maintenanceMode);
+    const minBetInr = Number(modeCfg.minBetInr || 10);
+    const maxBetInr = Number(modeCfg.maxBetInr || 50000);
+    const statusMessage = modeCfg.statusMessage || '';
+
+    const now = new Date(window.getAuthoritativeUtcNowMs());
+    const yyyy = now.getUTCFullYear();
+    const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(now.getUTCDate()).padStart(2, '0');
+    const datePrefix = `${yyyy}${mm}${dd}${baseCfg.code}`;
+
+    const utcSecsToday = now.getUTCHours() * 3600 + now.getUTCMinutes() * 60 + now.getUTCSeconds();
+    const periodIndex = Math.floor(utcSecsToday / duration) + 1;
+    const timeLeft = duration - (utcSecsToday % duration);
+    const periodId = `${datePrefix}${String(periodIndex).padStart(4, '0')}`;
+
+    const isCutoffLocked = timeLeft <= cutoff;
+    const isLocked = !enabled || maintenanceMode || isCutoffLocked;
+
+    return {
+      slotKey: sKey,
+      periodId,
+      periodIndex,
+      datePrefix,
+      timeLeft,
+      duration,
+      lockSec: cutoff,
+      cutoff,
+      enabled,
+      maintenanceMode,
+      minBetInr,
+      maxBetInr,
+      statusMessage,
+      isCutoffLocked,
+      isLocked
+    };
+  };
+  window.getSlotUtcClock = window.__v10GetSlotUtcClock;
+
+  let lastBroadcastedSlotPid = '';
+  function syncActiveWingoSlotToAdmin(slotKey, forcePush) {
+    const st = getSharedStV10();
+    const validSlot = CANONICAL_WINGO_SLOTS[slotKey] ? slotKey : (CANONICAL_WINGO_SLOTS[st.activeSlot] ? st.activeSlot : '30SEC');
+    const clock = window.__v10GetSlotUtcClock(validSlot);
+    const sig = `${validSlot}:${clock.periodId}`;
+
+    if (forcePush || st.activeSlot !== validSlot || st.webappActiveWingoSlot !== validSlot || st.webappActiveWingoPeriodId !== clock.periodId) {
+      st.activeSlot = validSlot;
+      st.webappActiveWingoSlot = validSlot;
+      st.webappActiveWingoPeriodId = clock.periodId;
+      st.webappActiveWingoUpdatedAt = Date.now();
+      saveSharedStV10(st);
+    }
+
+    if (forcePush || sig !== lastBroadcastedSlotPid) {
+      lastBroadcastedSlotPid = sig;
+      if (wingoBcV10) {
+        try {
+          wingoBcV10.postMessage({
+            type: 'WINGO_SLOT_SYNC',
+            activeSlot: validSlot,
+            periodId: clock.periodId,
+            ts: Date.now()
+          });
+        } catch (e) {}
+      }
+      if (forcePush && typeof window.pushCustomerStateToCloud === 'function') {
+        window.pushCustomerStateToCloud();
+      }
+    }
+  }
+
+  const _origSwitchTimeSlotV9 = window.switchTimeSlot;
+  window.switchTimeSlot = function(slotKey) {
+    const validSlot = CANONICAL_WINGO_SLOTS[slotKey] ? slotKey : '30SEC';
+    syncActiveWingoSlotToAdmin(validSlot, true);
+    if (typeof _origSwitchTimeSlotV9 === 'function') {
+      _origSwitchTimeSlotV9(validSlot);
+    }
+    if (typeof window.renderEverything === 'function') {
+      window.renderEverything();
+    }
+  };
+
+  const _origRenderEverythingV9 = window.renderEverything;
+  window.renderEverything = function() {
+    if (typeof _origRenderEverythingV9 === 'function') {
+      _origRenderEverythingV9();
+    }
+    const st = getSharedStV10();
+    const activeSlotKey = CANONICAL_WINGO_SLOTS[st.activeSlot] ? st.activeSlot : '30SEC';
+    const clock = window.__v10GetSlotUtcClock(activeSlotKey);
+    const pidEl = document.getElementById('ticketPeriodId');
+    if (pidEl) pidEl.textContent = clock.periodId;
+    const slotNameEl = document.getElementById('ticketSlotName');
+    if (slotNameEl) slotNameEl.textContent = CANONICAL_WINGO_SLOTS[activeSlotKey].label;
+    const popTitleEl = document.getElementById('popupSlotTitle');
+    if (popTitleEl && document.getElementById('betPopupBackdrop')?.classList.contains('show')) {
+      popTitleEl.textContent = `${CANONICAL_WINGO_SLOTS[activeSlotKey].label.toUpperCase()} • Period #${clock.periodId}`;
+    }
+    syncActiveWingoSlotToAdmin(activeSlotKey, false);
+  };
+  window.__syncGames = window.renderEverything;
+
+  if (wingoBcV10) {
+    const _prevOnMsg = wingoBcV10.onmessage;
+    wingoBcV10.onmessage = function(ev) {
+      if (typeof _prevOnMsg === 'function') {
+        try { _prevOnMsg(ev); } catch (e) {}
+      }
+      try {
+        const d = ev.data;
+        if (!d) return;
+        if (d.type === 'ADMIN_WINGO_MODE_SELECT' && d.modeKey && CANONICAL_WINGO_SLOTS[d.modeKey]) {
+          const st = getSharedStV10();
+          if (st.activeSlot !== d.modeKey) {
+            st.activeSlot = d.modeKey;
+            st.webappActiveWingoSlot = d.modeKey;
+            st.webappActiveWingoUpdatedAt = Date.now();
+            saveSharedStV10(st);
+            if (typeof window.renderEverything === 'function') window.renderEverything();
+          }
+        }
+      } catch (e) {}
+    };
+  }
+
+  // ===========================================================================
+  // STRICT DEPOSIT MINIMUM LIMIT GATE (UPI >= 100 INR, USDT >= 5 USDT)
+  // ===========================================================================
+  function getActiveDepositMethodV10() {
+    const isUsdtTab = Boolean(document.getElementById('mTab-USDT')?.classList.contains('active'));
+    return isUsdtTab ? 'USDT' : 'UPI';
+  }
+
+  window.getEnteredAmounts = function() {
+    const st = getSharedStV10();
+    const rate = Number((st.currencyConfig && st.currencyConfig.depositUsdtToInrRate) ? st.currencyConfig.depositUsdtToInrRate : 100);
+    const method = getActiveDepositMethodV10();
+    const rawStr = String(document.getElementById('depositAmountInput')?.value || '').trim();
+    const rawVal = rawStr === '' ? 0 : Math.max(0, Number(rawStr));
+    if (method === 'USDT') {
+      const usdtAmt = Number.isFinite(rawVal) ? rawVal : 0;
+      const inrAmt  = +(usdtAmt * rate).toFixed(2);
+      return { inrAmt, usdtAmt, rawVal: usdtAmt, rawStr, inputUnit: 'USDT', rate };
+    } else {
+      const inrAmt  = Number.isFinite(rawVal) ? rawVal : 0;
+      const usdtAmt = +(inrAmt / rate).toFixed(2);
+      return { inrAmt, usdtAmt, rawVal: inrAmt, rawStr, inputUnit: 'INR', rate };
+    }
+  };
+
+  function ensureDepMinWarningElement() {
+    let box = document.getElementById('depMinLimitGateNotice');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'depMinLimitGateNotice';
+      box.style.display = 'none';
+      const presetsRow = document.querySelector('#xyz-view-deposit .presets-row');
+      if (presetsRow && presetsRow.parentNode) {
+        presetsRow.parentNode.insertBefore(box, presetsRow.nextSibling);
+      }
+    }
+    return box;
+  }
+
+  window.enforceDepositMinimumGate = function() {
+    const st = getSharedStV10();
+    const method = getActiveDepositMethodV10();
+    const minUpiInr = Number(st.depositMinConfig?.minUpiInr || 100);
+    const minUsdt   = Number(st.depositMinConfig?.minUsdt || 5);
+    const inputEl   = document.getElementById('depositAmountInput');
+    const warnBox   = ensureDepMinWarningElement();
+
+    const panelUpi    = document.getElementById('panel-UPI');
+    const panelUsdt   = document.getElementById('panel-USDT');
+    const proceedWrap = document.querySelector('#xyz-view-deposit .proceed-wrap');
+    const proceedBtn  = document.getElementById('proceedPaymentBtn');
+
+    const { inrAmt, usdtAmt, rawStr } = window.getEnteredAmounts();
+    const hasTypedNumber = rawStr !== '' && !Number.isNaN(Number(rawStr));
+
+    if (method === 'UPI') {
+      if (inputEl) {
+        inputEl.min = String(minUpiInr);
+        inputEl.placeholder = `Minimum ₹${minUpiInr} (Enter ${minUpiInr} or more)`;
+      }
+      const isValidUpiAmount = hasTypedNumber && inrAmt >= minUpiInr;
+      if (inputEl) inputEl.classList.toggle('input-below-min', !isValidUpiAmount);
+
+      if (panelUsdt) {
+        panelUsdt.classList.remove('active');
+        panelUsdt.style.display = 'none';
+      }
+
+      if (!isValidUpiAmount) {
+        // STRICT GATE: Hide UPI ID, QR code, app launch buttons, UTR box & Submit button!
+        if (panelUpi) {
+          panelUpi.classList.remove('active');
+          panelUpi.style.display = 'none';
+        }
+        const upiQrBox = document.getElementById('upiQrContainer');
+        if (upiQrBox) upiQrBox.innerHTML = '';
+        const upiIdTxt = document.getElementById('merchantUpiIdDisplay');
+        if (upiIdTxt) upiIdTxt.textContent = '';
+        if (proceedWrap) proceedWrap.style.display = 'none';
+        if (proceedBtn) proceedBtn.disabled = true;
+
+        if (warnBox) {
+          warnBox.style.display = 'block';
+          warnBox.innerHTML = `
+            <div style="font-size:0.92rem;color:#e11d48;font-weight:800;margin-bottom:4px;">
+              ⚠️ Minimum Deposit via UPI is ₹${minUpiInr} INR
+            </div>
+            <div style="font-size:0.79rem;font-weight:600;opacity:0.9;">
+              Please enter <strong>₹${minUpiInr} or more</strong> in the amount box above to view the <strong>UPI ID &amp; QR Code</strong> for payment.
+            </div>
+          `;
+        }
+        return false;
+      } else {
+        // Amount is >= 100 INR -> Show UPI ID, QR Code, UTR box & Submit button!
+        if (warnBox) warnBox.style.display = 'none';
+        if (panelUpi) {
+          panelUpi.classList.add('active');
+          panelUpi.style.display = 'flex';
+        }
+        if (proceedWrap) proceedWrap.style.display = 'block';
+        if (proceedBtn) proceedBtn.disabled = false;
+        return true;
+      }
+    } else {
+      // USDT Method
+      if (inputEl) {
+        inputEl.min = String(minUsdt);
+        inputEl.placeholder = `Minimum ${minUsdt} USDT (Enter ${minUsdt} or more)`;
+      }
+      const isValidUsdtAmount = hasTypedNumber && usdtAmt >= minUsdt;
+      if (inputEl) inputEl.classList.toggle('input-below-min', !isValidUsdtAmount);
+
+      if (panelUpi) {
+        panelUpi.classList.remove('active');
+        panelUpi.style.display = 'none';
+      }
+
+      if (!isValidUsdtAmount) {
+        // STRICT GATE: Hide USDT Address, QR code, TXID box & Submit button!
+        if (panelUsdt) {
+          panelUsdt.classList.remove('active');
+          panelUsdt.style.display = 'none';
+        }
+        const usdtQrBox = document.getElementById('usdtQrContainer');
+        if (usdtQrBox) usdtQrBox.innerHTML = '';
+        const usdtAddrTxt = document.getElementById('merchantUsdtAddrDisplay');
+        if (usdtAddrTxt) usdtAddrTxt.textContent = '';
+        if (proceedWrap) proceedWrap.style.display = 'none';
+        if (proceedBtn) proceedBtn.disabled = true;
+
+        if (warnBox) {
+          warnBox.style.display = 'block';
+          warnBox.innerHTML = `
+            <div style="font-size:0.92rem;color:#e11d48;font-weight:800;margin-bottom:4px;">
+              ⚠️ Minimum Deposit via USDT is ${minUsdt} USDT
+            </div>
+            <div style="font-size:0.79rem;font-weight:600;opacity:0.9;">
+              Please enter <strong>${minUsdt} USDT or more</strong> in the amount box above to view the <strong>USDT Wallet Address &amp; QR Code</strong> for payment.
+            </div>
+          `;
+        }
+        return false;
+      } else {
+        // Amount is >= 5 USDT -> Show USDT Address, QR Code, TXID box & Submit button!
+        if (warnBox) warnBox.style.display = 'none';
+        if (panelUsdt) {
+          panelUsdt.classList.add('active');
+          panelUsdt.style.display = 'flex';
+        }
+        if (proceedWrap) proceedWrap.style.display = 'block';
+        if (proceedBtn) proceedBtn.disabled = false;
+        return true;
+      }
+    }
+  };
+
+  const _origOnAmountInputChangedV9 = window.onAmountInputChanged;
+  window.onAmountInputChanged = function() {
+    if (typeof _origOnAmountInputChangedV9 === 'function') {
+      try { _origOnAmountInputChangedV9(); } catch (e) {}
+    }
+    window.enforceDepositMinimumGate();
+  };
+
+  window.selectQuickAmount = function(presetVal) {
+    const inp = document.getElementById('depositAmountInput');
+    if (inp) inp.value = String(presetVal);
+    window.onAmountInputChanged();
+  };
+
+  window.selectPaymentMethod = function(method) {
+    const cleanMethod = (method === 'USDT') ? 'USDT' : 'UPI';
+    const st = getSharedStV10();
+    const minUpiInr = Number(st.depositMinConfig?.minUpiInr || 100);
+    const minUsdt   = Number(st.depositMinConfig?.minUsdt || 5);
+
+    ['UPI', 'USDT'].forEach(m => {
+      const tEl = document.getElementById(`mTab-${m}`);
+      if (tEl) tEl.classList.toggle('active', m === cleanMethod);
+    });
+
+    const inputEl = document.getElementById('depositAmountInput');
+    if (cleanMethod === 'USDT') {
+      st.currency = 'USDT';
+      if (inputEl) {
+        const curVal = Number(inputEl.value || 0);
+        if (curVal < minUsdt || curVal >= 100) inputEl.value = String(Math.max(minUsdt, 10));
+      }
+    } else {
+      st.currency = 'INR';
+      if (inputEl) {
+        const curVal = Number(inputEl.value || 0);
+        if (curVal < minUpiInr) inputEl.value = String(Math.max(minUpiInr, 500));
+      }
+    }
+    saveSharedStV10(st);
+    const ban = document.getElementById('depProcessingStatusBanner');
+    if (ban) ban.style.display = 'none';
+    if (typeof window.pickRandomGatewayCredentialsForDeposit === 'function') {
+      window.pickRandomGatewayCredentialsForDeposit(true);
+    }
+    window.renderDepositPage();
+  };
+
+  const _origRenderDepositPageV9 = window.renderDepositPage;
+  window.renderDepositPage = function() {
+    if (typeof _origRenderDepositPageV9 === 'function') {
+      try { _origRenderDepositPageV9(); } catch (e) {}
+    }
+    const st = getSharedStV10();
+    const method = getActiveDepositMethodV10();
+    const minUpiInr = Number(st.depositMinConfig?.minUpiInr || 100);
+    const minUsdt   = Number(st.depositMinConfig?.minUsdt || 5);
+
+    const isUsdt = (method === 'USDT');
+    document.getElementById('depCurrBtn-INR')?.classList.toggle('active', !isUsdt);
+    document.getElementById('depCurrBtn-USDT')?.classList.toggle('active', isUsdt);
+    const lblEl = document.getElementById('enterAmountLabel');
+    if (lblEl) {
+      lblEl.textContent = isUsdt ? `Enter Amount (₮ USDT — Min ${minUsdt} USDT)` : `Enter Amount (₹ INR — Min ₹${minUpiInr})`;
+    }
+
+    const presetValues = isUsdt ? [minUsdt, 10, 50, 100] : [minUpiInr, 500, 1000, 5000];
+    const pillIds = ['pPill-200', 'pPill-500', 'pPill-1000', 'pPill-5000'];
+    const curVal = Number(document.getElementById('depositAmountInput')?.value || 0);
+    pillIds.forEach((id, idx) => {
+      const btn = document.getElementById(id);
+      if (btn) {
+        const val = presetValues[idx];
+        btn.textContent = isUsdt ? `${val} USDT` : `₹${val}`;
+        btn.classList.toggle('active', curVal === val);
+        btn.onclick = () => window.selectQuickAmount(val);
+      }
+    });
+
+    window.onAmountInputChanged();
+  };
+  window.__syncDeposit = window.renderDepositPage;
+
+  const _origOpenUpiPaymentApp = window.openUpiPaymentApp;
+  window.openUpiPaymentApp = function(appKey) {
+    if (!window.enforceDepositMinimumGate()) return;
+    if (typeof _origOpenUpiPaymentApp === 'function') _origOpenUpiPaymentApp(appKey);
+  };
+
+  const _origCopyMerchantUpi = window.copyMerchantUpi;
+  window.copyMerchantUpi = function() {
+    if (!window.enforceDepositMinimumGate()) return;
+    if (typeof _origCopyMerchantUpi === 'function') _origCopyMerchantUpi();
+  };
+
+  const _origCopyMerchantUsdt = window.copyMerchantUsdt;
+  window.copyMerchantUsdt = function() {
+    if (!window.enforceDepositMinimumGate()) return;
+    if (typeof _origCopyMerchantUsdt === 'function') _origCopyMerchantUsdt();
+  };
+
+  const _origOpenQrZoomModal = window.openQrZoomModal;
+  window.openQrZoomModal = function(channel) {
+    if (!window.enforceDepositMinimumGate()) return;
+    if (typeof _origOpenQrZoomModal === 'function') _origOpenQrZoomModal(channel);
+  };
+
+  const _origHandleProceedToPayment = window.handleProceedToPayment;
+  window.handleProceedToPayment = function() {
+    if (!window.enforceDepositMinimumGate()) {
+      document.getElementById('depositAmountInput')?.focus();
+      return;
+    }
+    if (typeof _origHandleProceedToPayment === 'function') _origHandleProceedToPayment();
+  };
+
+  function bindDepositInputListeners() {
+    const inp = document.getElementById('depositAmountInput');
+    if (inp && !inp.__v10Bound) {
+      inp.__v10Bound = true;
+      ['input', 'keyup', 'change'].forEach(evName => {
+        inp.addEventListener(evName, () => {
+          window.onAmountInputChanged();
+        });
+      });
+    }
+    window.enforceDepositMinimumGate();
+  }
+
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', bindDepositInputListeners);
+  } else {
+    bindDepositInputListeners();
+  }
+})();
+</script>
+<!-- === END XYZ CUSTOMER WEBAPP V10 DEPOSIT GATE & WINGO PERIOD SYNC === -->
+
 </body>
 </html>

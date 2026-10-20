@@ -1455,6 +1455,9 @@
     }
 
     function getWingoModeUtcState(modeKey, customCfg) {
+      if (typeof window.__v10GetWingoModeUtcState === 'function') {
+        return window.__v10GetWingoModeUtcState(modeKey, customCfg);
+      }
       const base = WINGO_MODES[modeKey] || WINGO_MODES['30SEC'];
       const duration = Number(customCfg?.duration || base.duration);
       const cutoff   = Number(customCfg?.cutoff || base.cutoff);
@@ -22761,5 +22764,410 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ ADMIN V9 FULL FIXES === -->
+<!-- === START XYZ ADMIN V10 WINGO PERIOD SYNC & DEPOSIT MIN CONFIG === -->
+<script>
+(function() {
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const admWingoBcV10 = window.__xyzCreateBroadcastChannel ? window.__xyzCreateBroadcastChannel('xyz_games_live_channel') : null;
+
+  const CANONICAL_MODES = {
+    '30SEC': { key: '30SEC', name: 'Wingo 30 Seconds', short: '30s', duration: 30,  cutoff: 5,  code: '05' },
+    '1MIN':  { key: '1MIN',  name: 'Wingo 1 Minute',   short: '1m',  duration: 60,  cutoff: 5,  code: '10' },
+    '2MIN':  { key: '2MIN',  name: 'Wingo 2 Minutes',  short: '2m',  duration: 120, cutoff: 8,  code: '20' },
+    '3MIN':  { key: '3MIN',  name: 'Wingo 3 Minutes',  short: '3m',  duration: 180, cutoff: 10, code: '30' },
+    '5MIN':  { key: '5MIN',  name: 'Wingo 5 Minutes',  short: '5m',  duration: 300, cutoff: 30, code: '50' }
+  };
+
+  window.__xyzServerClockOffsetMs = window.__xyzServerClockOffsetMs || 0;
+  window.getAuthoritativeUtcNowMs = function() {
+    return Date.now() + (Number(window.__xyzServerClockOffsetMs) || 0);
+  };
+
+  function readLatestWebappSlotFromStorage() {
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed) {
+          const s = parsed.webappActiveWingoSlot || parsed.activeSlot;
+          if (s && CANONICAL_MODES[s]) return s;
+        }
+      }
+    } catch (e) {}
+    if (typeof db === 'object' && db) {
+      const s2 = db.webappActiveWingoSlot || db.activeSlot;
+      if (s2 && CANONICAL_MODES[s2]) return s2;
+    }
+    return null;
+  }
+
+  let lastSyncedWebappSlot = readLatestWebappSlotFromStorage() || '30SEC';
+  if (CANONICAL_MODES[lastSyncedWebappSlot]) {
+    selectedManualMode = lastSyncedWebappSlot;
+  }
+
+  function onExternalWebappSlotChanged(newSlot) {
+    if (!newSlot || !CANONICAL_MODES[newSlot]) return;
+    if (typeof db === 'object' && db) {
+      db.activeSlot = newSlot;
+      db.webappActiveWingoSlot = newSlot;
+    }
+    if (newSlot !== lastSyncedWebappSlot || selectedManualMode !== newSlot) {
+      lastSyncedWebappSlot = newSlot;
+      selectedManualMode = newSlot;
+      if (currentAdminPage === 'wingo-results' || currentAdminPage === 'wingo-periods' || currentAdminPage === 'wingo-overview') {
+        renderCurrentAdminView();
+      }
+    }
+  }
+
+  // CRITICAL FIX: Ensure mergeXyzMultiDeviceState in admin_panel.html preserves activeSlot & webappActiveWingoSlot from remoteSt!
+  const _origMergeAdminV9 = window.mergeXyzMultiDeviceState;
+  window.mergeXyzMultiDeviceState = function(localSt, remoteSt, isInitialBootPull) {
+    if (remoteSt && typeof remoteSt.serverNowMs === 'number' && remoteSt.serverNowMs > 1700000000000) {
+      const diff = remoteSt.serverNowMs - Date.now();
+      if (Math.abs(diff) < 3600000) {
+        window.__xyzServerClockOffsetMs = diff;
+      }
+    }
+    const merged = _origMergeAdminV9 ? _origMergeAdminV9(localSt, remoteSt, isInitialBootPull) : Object.assign({}, localSt, remoteSt);
+    const locSlotTs = Number(localSt?.webappActiveWingoUpdatedAt || 0);
+    const remSlotTs = Number(remoteSt?.webappActiveWingoUpdatedAt || 0);
+    if (remSlotTs >= locSlotTs && (remoteSt?.webappActiveWingoSlot || remoteSt?.activeSlot)) {
+      const s = remoteSt.webappActiveWingoSlot || remoteSt.activeSlot;
+      if (CANONICAL_MODES[s]) {
+        merged.activeSlot = s;
+        merged.webappActiveWingoSlot = s;
+        merged.webappActiveWingoPeriodId = remoteSt.webappActiveWingoPeriodId || '';
+        merged.webappActiveWingoUpdatedAt = remSlotTs || Date.now();
+        setTimeout(() => onExternalWebappSlotChanged(s), 0);
+      }
+    } else if (localSt?.webappActiveWingoSlot || localSt?.activeSlot) {
+      const s = localSt.webappActiveWingoSlot || localSt.activeSlot;
+      if (CANONICAL_MODES[s]) {
+        merged.activeSlot = s;
+        merged.webappActiveWingoSlot = s;
+        merged.webappActiveWingoPeriodId = localSt.webappActiveWingoPeriodId || '';
+        merged.webappActiveWingoUpdatedAt = locSlotTs;
+      }
+    }
+    return merged;
+  };
+
+  // Canonical Wingo UTC Period Calculator (100% identical to Customer Webapp)
+  window.__v10GetWingoModeUtcState = function(modeKey, customCfg) {
+    const mKey = (modeKey && CANONICAL_MODES[modeKey]) ? modeKey : '30SEC';
+    const base = CANONICAL_MODES[mKey];
+    const cfg = customCfg || (typeof db === 'object' && db && db.wingoModesConfig ? db.wingoModesConfig[mKey] : {}) || {};
+
+    // Strictly lock canonical duration & code so periodId never diverges from Webapp
+    const duration = base.duration;
+    const rawCut = Number(cfg.cutoff !== undefined ? cfg.cutoff : base.cutoff);
+    const cutoff = (Number.isFinite(rawCut) && rawCut >= 1 && rawCut < duration) ? rawCut : base.cutoff;
+
+    const nowMs = window.getAuthoritativeUtcNowMs();
+    const now = new Date(nowMs);
+    const yyyy = now.getUTCFullYear();
+    const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(now.getUTCDate()).padStart(2, '0');
+    const prefix = `${yyyy}${mm}${dd}${base.code}`;
+
+    const utcSecsToday = now.getUTCHours() * 3600 + now.getUTCMinutes() * 60 + now.getUTCSeconds();
+    const periodIndex = Math.floor(utcSecsToday / duration) + 1;
+    const elapsedInPeriod = utcSecsToday % duration;
+    const timeLeft = duration - elapsedInPeriod;
+
+    const periodId = `${prefix}${String(periodIndex).padStart(4, '0')}`;
+    const nextPeriodId = `${prefix}${String(periodIndex + 1).padStart(4, '0')}`;
+
+    const openEpochMs = nowMs - (elapsedInPeriod * 1000);
+    const cutoffEpochMs = openEpochMs + ((duration - cutoff) * 1000);
+    const closeEpochMs = openEpochMs + (duration * 1000);
+
+    const isLocked = timeLeft <= cutoff;
+    const roundStatus = (cfg && cfg.enabled === false)
+      ? 'DISABLED'
+      : (cfg && cfg.maintenanceMode)
+        ? 'MAINTENANCE'
+        : (isLocked ? 'CLOSED_CUTOFF' : 'OPEN');
+
+    return {
+      modeKey: mKey,
+      periodId,
+      nextPeriodId,
+      periodIndex,
+      prefix,
+      duration,
+      cutoff,
+      timeLeft,
+      isLocked,
+      roundStatus,
+      openingIso: new Date(openEpochMs).toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+      cutoffIso:  new Date(cutoffEpochMs).toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+      closingIso: new Date(closeEpochMs).toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+      commitHash: typeof computeCommitHashHex === 'function' ? computeCommitHashHex(`SERVER_SECRET_SEED_V4:${mKey}:${periodId}`) : `sha256:${periodId}`
+    };
+  };
+  window.getWingoModeUtcState = window.__v10GetWingoModeUtcState;
+
+  window.selectAdminManualResultMode = function(modeKey) {
+    if (!modeKey || !CANONICAL_MODES[modeKey]) return;
+    selectedManualMode = modeKey;
+    lastSyncedWebappSlot = modeKey;
+    const now = Date.now();
+    if (typeof db === 'object' && db) {
+      db.activeSlot = modeKey;
+      db.webappActiveWingoSlot = modeKey;
+      db.webappActiveWingoUpdatedAt = now;
+      saveAdminDb(true);
+    }
+    if (admWingoBcV10) {
+      try {
+        admWingoBcV10.postMessage({
+          type: 'ADMIN_WINGO_MODE_SELECT',
+          modeKey: modeKey,
+          ts: now
+        });
+      } catch (e) {}
+    }
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+    renderCurrentAdminView();
+  };
+
+  window.openWingoManualResultForMode = function(modeKey) {
+    if (modeKey && CANONICAL_MODES[modeKey]) {
+      selectedManualMode = modeKey;
+      lastSyncedWebappSlot = modeKey;
+      window.__adminJustPickedExplicitMode = true;
+    }
+    navigateAdminPage('wingo-results');
+  };
+
+  const PAGE_TO_MODE_MAP = {
+    'wingo-30s': '30SEC',
+    'wingo-1m':  '1MIN',
+    'wingo-2m':  '2MIN',
+    'wingo-3m':  '3MIN',
+    'wingo-5m':  '5MIN'
+  };
+
+  const _origNavigateAdminPageV9 = window.navigateAdminPage;
+  window.navigateAdminPage = function(pageId) {
+    if (PAGE_TO_MODE_MAP[pageId]) {
+      selectedManualMode = PAGE_TO_MODE_MAP[pageId];
+      lastSyncedWebappSlot = selectedManualMode;
+      window.__adminJustPickedExplicitMode = true;
+    } else if (pageId === 'wingo-results') {
+      if (!window.__adminJustPickedExplicitMode) {
+        const webappSlot = readLatestWebappSlotFromStorage();
+        if (webappSlot && CANONICAL_MODES[webappSlot]) {
+          selectedManualMode = webappSlot;
+          lastSyncedWebappSlot = webappSlot;
+        }
+      }
+      window.__adminJustPickedExplicitMode = false;
+    }
+    if (typeof _origNavigateAdminPageV9 === 'function') {
+      _origNavigateAdminPageV9(pageId);
+    }
+  };
+
+  if (admWingoBcV10) {
+    const _prevBcMsg = admWingoBcV10.onmessage;
+    admWingoBcV10.onmessage = function(ev) {
+      if (typeof _prevBcMsg === 'function') {
+        try { _prevBcMsg(ev); } catch (e) {}
+      }
+      try {
+        const d = ev.data;
+        if (!d) return;
+        if (d.type === 'WINGO_SLOT_SYNC' && d.activeSlot && CANONICAL_MODES[d.activeSlot]) {
+          onExternalWebappSlotChanged(d.activeSlot);
+        } else if (d.state && (d.state.webappActiveWingoSlot || d.state.activeSlot)) {
+          onExternalWebappSlotChanged(d.state.webappActiveWingoSlot || d.state.activeSlot);
+        }
+      } catch (e) {}
+    };
+  }
+
+  window.addEventListener('storage', function(ev) {
+    if (ev.key === XYZ_STATE_KEY && ev.newValue) {
+      try {
+        const parsed = JSON.parse(ev.newValue);
+        if (parsed && (parsed.webappActiveWingoSlot || parsed.activeSlot)) {
+          onExternalWebappSlotChanged(parsed.webappActiveWingoSlot || parsed.activeSlot);
+        }
+      } catch (e) {}
+    }
+  });
+
+  // Upgrade renderWingoPeriodsPage so the 5 LIVE rows at the top also have data-live-period and data-live-clock
+  window.renderWingoPeriodsPage = function() {
+    const activeLiveRows = ['30SEC', '1MIN', '2MIN', '3MIN', '5MIN'].map(mKey => {
+      const cfg = (db.wingoModesConfig && db.wingoModesConfig[mKey]) || {};
+      const utc = window.__v10GetWingoModeUtcState(mKey, cfg);
+      const pState = utc.isLocked ? 'AWAITING_RESULT' : 'OPEN';
+      const mm = String(Math.floor(utc.timeLeft / 60)).padStart(2, '0');
+      const ss = String(utc.timeLeft % 60).padStart(2, '0');
+      return `
+        <tr style="background:#EFF6FF;">
+          <td style="font-family:monospace;font-weight:800;">
+            <span data-live-period="${mKey}">${utc.periodId}</span>
+            <span class="badge badge-blue">LIVE (<span data-live-clock="${mKey}">${mm}:${ss}</span>)</span>
+          </td>
+          <td><strong>${WINGO_MODES[mKey].short}</strong></td>
+          <td style="font-size:0.72rem;">${utc.openingIso}</td>
+          <td style="font-size:0.72rem;">${utc.cutoffIso}</td>
+          <td style="font-size:0.72rem;">${utc.closingIso}</td>
+          <td><span class="badge ${utc.isLocked ? 'badge-warning' : 'badge-success'}">${pState}</span></td>
+          <td>0 (${fmtMoney(0)})</td>
+          <td><span class="badge badge-slate">AWAITING</span></td>
+          <td><span class="badge badge-slate">PENDING</span></td>
+          <td>
+            <div style="display:flex;gap:4px;">
+              <button type="button" class="btn btn-outline btn-sm" onclick="window.openWingoManualResultForMode('${mKey}')">🎯 Set Result</button>
+              <button type="button" class="btn btn-danger btn-sm" onclick="pauseOrCancelPeriod(window.__v10GetWingoModeUtcState('${mKey}').periodId, '${mKey}')">⏸️ Incident</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    const filteredPast = (db.wingoPeriods || []).filter(p => {
+      if (wingoFilterMode !== 'ALL' && p.modeKey !== wingoFilterMode) return false;
+      if (wingoFilterStatus !== 'ALL' && p.periodStatus !== wingoFilterStatus) return false;
+      if (wingoSearchPeriod && !String(p.periodId).toLowerCase().includes(wingoSearchPeriod.toLowerCase())) return false;
+      return true;
+    });
+
+    const pastRows = filteredPast.slice(0, 20).map(p => {
+      const sp = BALL_OUTCOMES[p.winningNumber ?? 0];
+      return `
+        <tr>
+          <td style="font-family:monospace;font-weight:700;">${p.periodId}</td>
+          <td><strong>${WINGO_MODES[p.modeKey]?.short || p.modeKey}</strong></td>
+          <td style="font-size:0.72rem;">${fmtDateTime(p.openingAt)}</td>
+          <td style="font-size:0.72rem;">${fmtDateTime(p.cutoffAt)}</td>
+          <td style="font-size:0.72rem;">${fmtDateTime(p.closingAt)}</td>
+          <td><span class="badge ${p.periodStatus === 'SETTLED' ? 'badge-success' : (p.periodStatus === 'UNDER_REVIEW' ? 'badge-warning' : 'badge-danger')}">${p.periodStatus}</span></td>
+          <td>${p.entryCount} (${fmtMoney(p.totalEntryAmountInr)})</td>
+          <td>
+            <span class="w-ball ${sp.badgeCls}" style="width:22px;height:22px;font-size:0.7rem;">${p.winningNumber}</span>
+            <span style="font-size:0.72rem;font-weight:700;">${p.resultStatus}</span>
+          </td>
+          <td><span class="badge ${p.settlementStatus === 'SETTLED' ? 'badge-success' : 'badge-warning'}">${p.settlementStatus}</span></td>
+          <td>
+            <div style="display:flex;gap:4px;">
+              <button type="button" class="btn btn-outline btn-sm" onclick="openFairnessVerifier('${p.periodId}')">🛡️ Verify</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="flagPeriodUnderReview('${p.periodId}')">🚩 Review</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div class="page-header-row">
+        <div>
+          <h1 class="page-title-h1">📋 C. Wingo Period Management &amp; State-Transition Ledger</h1>
+          <p class="page-subtitle">Live UTC Period IDs across all 5 timer modes, synchronized 100% with the Customer Webapp.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <select class="top-select" onchange="wingoFilterMode=this.value;renderCurrentAdminView()">
+            <option value="ALL" ${wingoFilterMode==='ALL'?'selected':''}>All 5 Timer Modes</option>
+            <option value="30SEC" ${wingoFilterMode==='30SEC'?'selected':''}>Wingo 30s</option>
+            <option value="1MIN" ${wingoFilterMode==='1MIN'?'selected':''}>Wingo 1m</option>
+            <option value="2MIN" ${wingoFilterMode==='2MIN'?'selected':''}>Wingo 2m</option>
+            <option value="3MIN" ${wingoFilterMode==='3MIN'?'selected':''}>Wingo 3m</option>
+            <option value="5MIN" ${wingoFilterMode==='5MIN'?'selected':''}>Wingo 5m</option>
+          </select>
+          <input type="text" class="top-select" placeholder="🔍 Search Period ID..." value="${wingoSearchPeriod}" oninput="wingoSearchPeriod=this.value;renderCurrentAdminView()" />
+        </div>
+      </div>
+
+      <div class="adm-card">
+        <div class="table-wrap">
+          <table class="adm-table">
+            <thead>
+              <tr>
+                <th>Period ID</th>
+                <th>Mode</th>
+                <th>Opening Timestamp</th>
+                <th>Entry Cutoff</th>
+                <th>Closing Timestamp</th>
+                <th>Period Status</th>
+                <th>Entries / Eligible Vol</th>
+                <th>Result Status</th>
+                <th>Settlement</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${activeLiveRows}
+              ${pastRows}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  };
+
+  const _origRenderWingoResultsPageV9 = window.renderWingoResultsPage;
+  window.renderWingoResultsPage = function() {
+    const latestSlot = readLatestWebappSlotFromStorage();
+    if (!CANONICAL_MODES[selectedManualMode]) {
+      selectedManualMode = (latestSlot && CANONICAL_MODES[latestSlot]) ? latestSlot : '30SEC';
+    }
+    let html = _origRenderWingoResultsPageV9();
+    html = html.replace(
+      /onclick="selectedManualMode='([^']+)';renderCurrentAdminView\(\)"/g,
+      'onclick="window.selectAdminManualResultMode(\'$1\')"'
+    );
+    html = html.replace(
+      'onchange="selectedManualMode=this.value;renderCurrentAdminView()"',
+      'onchange="window.selectAdminManualResultMode(this.value)"'
+    );
+    return html;
+  };
+
+  const _prevTickClocksV9 = window.tickAdminClocks;
+  window.tickAdminClocks = function() {
+    const extSlot = readLatestWebappSlotFromStorage();
+    if (extSlot && extSlot !== lastSyncedWebappSlot) {
+      onExternalWebappSlotChanged(extSlot);
+    }
+
+    if (typeof _prevTickClocksV9 === 'function') {
+      _prevTickClocksV9();
+    }
+
+    const activeTickerMode = CANONICAL_MODES[selectedManualMode] ? selectedManualMode : (extSlot || '30SEC');
+    const activeUtc = window.__v10GetWingoModeUtcState(activeTickerMode);
+    const topModeLbl = document.getElementById('topTickerModeLabel');
+    const topCnt = document.getElementById('topTickerCountdown');
+    const topPid = document.getElementById('topTickerPeriodId');
+    if (topModeLbl) topModeLbl.textContent = `Wingo ${CANONICAL_MODES[activeTickerMode].short}`;
+    if (topCnt) {
+      const mm = String(Math.floor(activeUtc.timeLeft / 60)).padStart(2, '0');
+      const ss = String(activeUtc.timeLeft % 60).padStart(2, '0');
+      topCnt.textContent = `${mm}:${ss}`;
+    }
+    if (topPid) topPid.textContent = `#${activeUtc.periodId}`;
+
+    const manPidInput = document.getElementById('manResPeriodId');
+    if (manPidInput && manPidInput.value !== activeUtc.periodId) {
+      manPidInput.value = activeUtc.periodId;
+    }
+    const manPrevCode = document.getElementById('manResPreviewPeriodCode');
+    if (manPrevCode && manPrevCode.textContent !== activeUtc.periodId) {
+      manPrevCode.textContent = activeUtc.periodId;
+    }
+  };
+})();
+</script>
+<!-- === END XYZ ADMIN V10 WINGO PERIOD SYNC & DEPOSIT MIN CONFIG === -->
+
 </body>
 </html>

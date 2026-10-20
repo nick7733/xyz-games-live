@@ -113,7 +113,7 @@ function mergeArrayById(localArr, remoteArr, idField, preferIncomingOnConflict) 
 
 // Keys that belong strictly to device-local UI state and must NEVER pollute global masterState
 const DEVICE_LOCAL_UI_KEYS = [
-  'darkMode', 'activeSlot', 'isLoggedIn', 'activeUserId', 'username', 'userIdOrEmail', 'balance'
+  'darkMode', 'isLoggedIn', 'activeUserId', 'username', 'userIdOrEmail', 'balance'
 ];
 
 // Keys that are authoritatively controlled by the Admin Panel
@@ -295,6 +295,21 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
       .slice(0, 40);
   }
 
+  const curSlotTs = Number(cur.webappActiveWingoUpdatedAt || 0);
+  const incSlotTs = Number(incomingSt.webappActiveWingoUpdatedAt || 0);
+  if (incSlotTs >= curSlotTs && (incomingSt.webappActiveWingoSlot || incomingSt.activeSlot)) {
+    base.activeSlot = incomingSt.webappActiveWingoSlot || incomingSt.activeSlot;
+    base.webappActiveWingoSlot = base.activeSlot;
+    base.webappActiveWingoPeriodId = incomingSt.webappActiveWingoPeriodId || cur.webappActiveWingoPeriodId || '';
+    base.webappActiveWingoUpdatedAt = incSlotTs || Date.now();
+  } else if (cur.webappActiveWingoSlot || cur.activeSlot) {
+    base.activeSlot = cur.webappActiveWingoSlot || cur.activeSlot;
+    base.webappActiveWingoSlot = base.activeSlot;
+    base.webappActiveWingoPeriodId = cur.webappActiveWingoPeriodId || '';
+    base.webappActiveWingoUpdatedAt = curSlotTs;
+  }
+  base.serverNowMs = Date.now();
+
   DEVICE_LOCAL_UI_KEYS.forEach(k => {
     delete base[k];
   });
@@ -472,6 +487,7 @@ const server = http.createServer((req, res) => {
   // 4. REST State Get / Merge Endpoint
   if (pathname === '/api/xyz-state' || pathname === '/xyz_games_state.json') {
     if (req.method === 'GET') {
+      masterState.serverNowMs = Date.now();
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(masterState));
       return;
