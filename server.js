@@ -1,19 +1,18 @@
 /**
- * XYZ Games — Zero-Dependency Multi-Device Real-Time Cloud Sync Server (server.js)
+ * XYZ Games — Zero-Dependency Multi-Device Real-Time Cloud Sync Server (server.js v8.0)
  * Works out of the box with pure Node.js (v16+ / v18+ / v20+):
  *   node server.js
  *
- * Features:
- * - Serves Customer Webapp (`index.html`) at `/` and `/index.html`
- * - Serves Super Admin Panel (`admin_panel.html`) at `/admin` and `/admin_panel.html`
- * - Authoritative Role-Separated State Sync across all mobiles & laptops:
- *   - Customer pushes (`isAdminPush: false`) ONLY update customer collections (registrations, deposits,
- *     withdrawals, bets, tickets, heartbeats) and can NEVER overwrite Admin configurations (Banners,
- *     UPI IDs, USDT Addresses, Super Admin credentials, Game Rules, or Tournaments).
- *   - Admin pushes (`isAdminPush: true`) authoritatively update Admin configurations (Banners, UPI IDs,
- *     QR codes, Game Rules, Draws, Tournaments, Staff Admins) using server-side timestamps.
- *   - Once Super Admin registers once on ANY device (`superAdminConfigured: true`), it is permanently
- *     locked on the server so every device opening `/admin` sees ONLY the Login screen.
+ * Key Features:
+ * 1. Serves Customer Webapp (`index.html`) at `/`, `/index.html`, `/register`, `/signup`, `/login`
+ *    (so referral invite links like `/?ref=CODE` or `/register?ref=CODE` always open cleanly).
+ * 2. Serves Admin Panel (`admin_panel.html`) at `/admin`, `/admin/`, and `/admin_panel.html`.
+ * 3. Admin Concurrent Device Session Limiter (`/api/xyz-admin-session`):
+ *    - Super Admin: max 5 concurrent devices (6th device login auto-logs out the 1st/oldest device).
+ *    - Role Admin: max 30 concurrent devices (31st device login auto-logs out the 1st/oldest device).
+ * 4. Real-Time 1vs1 Matchmaking Queue (`/api/xyz-matchmaking`) for UNO, Ludo, and Quiz:
+ *    - Matches two real online players if both search within the 2-minute window; otherwise times out after 120s.
+ * 5. Authoritative Role-Separated State Sync & WinGo Least-Bet-Exposure (House Profit) Auto-Result Engine.
  */
 
 const http = require('node:http');
@@ -34,6 +33,19 @@ try {
   }
 } catch (e) {
   masterState = {};
+}
+
+// Active Admin Device Sessions Map:
+// { SUPER_ADMIN: [ { sessionId, loginId, deviceId, createdAt, lastSeenAt } ], ROLE_<loginId>: [ ... ] }
+if (!masterState.adminActiveSessions || typeof masterState.adminActiveSessions !== 'object') {
+  masterState.adminActiveSessions = {};
+}
+if (!Array.isArray(masterState.evictedAdminSessions)) {
+  masterState.evictedAdminSessions = [];
+}
+// Live 1vs1 Matchmaking Queue: { UNO: [], LUDO: [], QUIZ: [] }
+if (!masterState.liveMatchmakingLobby || typeof masterState.liveMatchmakingLobby !== 'object') {
+  masterState.liveMatchmakingLobby = { UNO: [], LUDO: [], QUIZ: [] };
 }
 
 function saveStateToDisk() {
@@ -99,34 +111,32 @@ function mergeArrayById(localArr, remoteArr, idField, preferIncomingOnConflict) 
   return order.map(k => map.get(k));
 }
 
-// Keys that belong strictly to device-local UI state and should never pollute global masterState
+// Keys that belong strictly to device-local UI state and must NEVER pollute global masterState
 const DEVICE_LOCAL_UI_KEYS = [
-  'darkMode', 'activeSlot', 'isLoggedIn', 'activeUserId', 'username', 'userIdOrEmail'
+  'darkMode', 'activeSlot', 'isLoggedIn', 'activeUserId', 'username', 'userIdOrEmail', 'balance'
 ];
 
 // Keys that are authoritatively controlled by the Admin Panel
 const ADMIN_EXCLUSIVE_KEYS = [
   'websiteConfig', 'paymentGatewayConfig', 'upiId', 'usdtAddress', 'currencyConfig',
-  'wingoModesConfig', 'wingoRules', 'manualOverrides', 'ludoConfig', 'unoConfig',
-  'mathConfig', 'aviatorConfig', 'promoConfig', 'quizQuestions', 'staffAdmins',
-  'superAdminConfigured', 'systemToggles', 'auditModalConfig'
+  'firstDepositBonusConfig', 'withdrawalConfig',
+  'wingoModesConfig', 'wingoRules', 'manualOverrides', 'settledPeriodResults',
+  'ludoConfig', 'unoConfig', 'mathConfig', 'aviatorConfig', 'promoConfig',
+  'quizQuestions', 'staffAdmins', 'superAdminConfigured', 'systemToggles', 'auditModalConfig'
 ];
 
 function mergeServerState(currentSt, incomingSt, isAdminPush) {
   if (!incomingSt || typeof incomingSt !== 'object') return currentSt || {};
   const cur = (currentSt && typeof currentSt === 'object') ? currentSt : {};
 
-  // Start from current master state so customer pushes never clobber admin keys
   const base = Object.assign({}, cur);
 
-  // Check if Super Admin is already configured on the server
   const serverHasSuperAdmin = Boolean(
     cur.superAdminConfigured &&
     Array.isArray(cur.staffAdmins) &&
     cur.staffAdmins.some(a => a && (a.isMasterSuperAdmin || a.roleKey === 'SUPER_ADMIN'))
   );
 
-  // Check if incoming payload is registering or updating Super Admin
   const incomingHasSuperAdmin = Boolean(
     incomingSt.superAdminConfigured &&
     Array.isArray(incomingSt.staffAdmins) &&
@@ -134,14 +144,12 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
   );
 
   if (isAdminPush) {
-    // Authoritative Admin update: apply all admin keys directly from Admin Panel
     ADMIN_EXCLUSIVE_KEYS.forEach(k => {
       if (incomingSt[k] !== undefined) {
         base[k] = incomingSt[k];
       }
     });
 
-    // Permanent lock: once Super Admin is configured on the server, never allow an unconfigured state to wipe it
     if (serverHasSuperAdmin && !incomingHasSuperAdmin) {
       base.superAdminConfigured = true;
       base.staffAdmins = cur.staffAdmins;
@@ -151,8 +159,6 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
 
     base.adminUpdatedAt = Date.now();
 
-    // For Admin-managed collections where Admin can delete or edit items, trust Admin's array if provided,
-    // while preserving any brand-new customer registrations/requests
     if (Array.isArray(incomingSt.adminPromotions)) base.adminPromotions = incomingSt.adminPromotions;
     if (Array.isArray(incomingSt.adminNotifications)) base.adminNotifications = incomingSt.adminNotifications;
     if (Array.isArray(incomingSt.lotteryDraws)) base.lotteryDraws = incomingSt.lotteryDraws;
@@ -167,7 +173,6 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
       base.adminAuditLogs = mergeArrayById(cur.adminAuditLogs, incomingSt.adminAuditLogs, 'auditId', true);
     }
 
-    // If Admin explicitly deleted a user, respect Admin's deletion; otherwise merge
     if (Array.isArray(incomingSt.adminUsersList)) {
       base.adminUsersList = incomingSt.adminUsersList;
     }
@@ -175,19 +180,30 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
       base.registeredAccounts = mergeArrayById(cur.registeredAccounts, incomingSt.registeredAccounts, 'userId', true);
     }
   } else {
-    // Customer Webapp push:
-    // 1. NEVER overwrite ADMIN_EXCLUSIVE_KEYS if server already has them initialized
     ADMIN_EXCLUSIVE_KEYS.forEach(k => {
       if (cur[k] === undefined && incomingSt[k] !== undefined && k !== 'superAdminConfigured' && k !== 'staffAdmins') {
         base[k] = incomingSt[k];
       }
     });
 
-    // 2. Merge customer accounts & balances safely
+    // Allow settledPeriodResults from auto-settled WinGo rounds to merge so all clients see the same least-bet outcome
+    if (incomingSt.settledPeriodResults && typeof incomingSt.settledPeriodResults === 'object') {
+      base.settledPeriodResults = Object.assign({}, incomingSt.settledPeriodResults, cur.settledPeriodResults || {});
+    }
+
+    // Merge customer readByUids on notifications without overwriting Admin notifications list
+    if (Array.isArray(cur.adminNotifications) && Array.isArray(incomingSt.adminNotifications)) {
+      base.adminNotifications = cur.adminNotifications.map(srvN => {
+        const incN = incomingSt.adminNotifications.find(x => x && (x.notifId || x.id) === (srvN.notifId || srvN.id));
+        if (!incN) return srvN;
+        const mergedRead = Array.from(new Set([...(srvN.readByUids || []), ...(incN.readByUids || [])]));
+        return Object.assign({}, srvN, { readByUids: mergedRead });
+      });
+    }
+
     base.adminUsersList = mergeArrayById(cur.adminUsersList, incomingSt.adminUsersList, 'userId', false);
     base.registeredAccounts = mergeArrayById(cur.registeredAccounts, incomingSt.registeredAccounts, 'userId', false);
 
-    // 3. Merge tournament participant joins from customer into server tournaments without overwriting Admin tournament setup
     ['ludoTournaments', 'unoTournaments', 'mathTournaments'].forEach(tKey => {
       if (Array.isArray(cur[tKey]) && Array.isArray(incomingSt[tKey])) {
         base[tKey] = cur[tKey].map(srvTr => {
@@ -215,7 +231,6 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
     }
   });
 
-  // Merge shared operational collections by ID
   base.adminDeposits = mergeArrayById(cur.adminDeposits, incomingSt.adminDeposits, 'depositId', isAdminPush);
   base.adminWithdrawals = mergeArrayById(cur.adminWithdrawals, incomingSt.adminWithdrawals, 'withdrawalId', isAdminPush);
   base.transactions = mergeArrayById(cur.transactions, incomingSt.transactions, 'id', isAdminPush);
@@ -241,10 +256,27 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
     base.processedDepositEventIds = Array.from(new Set([...(cur.processedDepositEventIds || []), ...(incomingSt.processedDepositEventIds || [])]));
   }
 
-  // Merge connectedDevices map
+  // Merge live 1vs1 matchmaking queues
+  if (incomingSt.liveMatchmakingLobby && typeof incomingSt.liveMatchmakingLobby === 'object') {
+    if (!base.liveMatchmakingLobby || typeof base.liveMatchmakingLobby !== 'object') {
+      base.liveMatchmakingLobby = { UNO: [], LUDO: [], QUIZ: [] };
+    }
+    ['UNO', 'LUDO', 'QUIZ'].forEach(gKey => {
+      base.liveMatchmakingLobby[gKey] = mergeArrayById(
+        base.liveMatchmakingLobby[gKey],
+        incomingSt.liveMatchmakingLobby[gKey],
+        'queueId',
+        true
+      ).filter(q => q && (Date.now() - Number(q.joinedAt || 0) < 180000));
+    });
+  }
+
+  // Preserve server-side adminActiveSessions and evictedAdminSessions
+  base.adminActiveSessions = cur.adminActiveSessions || {};
+  base.evictedAdminSessions = cur.evictedAdminSessions || [];
+
   base.connectedDevices = Object.assign({}, cur.connectedDevices || {}, incomingSt.connectedDevices || {});
 
-  // Clean out device-local UI keys so one device's dark mode or active tab never overwrites another device
   DEVICE_LOCAL_UI_KEYS.forEach(k => {
     delete base[k];
   });
@@ -310,7 +342,101 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 2. Fast Admin Auth Status Check Endpoint
+  // 2. Admin Concurrent Device Session Endpoint (Super Admin = Max 5 Devices, Role Admin = Max 30 Devices)
+  if (pathname === '/api/xyz-admin-session' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        const action = data.action || 'CHECK';
+        const loginId = String(data.loginId || '').trim().toLowerCase();
+        const isSuperAdmin = Boolean(data.isSuperAdmin);
+        const sessionId = String(data.sessionId || '').trim();
+        const deviceId = String(data.deviceId || '').trim();
+        const bucketKey = isSuperAdmin ? 'SUPER_ADMIN_POOL' : `ROLE_${loginId}`;
+        const maxDevices = isSuperAdmin ? 5 : 30;
+
+        if (!masterState.adminActiveSessions) masterState.adminActiveSessions = {};
+        if (!Array.isArray(masterState.adminActiveSessions[bucketKey])) {
+          masterState.adminActiveSessions[bucketKey] = [];
+        }
+        if (!Array.isArray(masterState.evictedAdminSessions)) {
+          masterState.evictedAdminSessions = [];
+        }
+
+        let list = masterState.adminActiveSessions[bucketKey];
+
+        if (action === 'LOGIN') {
+          list = list.filter(s => s && s.sessionId !== sessionId);
+          list.push({
+            sessionId,
+            loginId,
+            deviceId,
+            isSuperAdmin,
+            createdAt: Date.now(),
+            lastSeenAt: Date.now()
+          });
+          list.sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+
+          const evictedNow = [];
+          while (list.length > maxDevices) {
+            const oldest = list.shift();
+            if (oldest && oldest.sessionId) {
+              evictedNow.push(oldest.sessionId);
+              masterState.evictedAdminSessions.unshift(oldest.sessionId);
+            }
+          }
+          if (masterState.evictedAdminSessions.length > 200) {
+            masterState.evictedAdminSessions = masterState.evictedAdminSessions.slice(0, 200);
+          }
+          masterState.adminActiveSessions[bucketKey] = list;
+          saveStateToDisk();
+          broadcastStateToSseClients(deviceId, true);
+
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({
+            ok: true,
+            activeCount: list.length,
+            maxDevices,
+            evictedSessionIds: evictedNow,
+            sessions: list
+          }));
+          return;
+        }
+
+        if (action === 'LOGOUT') {
+          masterState.adminActiveSessions[bucketKey] = list.filter(s => s && s.sessionId !== sessionId);
+          saveStateToDisk();
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+
+        // Action === 'CHECK' / Heartbeat
+        const wasEvicted = masterState.evictedAdminSessions.includes(sessionId) ||
+                           (sessionId && !list.some(s => s && s.sessionId === sessionId));
+        if (!wasEvicted) {
+          list.forEach(s => {
+            if (s && s.sessionId === sessionId) s.lastSeenAt = Date.now();
+          });
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ok: true,
+          valid: !wasEvicted,
+          activeCount: list.length,
+          maxDevices
+        }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+
+  // 3. Fast Admin Auth Status Check Endpoint
   if (pathname === '/api/xyz-auth-status' && req.method === 'GET') {
     const isConfigured = Boolean(
       masterState.superAdminConfigured &&
@@ -325,7 +451,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 3. REST State Get / Merge Endpoint (Also supports Firebase-like /xyz_games_state.json path)
+  // 4. REST State Get / Merge Endpoint
   if (pathname === '/api/xyz-state' || pathname === '/xyz_games_state.json') {
     if (req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -364,11 +490,13 @@ const server = http.createServer((req, res) => {
     }
   }
 
-  // 4. Serve Static HTML & Assets
+  // 5. Serve Static HTML & SPA Routes (/register, /signup, /login -> index.html; /admin -> admin_panel.html)
   let targetFile = 'index.html';
   if (pathname === '/admin' || pathname === '/admin/' || pathname === '/admin_panel.html') {
     targetFile = 'admin_panel.html';
-  } else if (pathname !== '/' && pathname !== '/index.html') {
+  } else if (pathname === '/' || pathname === '/index.html' || pathname === '/register' || pathname === '/register/' || pathname === '/signup' || pathname === '/login') {
+    targetFile = 'index.html';
+  } else {
     const cleanRel = pathname.replace(/^\/+/, '');
     if (fs.existsSync(path.join(__dirname, cleanRel)) && fs.statSync(path.join(__dirname, cleanRel)).isFile()) {
       targetFile = cleanRel;
@@ -389,8 +517,9 @@ const server = http.createServer((req, res) => {
 if (require.main === module) {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`=============================================================`);
-    console.log(`🚀 XYZ Games Multi-Device Cloud Server running on port ${PORT}`);
+    console.log(`🚀 XYZ Games Multi-Device Cloud Server v8.0 running on port ${PORT}`);
     console.log(`📱 Customer Webapp : http://localhost:${PORT}/`);
+    console.log(`🎁 Invite Register : http://localhost:${PORT}/register?ref=XYZ7L108`);
     console.log(`🛡️ Super Admin     : http://localhost:${PORT}/admin`);
     console.log(`🌐 Live Sync API   : http://localhost:${PORT}/api/xyz-state`);
     console.log(`=============================================================`);

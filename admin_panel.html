@@ -19475,5 +19475,1411 @@ function generateGenuineQrMatrix(text) {
 </script>
 <!-- === END XYZ ADMIN MULTI-DEVICE CLOUD CONTROL V7 === -->
 
+
+<!-- === START XYZ ADMIN V8 FULL UPGRADES (STRICT ROLE ISOLATION, MOBILE/PC RESPONSIVE, 5/30 DEVICE SESSION LIMIT, INR/USDT DISPLAY, FIRST DEPOSIT BONUS, WITHDRAWAL LIMITS & HOUSE-PROFIT AUTO-RESULT) === -->
+<style>
+  /* Mobile & PC Full Responsiveness for Admin Panel */
+  #admMobileSidebarBackdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(2px);
+    z-index: 48;
+  }
+  #admMobileSidebarBackdrop.show {
+    display: block;
+  }
+
+  @media (max-width: 960px) {
+    .adm-sidebar {
+      position: fixed !important;
+      left: 0 !important;
+      top: 0 !important;
+      bottom: 0 !important;
+      width: 268px !important;
+      max-width: 82vw !important;
+      margin-left: 0 !important;
+      transform: translateX(-105%) !important;
+      z-index: 55 !important;
+      transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1) !important;
+    }
+    .adm-sidebar.mobile-open {
+      transform: translateX(0) !important;
+    }
+    .adm-main {
+      width: 100% !important;
+      max-width: 100vw !important;
+      overflow-x: hidden !important;
+    }
+    .adm-topbar {
+      padding: 10px 12px !important;
+      gap: 8px !important;
+    }
+    .topbar-left, .topbar-right {
+      width: 100%;
+      justify-content: space-between;
+      gap: 6px !important;
+    }
+    .topbar-right {
+      overflow-x: auto;
+      flex-wrap: nowrap !important;
+      padding-bottom: 4px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .topbar-right > * {
+      flex-shrink: 0;
+    }
+    .adm-content {
+      padding: 12px 10px 40px !important;
+    }
+    .grid-2, .grid-3, .grid-4 {
+      grid-template-columns: 1fr !important;
+      gap: 12px !important;
+    }
+    .kpi-grid {
+      grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)) !important;
+      gap: 10px !important;
+    }
+    .kpi-blue-card {
+      padding: 12px 13px !important;
+    }
+    .kpi-blue-card .kpi-val {
+      font-size: 1.1rem !important;
+    }
+    .toggles-grid {
+      grid-template-columns: 1fr !important;
+    }
+    .welcome-hero-card {
+      padding: 14px 15px !important;
+    }
+    .adm-card {
+      padding: 14px 12px !important;
+    }
+    .page-title-h1 {
+      font-size: 1.12rem !important;
+    }
+    .adm-modal-card {
+      width: calc(100vw - 20px) !important;
+      max-width: calc(100vw - 20px) !important;
+      padding: 16px 14px !important;
+      max-height: 90vh !important;
+    }
+    .adm-auth-card {
+      padding: 22px 18px !important;
+      max-width: calc(100vw - 24px) !important;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .kpi-grid {
+      grid-template-columns: 1fr 1fr !important;
+    }
+    .breadcrumb-bar {
+      flex-direction: column;
+      align-items: flex-start !important;
+    }
+    #globalTopSearch {
+      width: 140px !important;
+    }
+  }
+</style>
+
+<div id="admMobileSidebarBackdrop" onclick="window.closeMobileAdminSidebar()"></div>
+
+<script>
+(function() {
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const XYZ_ADMIN_SESSION_KEY = 'XYZ_ACTIVE_ADMIN_SESSION_V5';
+
+  // ===========================================================================
+  // 1. COMPLETE 1-TO-1 FEATURE CATALOG (ZERO LEAKAGE OF ADMIN_PERMISSIONS)
+  // ===========================================================================
+  window.ADMIN_FEATURE_CATALOG = [
+    { key: 'DASHBOARD',         label: '📊 Dashboard Overview',                                     pages: ['dashboard'] },
+    { key: 'CLOUD_DEVICES',     label: '🌐 Multi-Device Cloud Sync & Live Devices',                 pages: ['cloud-devices'] },
+    { key: 'WINGO',             label: '🎰 Wingo Games (30s–5m)',                                   pages: ['wingo-overview', 'wingo-30s', 'wingo-1m', 'wingo-2m', 'wingo-3m', 'wingo-5m', 'wingo-periods', 'wingo-results', 'wingo-history', 'wingo-settlements', 'wingo-rules'] },
+    { key: 'LOTTERY',           label: '🎟️ Lottery Draw Management (5/100)',                        pages: ['lottery-admin'] },
+    { key: 'CARDS',             label: '🃏 Cards (Classic UNO & Tournaments)',                      pages: ['cards-admin'] },
+    { key: 'LUDO',              label: '🎲 Ludo (1vs1, PC & Tournaments)',                          pages: ['ludo-admin'] },
+    { key: 'QUIZ',              label: '🧮 Quiz Game (Math & Tournaments)',                         pages: ['quiz-admin', 'quiz-dashboard', 'quiz-questions', 'quiz-difficulty', 'quiz-sessions', 'quiz-scoring', 'quiz-leaderboards', 'quiz-rounds', 'quiz-analytics'] },
+    { key: 'OTHER_GAMES',       label: '🎮 Other Games (Game Catalog, Categories & Availability)',  pages: ['games-catalog', 'games-categories', 'games-availability'] },
+    { key: 'CURRENCY_RATES',    label: '💱 Currency Exchange Rates',                                pages: ['currency-rates'] },
+    { key: 'PAYMENT_GATEWAY',   label: '💳 Payment Gateway (UPI & USDT)',                           pages: ['finance-gateway'] },
+    { key: 'DEPOSITS',          label: '📥 Deposit Management & First-Deposit Bonus',               pages: ['finance-deposits'] },
+    { key: 'WITHDRAWALS',       label: '📤 Withdrawal & Ledger Management',                         pages: ['finance-withdrawals', 'finance-transactions', 'finance-reconciliation', 'finance-reports', 'finance-ledger', 'finance-reconcile'] },
+    { key: 'GIFT_CARDS',        label: '🎁 Promotions, Gift Cards & Marketing',                     pages: ['promo-codes', 'promo-bonuses', 'promo-campaigns'] },
+    { key: 'NOTIFICATIONS',     label: '🔔 Send Notifications (All Users & By UID)',                pages: ['notifications-admin', 'promo-announcements', 'support-announcements'] },
+    { key: 'USERS',             label: '👤 User Management & Balances',                             pages: ['users-all', 'users-details', 'users-status', 'users-balances', 'users-rg', 'users-kyc', 'users-A', 'users-B', 'users-C'] },
+    { key: 'AGENTS',            label: '🤝 Agent Panel & 7-Level Referrals',                        pages: ['agent-panel', 'agents-all', 'agents-details', 'agents-hierarchy', 'agents-config', 'agents-ledger', 'agents-payouts', 'agents-tree', 'agents-rates'] },
+    { key: 'SUPPORT',           label: '🎧 Customer Support & Telegram',                            pages: ['support-tickets', 'support-complaints'] },
+    { key: 'WEBSITE',           label: '🌐 Website Management & Lobby Banners',                     pages: ['lobby-banners', 'web-homepage', 'web-navigation', 'web-cards', 'web-banners', 'web-content', 'web-texts', 'promo-banners'] },
+    { key: 'REPORTS_AUDIT',     label: '📈 Reports & Analytics',                                    pages: ['reports-analytics', 'reports-daily', 'reports-export'] },
+    { key: 'SECURITY_SETTINGS', label: '🔒 Security, Audit Logs & General Settings',                pages: ['security-audit', 'general-settings', 'security-logs', 'security-sql'] },
+    { key: 'ADMIN_PERMISSIONS', label: '🛡️ Admin Users & Permissions',                              pages: ['admin-permissions'] }
+  ];
+
+  const PAGE_TO_FEATURE_MAP = {};
+  window.ADMIN_FEATURE_CATALOG.forEach(f => {
+    (f.pages || []).forEach(p => {
+      PAGE_TO_FEATURE_MAP[p] = f.key;
+    });
+  });
+
+  // ===========================================================================
+  // 2. STRICT GRANULAR PERMISSION CHECKER (NEVER LEAKS UNGRANTED FUNCTIONS)
+  // ===========================================================================
+  window.hasAdminFeature = function(featureKey) {
+    if (!loggedInAdminAccount) return false;
+    if (loggedInAdminAccount.status !== 'ACTIVE') return false;
+    if (loggedInAdminAccount.isMasterSuperAdmin === true) return true;
+    const feats = Array.isArray(loggedInAdminAccount.allowedFeatures) ? loggedInAdminAccount.allowedFeatures : [];
+    return feats.includes(featureKey);
+  };
+
+  window.isPageAllowedForCurrentRole = function(pageId) {
+    if (!loggedInAdminAccount) return false;
+    if (loggedInAdminAccount.status !== 'ACTIVE') return false;
+    if (loggedInAdminAccount.isMasterSuperAdmin === true) return true;
+    const feats = Array.isArray(loggedInAdminAccount.allowedFeatures) ? loggedInAdminAccount.allowedFeatures : [];
+    const reqFeat = PAGE_TO_FEATURE_MAP[pageId];
+    if (reqFeat) {
+      return feats.includes(reqFeat);
+    }
+    return false;
+  };
+
+  window.getDefaultPageForAdminAccount = function(acc) {
+    if (!acc) return 'dashboard';
+    if (acc.isMasterSuperAdmin === true) return 'dashboard';
+    const feats = Array.isArray(acc.allowedFeatures) ? acc.allowedFeatures : [];
+    for (let i = 0; i < window.ADMIN_FEATURE_CATALOG.length; i++) {
+      const f = window.ADMIN_FEATURE_CATALOG[i];
+      if (feats.includes(f.key) && f.pages.length > 0) return f.pages[0];
+    }
+    return '';
+  };
+
+  // ===========================================================================
+  // 3. MOBILE RESPONSIVE SIDEBAR TOGGLE & AUTO-CLOSE ON NAVIGATION
+  // ===========================================================================
+  window.toggleAdminSidebar = function() {
+    const sb = document.getElementById('admSidebar');
+    const bd = document.getElementById('admMobileSidebarBackdrop');
+    if (!sb) return;
+    if (window.innerWidth <= 960) {
+      const isOpen = sb.classList.toggle('mobile-open');
+      if (bd) bd.classList.toggle('show', isOpen);
+    } else {
+      sb.classList.toggle('collapsed');
+    }
+  };
+
+  window.closeMobileAdminSidebar = function() {
+    const sb = document.getElementById('admSidebar');
+    const bd = document.getElementById('admMobileSidebarBackdrop');
+    if (sb) sb.classList.remove('mobile-open');
+    if (bd) bd.classList.remove('show');
+  };
+
+  window.navigateAdminPage = function(pageId) {
+    if (!window.isPageAllowedForCurrentRole(pageId)) {
+      showAdmToast('🔒 Access Restricted: You do not have permission for this module.');
+      return;
+    }
+    currentAdminPage = pageId;
+    MENU_TREE.forEach(grp => {
+      if (grp.children && grp.children.some(c => c.id === pageId)) {
+        expandedMenuGroups[grp.id] = true;
+      }
+    });
+    if (window.innerWidth <= 960) {
+      window.closeMobileAdminSidebar();
+    }
+    renderSidebarTree(document.getElementById('sidebarMenuFilter')?.value || '');
+    renderCurrentAdminView();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // ===========================================================================
+  // 4. STRICT TOPBAR & SIDEBAR ISOLATION (HIDE ALL UNGRANTED CONTROLS)
+  // ===========================================================================
+  window.syncTopbarAndShellForActiveAdmin = function() {
+    const shell = document.querySelector('.admin-shell');
+    const gate = document.getElementById('admAuthGateOverlay');
+    if (!loggedInAdminAccount) {
+      if (shell) shell.style.display = 'none';
+      if (gate) gate.classList.remove('hidden');
+      window.closeMobileAdminSidebar();
+      window.renderAdminAuthGate();
+      return;
+    }
+
+    if (shell) shell.style.display = 'flex';
+    if (gate) gate.classList.add('hidden');
+
+    const isMaster = Boolean(loggedInAdminAccount.isMasterSuperAdmin === true);
+    const hasAdminPerm = window.hasAdminFeature('ADMIN_PERMISSIONS');
+    const setVis = (el, show, displayType = '') => {
+      if (!el) return;
+      el.style.display = show ? displayType : 'none';
+    };
+
+    const brandNameEl = document.querySelector('.adm-sidebar .brand-name');
+    const brandSubEl = document.querySelector('.adm-sidebar .brand-sub');
+    if (brandNameEl) {
+      brandNameEl.textContent = isMaster ? 'XYZ SUPER ADMIN' : 'XYZ ADMIN PANEL';
+    }
+    if (brandSubEl) {
+      brandSubEl.textContent = isMaster
+        ? 'MASTER OPERATIONS CONSOLE'
+        : (loggedInAdminAccount.customRoleTitle || loggedInAdminAccount.username || 'ROLE CONSOLE').toUpperCase();
+    }
+
+    setVis(document.querySelector('.live-wingo-ticker'), window.hasAdminFeature('WINGO'), 'inline-flex');
+    setVis(document.getElementById('globalTopSearch'), window.hasAdminFeature('USERS'), 'inline-block');
+    setVis(document.getElementById('globalDateRange'), window.hasAdminFeature('DASHBOARD') || window.hasAdminFeature('REPORTS_AUDIT'), 'inline-block');
+    setVis(
+      document.getElementById('globalCurrencySelect'),
+      window.hasAdminFeature('CURRENCY_RATES') || window.hasAdminFeature('PAYMENT_GATEWAY'),
+      'inline-block'
+    );
+
+    setVis(document.getElementById('topGatewayQuickBtn'), window.hasAdminFeature('PAYMENT_GATEWAY'), 'inline-block');
+    setVis(document.getElementById('topRateQuickBtn'), window.hasAdminFeature('CURRENCY_RATES'), 'inline-block');
+    setVis(document.getElementById('topQuizQuickBtn'), window.hasAdminFeature('QUIZ'), 'inline-block');
+    setVis(document.getElementById('topCardsQuickBtn'), window.hasAdminFeature('CARDS'), 'inline-block');
+    setVis(document.getElementById('topLudoQuickBtn'), window.hasAdminFeature('LUDO'), 'inline-block');
+    setVis(document.getElementById('topLotteryQuickBtn'), window.hasAdminFeature('LOTTERY'), 'inline-block');
+    setVis(document.getElementById('topNotifQuickBtn'), window.hasAdminFeature('NOTIFICATIONS'), 'inline-block');
+    setVis(document.getElementById('topCloudSyncQuickBtn'), window.hasAdminFeature('CLOUD_DEVICES'), 'inline-block');
+
+    setVis(document.getElementById('activeRoleSelector'), false);
+    setVis(document.getElementById('topRoleLoginBtn'), false);
+
+    setVis(document.querySelector('.top-notif-pill.dep'), window.hasAdminFeature('DEPOSITS'), 'inline-flex');
+    setVis(document.querySelector('.top-notif-pill.wd'), window.hasAdminFeature('WITHDRAWALS'), 'inline-flex');
+    setVis(document.querySelector('.btn-preview-webapp'), window.hasAdminFeature('WEBSITE'), 'inline-flex');
+
+    let sessionBar = document.getElementById('admActiveSessionBar');
+    if (!sessionBar) {
+      sessionBar = document.createElement('div');
+      sessionBar.id = 'admActiveSessionBar';
+      sessionBar.style.cssText = 'display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;';
+      const topRight = document.querySelector('.adm-topbar .topbar-right');
+      if (topRight) topRight.appendChild(sessionBar);
+    }
+    const roleTitleLabel = isMaster
+      ? '👑 Super Admin'
+      : `🛡️ ${loggedInAdminAccount.customRoleTitle || loggedInAdminAccount.username}`;
+    sessionBar.innerHTML = `
+      <span class="adm-session-badge" title="Logged in via /admin">
+        ${roleTitleLabel} <code style="font-size:0.72rem;color:#3563F5;">(${loggedInAdminAccount.loginId})</code>
+      </span>
+      ${hasAdminPerm ? `
+        <button type="button" class="top-select" style="border-color:#3563F5;background:#EFF6FF;color:#1D4ED8;font-weight:800;cursor:pointer;" onclick="navigateAdminPage('admin-permissions')" title="Create Role Admins & Manage Permissions">
+          🛡️ Admin Users &amp; Permissions
+        </button>
+      ` : ''}
+      <button type="button" class="adm-logout-btn" onclick="window.logoutAdminSessionToGate()" title="Sign out and return to /admin login">
+        🚪 Logout
+      </button>
+    `;
+  };
+
+  // Also filter Dashboard KPI cards and quick buttons if a Role Admin has DASHBOARD but lacks specific module permissions
+  const _origRenderDashboardViewV8 = window.renderDashboardView;
+  window.renderDashboardView = function() {
+    let rawHtml = _origRenderDashboardViewV8();
+    if (loggedInAdminAccount && !loggedInAdminAccount.isMasterSuperAdmin) {
+      const temp = document.createElement('div');
+      temp.innerHTML = rawHtml;
+      temp.querySelectorAll('[onclick*="navigateAdminPage"]').forEach(el => {
+        const m = (el.getAttribute('onclick') || '').match(/navigateAdminPage\(['"]([^'"]+)['"]\)/);
+        if (m && m[1] && !window.isPageAllowedForCurrentRole(m[1])) {
+          if (el.classList.contains('kpi-blue-card')) {
+            el.style.display = 'none';
+          } else {
+            el.remove();
+          }
+        }
+      });
+      if (!window.hasAdminFeature('WEBSITE')) {
+        temp.querySelectorAll('[onclick*="openCustomerWebappModal"]').forEach(el => el.remove());
+      }
+      if (!window.hasAdminFeature('CURRENCY_RATES')) {
+        temp.querySelectorAll('[onclick*="saveCurrencyRatesFromInputs"]').forEach(el => {
+          const card = el.closest('.adm-card');
+          if (card) card.remove();
+        });
+      }
+      rawHtml = temp.innerHTML;
+    }
+    return rawHtml;
+  };
+
+  // ===========================================================================
+  // 5. SUB-ADMIN CREATOR & FEATURE RESTRICTOR (EXACT CHECKBOX SYNC)
+  // ===========================================================================
+  window.syncFullControlMasterCheckbox = function(chkSelector, masterChkId) {
+    const boxes = Array.from(document.querySelectorAll(chkSelector));
+    const allChecked = boxes.length > 0 && boxes.every(c => c.checked);
+    const masterChk = document.getElementById(masterChkId);
+    if (masterChk) masterChk.checked = allChecked;
+  };
+
+  window.toggleNewAdminFullControlCheck = function(chkEl) {
+    const isFull = !!chkEl.checked;
+    document.querySelectorAll('.new-adm-feat-chk').forEach(cb => {
+      cb.checked = isFull;
+    });
+  };
+
+  window.selectPresetNewAdminFeatures = function(keys) {
+    document.querySelectorAll('.new-adm-feat-chk').forEach(cb => {
+      cb.checked = keys.includes(cb.value);
+    });
+    window.syncFullControlMasterCheckbox('.new-adm-feat-chk', 'newAdmFullControlChk');
+  };
+
+  document.addEventListener('change', function(ev) {
+    if (ev.target && ev.target.classList) {
+      if (ev.target.classList.contains('new-adm-feat-chk')) {
+        window.syncFullControlMasterCheckbox('.new-adm-feat-chk', 'newAdmFullControlChk');
+      } else if (ev.target.classList.contains('edit-adm-feat-chk')) {
+        window.syncFullControlMasterCheckbox('.edit-adm-feat-chk', 'editAdmFullControlChk');
+      }
+    }
+  });
+
+  window.createNewRoleAdminAccount = function() {
+    if (loggedInAdminAccount && !window.hasAdminFeature('ADMIN_PERMISSIONS')) {
+      showAdmToast('🚫 You do not have permission to create or modify admin roles!');
+      return;
+    }
+    const name = (document.getElementById('newAdmName')?.value || '').trim();
+    const roleTitle = (document.getElementById('newAdmRoleTitle')?.value || '').trim() || 'Role Admin';
+    const loginId = (document.getElementById('newAdmLoginId')?.value || '').trim();
+    const pwd = (document.getElementById('newAdmPwd')?.value || '').trim();
+
+    const selectedFeats = [];
+    document.querySelectorAll('.new-adm-feat-chk').forEach(cb => {
+      if (cb.checked) selectedFeats.push(cb.value);
+    });
+
+    if (!name || !loginId || !pwd) {
+      showAdmToast('⚠️ Please enter Admin Name, Login ID, and Password.');
+      return;
+    }
+    if (selectedFeats.length === 0) {
+      showAdmToast('⚠️ Please select at least 1 feature checkbox for this Role Admin.');
+      return;
+    }
+    if ((db.staffAdmins || []).some(a => a && a.loginId.toLowerCase() === loginId.toLowerCase())) {
+      showAdmToast('⚠️ Login ID already exists! Choose a unique Login ID.');
+      return;
+    }
+
+    const allCatalogKeys = window.ADMIN_FEATURE_CATALOG.map(f => f.key);
+    const hasEverySingleFeature = allCatalogKeys.every(k => selectedFeats.includes(k));
+
+    const newAdm = {
+      adminId: 'ADM-' + String((db.staffAdmins || []).length + 1).padStart(2, '0'),
+      username: name,
+      customRoleTitle: roleTitle,
+      loginId: loginId,
+      password: pwd,
+      email: `${loginId}@xyzgames.app`,
+      roleKey: 'CUSTOM_ROLE',
+      fullControl: hasEverySingleFeature,
+      isMasterSuperAdmin: false,
+      allowedFeatures: selectedFeats,
+      requireAuditModal: false,
+      mfaEnabled: true,
+      lastIp: '10.24.0.' + Math.floor(10 + Math.random() * 200),
+      lastLogin: 'Never',
+      status: 'ACTIVE'
+    };
+
+    if (!Array.isArray(db.staffAdmins)) db.staffAdmins = [];
+    db.staffAdmins.push(newAdm);
+    saveAdminDb();
+    renderCurrentAdminView();
+    showAdmToast(`✅ Created Role Admin "${name}" with ${selectedFeats.length} permitted feature(s)!`);
+  };
+
+  window.saveRestrictedFeaturesForAdmin = function(idx) {
+    const a = (db.staffAdmins || [])[idx];
+    if (!a || a.isMasterSuperAdmin) return;
+
+    const roleTitle = (document.getElementById('editAdmRoleTitleInput')?.value || '').trim() || 'Role Admin';
+    const picked = [];
+    document.querySelectorAll('.edit-adm-feat-chk').forEach(cb => {
+      if (cb.checked) picked.push(cb.value);
+    });
+
+    if (picked.length === 0) {
+      showAdmToast('⚠️ Select at least 1 feature or Block the admin instead.');
+      return;
+    }
+
+    const allCatalogKeys = window.ADMIN_FEATURE_CATALOG.map(f => f.key);
+    const hasEverySingleFeature = allCatalogKeys.every(k => picked.includes(k));
+
+    a.fullControl = hasEverySingleFeature;
+    a.allowedFeatures = picked;
+    a.customRoleTitle = roleTitle;
+    a.roleKey = 'CUSTOM_ROLE';
+
+    if (loggedInAdminAccount && loggedInAdminAccount.loginId.toLowerCase() === a.loginId.toLowerCase()) {
+      loggedInAdminAccount = a;
+    }
+
+    saveAdminDb();
+    window.closeFeatureRestrictModal();
+    renderSidebarTree('');
+    renderCurrentAdminView();
+    showAdmToast(`✅ Updated feature permissions for ${a.username} (${picked.length} features allowed)!`);
+  };
+
+  // ===========================================================================
+  // 6. ALWAYS REQUIRE LOGIN ON /ADMIN OPEN + 5 (SUPER ADMIN) / 30 (ROLE ADMIN)
+  //    CONCURRENT DEVICE SESSION LIMITER
+  // ===========================================================================
+  window.__currentAdminSessionId = null;
+
+  function registerAdminDeviceSession(acc) {
+    const isSuper = Boolean(acc.isMasterSuperAdmin || acc.roleKey === 'SUPER_ADMIN');
+    const maxDevices = isSuper ? 5 : 30;
+    const bucketKey = isSuper ? 'SUPER_ADMIN_POOL' : `ROLE_${String(acc.loginId || '').toLowerCase()}`;
+    const sessId = 'ASESS-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    window.__currentAdminSessionId = sessId;
+
+    if (!db.adminActiveSessions || typeof db.adminActiveSessions !== 'object') {
+      db.adminActiveSessions = {};
+    }
+    if (!Array.isArray(db.adminActiveSessions[bucketKey])) {
+      db.adminActiveSessions[bucketKey] = [];
+    }
+    if (!Array.isArray(db.evictedAdminSessions)) {
+      db.evictedAdminSessions = [];
+    }
+
+    let list = db.adminActiveSessions[bucketKey];
+    list.push({
+      sessionId: sessId,
+      loginId: acc.loginId,
+      isSuperAdmin: isSuper,
+      createdAt: Date.now(),
+      lastSeenAt: Date.now()
+    });
+    list.sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+
+    const evictedNow = [];
+    while (list.length > maxDevices) {
+      const oldest = list.shift();
+      if (oldest && oldest.sessionId) {
+        evictedNow.push(oldest.sessionId);
+        db.evictedAdminSessions.unshift(oldest.sessionId);
+      }
+    }
+    db.adminActiveSessions[bucketKey] = list;
+
+    try {
+      const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
+      const base = cfg.endpointUrl ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+      if (window.location.protocol !== 'file:' || base) {
+        const _admSessUrl = (base || '') + '/api/' + 'xyz-admin-session'; fetch(_admSessUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'LOGIN',
+            loginId: acc.loginId,
+            isSuperAdmin: isSuper,
+            sessionId: sessId,
+            deviceId: localStorage.getItem('XYZ_ADMIN_DEVICE_ID_V1') || 'ADM-DEV'
+          })
+        }).catch(() => {});
+      }
+    } catch (e) {}
+
+    return { sessId, activeCount: list.length, maxDevices, evictedNow };
+  }
+
+  window.checkActiveAdminSessionValidity = async function() {
+    if (!loggedInAdminAccount || !window.__currentAdminSessionId) return true;
+    const isSuper = Boolean(loggedInAdminAccount.isMasterSuperAdmin || loggedInAdminAccount.roleKey === 'SUPER_ADMIN');
+    const bucketKey = isSuper ? 'SUPER_ADMIN_POOL' : `ROLE_${String(loggedInAdminAccount.loginId || '').toLowerCase()}`;
+    const maxDevices = isSuper ? 5 : 30;
+
+    try {
+      const raw = safeGetStorage(XYZ_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const evictedList = Array.isArray(parsed.evictedAdminSessions) ? parsed.evictedAdminSessions : [];
+        const activeList = (parsed.adminActiveSessions && Array.isArray(parsed.adminActiveSessions[bucketKey]))
+          ? parsed.adminActiveSessions[bucketKey]
+          : null;
+        if (evictedList.includes(window.__currentAdminSessionId) ||
+            (activeList && activeList.length > 0 && !activeList.some(s => s && s.sessionId === window.__currentAdminSessionId))) {
+          window.forceEvictAdminSession(maxDevices, isSuper);
+          return false;
+        }
+      }
+    } catch (e) {}
+
+    try {
+      const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
+      const base = cfg.endpointUrl ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+      if (window.location.protocol !== 'file:' || base) {
+        const _admSessUrl2 = (base || '') + '/api/' + 'xyz-admin-session'; const res = await fetch(_admSessUrl2, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'CHECK',
+            loginId: loggedInAdminAccount.loginId,
+            isSuperAdmin: isSuper,
+            sessionId: window.__currentAdminSessionId
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.valid === false) {
+            window.forceEvictAdminSession(maxDevices, isSuper);
+            return false;
+          }
+        }
+      }
+    } catch (e) {}
+    return true;
+  };
+
+  window.forceEvictAdminSession = function(maxDevices, isSuper) {
+    loggedInAdminAccount = null;
+    window.__currentAdminSessionId = null;
+    try { window.__xyzSafeStorage.removeItem(XYZ_ADMIN_SESSION_KEY); } catch (e) {}
+    window.syncTopbarAndShellForActiveAdmin();
+    const errEl = document.getElementById('admAuthErrorBanner');
+    if (errEl) {
+      errEl.style.display = 'block';
+      errEl.textContent = `🔒 Auto-Logged Out: ${isSuper ? 'Super Admin' : 'Role Admin'} can be opened on at most ${maxDevices} devices at a time. A ${maxDevices + 1}th device logged in, so this oldest device session was automatically logged out.`;
+    }
+    showAdmToast(`🔒 Auto-Logged Out: Max ${maxDevices} concurrent devices limit reached.`);
+  };
+
+  const _origCompleteSetupV5 = window.completeFirstTimeSuperAdminSetup;
+  window.completeFirstTimeSuperAdminSetup = async function() {
+    await _origCompleteSetupV5();
+    if (loggedInAdminAccount) {
+      registerAdminDeviceSession(loggedInAdminAccount);
+      saveAdminDb();
+    }
+  };
+
+  window.submitAdminGateLogin = async function() {
+    const loginId = (document.getElementById('gateLoginIdInput')?.value || '').trim();
+    const pwd = (document.getElementById('gateLoginPwdInput')?.value || '').trim();
+    const errEl = document.getElementById('admAuthErrorBanner');
+    const showErr = (m) => {
+      if (!errEl) return;
+      errEl.style.display = m ? 'block' : 'none';
+      errEl.textContent = m || '';
+    };
+
+    if (!loginId || !pwd) {
+      showErr('⚠️ Please enter both your Admin Login ID and Password.');
+      return;
+    }
+    if (typeof window.pullAdminStateFromCloudNow === 'function') {
+      await window.pullAdminStateFromCloudNow(true);
+    }
+
+    const acc = (db.staffAdmins || []).find(a => a && a.loginId.toLowerCase() === loginId.toLowerCase());
+    if (!acc || acc.password !== pwd) {
+      showErr('❌ Invalid Admin Login ID or Password. Please check your credentials.');
+      return;
+    }
+    if (acc.status !== 'ACTIVE') {
+      showErr(`🚫 Access Denied: Account "${acc.loginId}" has been blocked by Super Admin.`);
+      return;
+    }
+
+    loggedInAdminAccount = acc;
+    acc.lastLogin = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+    activeAdminRole = (acc.isMasterSuperAdmin === true) ? 'SUPER_ADMIN' : (acc.roleKey || 'CUSTOM_ROLE');
+    currentAdminPage = window.getDefaultPageForAdminAccount(acc);
+
+    const sessInfo = registerAdminDeviceSession(acc);
+
+    const pwEl = document.getElementById('gateLoginPwdInput');
+    if (pwEl) pwEl.value = '';
+    showErr('');
+
+    saveAdminDb();
+    window.syncTopbarAndShellForActiveAdmin();
+    renderSidebarTree('');
+    renderCurrentAdminView();
+    showAdmToast(`✅ Logged in as ${acc.username} (Device ${sessInfo.activeCount}/${sessInfo.maxDevices})!`);
+  };
+
+  window.quickFillAndLoginRole = function(loginId, pwd) {
+    const acc = (db.staffAdmins || []).find(a => a && a.loginId.toLowerCase() === String(loginId || '').toLowerCase() && a.password === pwd);
+    if (!acc) {
+      showAdmToast('❌ Account not found or password mismatch.');
+      return;
+    }
+    if (acc.status !== 'ACTIVE') {
+      showAdmToast('🚫 Cannot login: This Admin account is currently BLOCKED.');
+      return;
+    }
+    loggedInAdminAccount = acc;
+    acc.lastLogin = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+    activeAdminRole = (acc.isMasterSuperAdmin === true) ? 'SUPER_ADMIN' : (acc.roleKey || 'CUSTOM_ROLE');
+    currentAdminPage = window.getDefaultPageForAdminAccount(acc);
+    const sessInfo = registerAdminDeviceSession(acc);
+    openRoleLoginModal(false);
+    saveAdminDb();
+    window.syncTopbarAndShellForActiveAdmin();
+    renderSidebarTree('');
+    renderCurrentAdminView();
+    showAdmToast(`🔑 Logged in as ${acc.username} (Device ${sessInfo.activeCount}/${sessInfo.maxDevices}).`);
+  };
+
+  window.logoutAdminSessionToGate = function() {
+    if (loggedInAdminAccount && window.__currentAdminSessionId) {
+      const isSuper = Boolean(loggedInAdminAccount.isMasterSuperAdmin || loggedInAdminAccount.roleKey === 'SUPER_ADMIN');
+      const bucketKey = isSuper ? 'SUPER_ADMIN_POOL' : `ROLE_${String(loggedInAdminAccount.loginId || '').toLowerCase()}`;
+      if (db.adminActiveSessions && Array.isArray(db.adminActiveSessions[bucketKey])) {
+        db.adminActiveSessions[bucketKey] = db.adminActiveSessions[bucketKey].filter(
+          s => s && s.sessionId !== window.__currentAdminSessionId
+        );
+      }
+      try {
+        const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
+        const base = cfg.endpointUrl ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+        if (window.location.protocol !== 'file:' || base) {
+          const _admSessUrl = (base || '') + '/api/' + 'xyz-admin-session'; fetch(_admSessUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'LOGOUT',
+              loginId: loggedInAdminAccount.loginId,
+              isSuperAdmin: isSuper,
+              sessionId: window.__currentAdminSessionId
+            })
+          }).catch(() => {});
+        }
+      } catch (e) {}
+    }
+    loggedInAdminAccount = null;
+    window.__currentAdminSessionId = null;
+    activeAdminRole = 'SUPER_ADMIN';
+    try { window.__xyzSafeStorage.removeItem(XYZ_ADMIN_SESSION_KEY); } catch (e) {}
+    window.syncTopbarAndShellForActiveAdmin();
+    showAdmToast('🔒 Logged out of Admin Panel.');
+  };
+
+  loggedInAdminAccount = null;
+  window.__currentAdminSessionId = null;
+  try { window.__xyzSafeStorage.removeItem(XYZ_ADMIN_SESSION_KEY); } catch (e) {}
+  window.syncTopbarAndShellForActiveAdmin();
+
+  setInterval(() => {
+    if (loggedInAdminAccount && window.__currentAdminSessionId) {
+      window.checkActiveAdminSessionValidity();
+    }
+  }, 2500);
+
+  // ===========================================================================
+  // 7. STRICT INR DISPLAY FOR UPI DEPOSITS & BANK WITHDRAWALS (USDT ONLY FOR USDT)
+  //    + FIRST-TIME DEPOSIT BONUS CONFIG & WITHDRAWAL LIMITS / 24H COOLDOWN CONFIG
+  // ===========================================================================
+  function ensureBonusAndWithdrawConfigsInDb() {
+    if (!db.firstDepositBonusConfig || typeof db.firstDepositBonusConfig !== 'object') {
+      db.firstDepositBonusConfig = {
+        enabled: true,
+        defaultBonusPercent: 1,
+        tiers: [
+          { minAmountInr: 100, maxAmountInr: 499, bonusPercent: 1 },
+          { minAmountInr: 500, maxAmountInr: 999, bonusPercent: 2 },
+          { minAmountInr: 1000, maxAmountInr: 4999, bonusPercent: 5 },
+          { minAmountInr: 5000, maxAmountInr: 999999999, bonusPercent: 10 }
+        ]
+      };
+    }
+    if (!Array.isArray(db.firstDepositBonusConfig.tiers) || db.firstDepositBonusConfig.tiers.length === 0) {
+      db.firstDepositBonusConfig.tiers = [
+        { minAmountInr: 100, maxAmountInr: 499, bonusPercent: 1 },
+        { minAmountInr: 500, maxAmountInr: 999, bonusPercent: 2 },
+        { minAmountInr: 1000, maxAmountInr: 4999, bonusPercent: 5 },
+        { minAmountInr: 5000, maxAmountInr: 999999999, bonusPercent: 10 }
+      ];
+    }
+    if (!db.withdrawalConfig || typeof db.withdrawalConfig !== 'object') {
+      db.withdrawalConfig = {
+        cooldownHours: 24,
+        minBankInr: 100,
+        maxBankInr: 50000,
+        minUsdt: 5,
+        maxUsdt: 5000
+      };
+    }
+  }
+  ensureBonusAndWithdrawConfigsInDb();
+
+  window.getFirstDepositBonusPctForAmount = function(amountInr) {
+    ensureBonusAndWithdrawConfigsInDb();
+    const cfg = db.firstDepositBonusConfig;
+    if (!cfg || cfg.enabled === false) return 0;
+    const amt = Number(amountInr || 0);
+    if (amt <= 0) return 0;
+    const sortedTiers = [...(cfg.tiers || [])].sort((a, b) => Number(a.minAmountInr || 0) - Number(b.minAmountInr || 0));
+    let matchedPct = Number(cfg.defaultBonusPercent || 0);
+    for (let i = 0; i < sortedTiers.length; i++) {
+      const t = sortedTiers[i];
+      const minA = Number(t.minAmountInr || 0);
+      const maxA = Number(t.maxAmountInr || 999999999);
+      if (amt >= minA && amt <= maxA) {
+        return Number(t.bonusPercent || 0);
+      }
+      if (amt >= minA) {
+        matchedPct = Number(t.bonusPercent || 0);
+      }
+    }
+    return matchedPct;
+  };
+
+  window.renderFirstDepositBonusManagerCardHtml = function() {
+    ensureBonusAndWithdrawConfigsInDb();
+    const cfg = db.firstDepositBonusConfig;
+    const tiers = cfg.tiers || [];
+    return `
+      <div class="adm-card" style="border-top:4px solid #8B5CF6;">
+        <div class="adm-card-head">
+          <div>
+            <div class="adm-card-title">🎁 First-Time Deposit Bonus Configuration (Automatic Tiered % Bonus)</div>
+            <p style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">
+              Automatically credit a bonus percentage to any user making their <strong>first-time deposit</strong> (e.g., 100 INR with 1% bonus = 101 INR in wallet). You can configure different percentages for different deposit amounts and update them anytime.
+            </p>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="badge ${cfg.enabled !== false ? 'badge-success' : 'badge-danger'}">
+              ${cfg.enabled !== false ? '🟢 Auto First-Deposit Bonus ON' : '🔴 Bonus OFF'}
+            </span>
+            <button type="button" class="btn ${cfg.enabled !== false ? 'btn-warning' : 'btn-success'} btn-sm" onclick="window.toggleFirstDepositBonusEnabledAdmin()">
+              ${cfg.enabled !== false ? 'Pause Bonus' : 'Enable Bonus'}
+            </button>
+          </div>
+        </div>
+
+        <div class="table-wrap" style="margin-bottom:12px;">
+          <table class="adm-table">
+            <thead>
+              <tr>
+                <th>Tier #</th>
+                <th>Min Deposit Amount (₹ INR)</th>
+                <th>Max Deposit Amount (₹ INR)</th>
+                <th>Bonus Percentage (%)</th>
+                <th>Example Wallet Credit</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tiers.map((t, idx) => {
+                const exBase = Number(t.minAmountInr || 100);
+                const exBonus = +(exBase * (Number(t.bonusPercent || 0) / 100)).toFixed(2);
+                return `
+                  <tr>
+                    <td><strong>Tier #${idx + 1}</strong></td>
+                    <td><input type="number" id="fdbMin-${idx}" class="form-input" style="max-width:130px;padding:5px 8px;" value="${t.minAmountInr}" min="1" /></td>
+                    <td><input type="number" id="fdbMax-${idx}" class="form-input" style="max-width:140px;padding:5px 8px;" value="${t.maxAmountInr}" min="1" /></td>
+                    <td>
+                      <div style="display:flex;align-items:center;gap:4px;">
+                        <input type="number" id="fdbPct-${idx}" class="form-input" style="max-width:95px;padding:5px 8px;font-weight:900;color:#6D28D9;" value="${t.bonusPercent}" min="0" max="500" step="0.1" />
+                        <span style="font-weight:800;">%</span>
+                      </div>
+                    </td>
+                    <td style="font-size:0.75rem;color:var(--success);font-weight:800;">
+                      Deposit ₹${exBase.toLocaleString('en-IN')} → +₹${exBonus} Bonus = <strong>₹${(exBase + exBonus).toLocaleString('en-IN')}</strong>
+                    </td>
+                    <td>
+                      <div style="display:flex;gap:4px;">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="window.saveFirstDepositBonusTierRowAdmin(${idx})">💾 Save</button>
+                        <button type="button" class="btn btn-danger btn-sm" onclick="window.removeFirstDepositBonusTierAdmin(${idx})" ${tiers.length <= 1 ? 'disabled' : ''}>🗑️</button>
+                      </div>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <div style="background:#F8FAFC;border:1px solid var(--border-color);border-radius:10px;padding:10px 12px;display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;">
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:120px;">
+            <label class="form-label">New Tier Min (₹ INR)</label>
+            <input type="number" id="newFdbMinInput" class="form-input" placeholder="e.g. 200" value="200" min="1" />
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:120px;">
+            <label class="form-label">New Tier Max (₹ INR)</label>
+            <input type="number" id="newFdbMaxInput" class="form-input" placeholder="e.g. 999" value="999" min="1" />
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:120px;">
+            <label class="form-label">Bonus Percentage (%)</label>
+            <input type="number" id="newFdbPctInput" class="form-input" placeholder="e.g. 3" value="3" min="0" max="500" step="0.1" />
+          </div>
+          <button type="button" class="btn btn-primary" onclick="window.addFirstDepositBonusTierAdmin()">➕ Add Bonus Tier</button>
+          <button type="button" class="btn btn-success" onclick="window.saveAllFirstDepositBonusTiersAdmin()">💾 Save All Tiers</button>
+        </div>
+      </div>
+    `;
+  };
+
+  window.toggleFirstDepositBonusEnabledAdmin = function() {
+    ensureBonusAndWithdrawConfigsInDb();
+    db.firstDepositBonusConfig.enabled = !(db.firstDepositBonusConfig.enabled !== false);
+    saveAdminDb();
+    renderCurrentAdminView();
+    showAdmToast(`🎁 First-Time Deposit Bonus is now ${db.firstDepositBonusConfig.enabled ? 'ENABLED' : 'PAUSED'}!`);
+  };
+
+  window.saveFirstDepositBonusTierRowAdmin = function(idx) {
+    ensureBonusAndWithdrawConfigsInDb();
+    const t = db.firstDepositBonusConfig.tiers[idx];
+    if (!t) return;
+    t.minAmountInr = Math.max(1, Number(document.getElementById(`fdbMin-${idx}`)?.value || 100));
+    t.maxAmountInr = Math.max(t.minAmountInr, Number(document.getElementById(`fdbMax-${idx}`)?.value || 999999999));
+    t.bonusPercent = Math.max(0, Number(document.getElementById(`fdbPct-${idx}`)?.value || 0));
+    saveAdminDb();
+    renderCurrentAdminView();
+    showAdmToast(`✅ Saved Tier #${idx + 1}: ₹${t.minAmountInr}–₹${t.maxAmountInr} → +${t.bonusPercent}% First Deposit Bonus!`);
+  };
+
+  window.saveAllFirstDepositBonusTiersAdmin = function() {
+    ensureBonusAndWithdrawConfigsInDb();
+    db.firstDepositBonusConfig.tiers.forEach((t, idx) => {
+      const minEl = document.getElementById(`fdbMin-${idx}`);
+      const maxEl = document.getElementById(`fdbMax-${idx}`);
+      const pctEl = document.getElementById(`fdbPct-${idx}`);
+      if (minEl) t.minAmountInr = Math.max(1, Number(minEl.value || 100));
+      if (maxEl) t.maxAmountInr = Math.max(t.minAmountInr, Number(maxEl.value || 999999999));
+      if (pctEl) t.bonusPercent = Math.max(0, Number(pctEl.value || 0));
+    });
+    saveAdminDb();
+    renderCurrentAdminView();
+    showAdmToast('✅ Saved all First-Time Deposit Bonus percentage tiers!');
+  };
+
+  window.addFirstDepositBonusTierAdmin = function() {
+    ensureBonusAndWithdrawConfigsInDb();
+    const minA = Math.max(1, Number(document.getElementById('newFdbMinInput')?.value || 100));
+    const maxA = Math.max(minA, Number(document.getElementById('newFdbMaxInput')?.value || 999));
+    const pct  = Math.max(0, Number(document.getElementById('newFdbPctInput')?.value || 1));
+    db.firstDepositBonusConfig.tiers.push({
+      minAmountInr: minA,
+      maxAmountInr: maxA,
+      bonusPercent: pct
+    });
+    saveAdminDb();
+    renderCurrentAdminView();
+    showAdmToast(`➕ Added First-Deposit Bonus Tier: ₹${minA}–₹${maxA} → +${pct}%!`);
+  };
+
+  window.removeFirstDepositBonusTierAdmin = function(idx) {
+    ensureBonusAndWithdrawConfigsInDb();
+    if (db.firstDepositBonusConfig.tiers.length <= 1) return;
+    db.firstDepositBonusConfig.tiers.splice(idx, 1);
+    saveAdminDb();
+    renderCurrentAdminView();
+    showAdmToast('🗑️ Removed bonus tier.');
+  };
+
+  window.renderWithdrawalLimitsManagerCardHtml = function() {
+    ensureBonusAndWithdrawConfigsInDb();
+    const wc = db.withdrawalConfig;
+    return `
+      <div class="adm-card" style="border-top:4px solid #E11D48;">
+        <div class="adm-card-head">
+          <div>
+            <div class="adm-card-title">⚙️ Withdrawal Limits (Bank/UPI &amp; USDT) &amp; 24-Hour Cooldown Control</div>
+            <p style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">
+              Control the minimum and maximum single withdrawal limit for both Bank/UPI (INR) and USDT, and enforce the 1-withdrawal-per-24-hours cooldown rule.
+            </p>
+          </div>
+          <span class="badge badge-danger">⏱️ Max 1 Withdrawal / ${wc.cooldownHours || 24} Hours</span>
+        </div>
+
+        <div class="grid-4" style="gap:10px;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">🏦 Min Bank/UPI Withdraw (₹ INR)</label>
+            <input type="number" id="wdCfgMinBankInput" class="form-input" value="${wc.minBankInr ?? 100}" min="1" />
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">🏦 Max Bank/UPI Withdraw (₹ INR)</label>
+            <input type="number" id="wdCfgMaxBankInput" class="form-input" value="${wc.maxBankInr ?? 50000}" min="100" />
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">₮ Min USDT Withdraw (USDT)</label>
+            <input type="number" id="wdCfgMinUsdtInput" class="form-input" value="${wc.minUsdt ?? 5}" min="1" step="0.5" />
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">₮ Max USDT Withdraw (USDT)</label>
+            <input type="number" id="wdCfgMaxUsdtInput" class="form-input" value="${wc.maxUsdt ?? 5000}" min="5" step="1" />
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:10px;flex-wrap:wrap;">
+          <span style="font-size:0.75rem;color:var(--text-secondary);font-weight:700;">
+            Cooldown Policy: Each user can request a withdrawal at most <strong>1 time every 24 hours</strong>.
+          </span>
+          <button type="button" class="btn btn-primary" onclick="window.saveWithdrawalLimitsConfigAdmin()">
+            💾 Save Withdrawal Limits (Bank/UPI &amp; USDT)
+          </button>
+        </div>
+      </div>
+    `;
+  };
+
+  window.saveWithdrawalLimitsConfigAdmin = function() {
+    ensureBonusAndWithdrawConfigsInDb();
+    const minB = Math.max(1, Number(document.getElementById('wdCfgMinBankInput')?.value || 100));
+    const maxB = Math.max(minB, Number(document.getElementById('wdCfgMaxBankInput')?.value || 50000));
+    const minU = Math.max(1, Number(document.getElementById('wdCfgMinUsdtInput')?.value || 5));
+    const maxU = Math.max(minU, Number(document.getElementById('wdCfgMaxUsdtInput')?.value || 5000));
+    db.withdrawalConfig = {
+      cooldownHours: 24,
+      minBankInr: minB,
+      maxBankInr: maxB,
+      minUsdt: minU,
+      maxUsdt: maxU
+    };
+    saveAdminDb();
+    renderCurrentAdminView();
+    showAdmToast(`✅ Saved Withdrawal Limits: Bank ₹${minB}–₹${maxB} | USDT ${minU}–${maxU} USDT (1 request per 24h)!`);
+  };
+
+  window.fmtDepositStrictByMethod = function(d) {
+    const isUsdt = String(d.method || 'UPI').toUpperCase() === 'USDT';
+    if (isUsdt) {
+      const uAmt = Number(d.usdtAmount || (Number(d.amountInr || 0) / Number(d.appliedRate || 100)));
+      return `<strong style="color:#0D9488;font-size:0.9rem;">₮${uAmt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</strong>`;
+    }
+    const inrAmt = Number(d.amountInr || 0);
+    return `<strong style="color:var(--success);font-size:0.9rem;">₹${inrAmt.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>`;
+  };
+
+  window.fmtWithdrawStrictByMethod = function(w, fieldKey) {
+    const isUsdt = String(w.method || 'BANK').toUpperCase() === 'USDT';
+    const inrVal = Number(w[fieldKey || 'requestedInr'] || 0);
+    if (isUsdt) {
+      const rate = Number(w.appliedRate || 90);
+      const uVal = (fieldKey === 'requestedInr' || fieldKey === 'netPayoutInr') && w.usdtAmount !== undefined
+        ? Number(w.usdtAmount)
+        : +(inrVal / rate).toFixed(2);
+      return `₮${uVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`;
+    }
+    return `₹${inrVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  window.resolveDepositRequest = function(depId, newStatus) {
+    if (!requirePermission('finance.approve_deposit', 'Approve or Reject Deposit')) return;
+    const d = (db.adminDeposits || []).find(x => x.depositId === depId);
+    if (!d || d.status === 'CONFIRMED') return;
+
+    const oldSt = d.status;
+    const hadPriorConfirmedDeposit = (db.adminDeposits || []).some(
+      x => x.depositId !== depId && x.userId === d.userId && x.status === 'CONFIRMED'
+    );
+
+    d.status = newStatus;
+    if (newStatus === 'CONFIRMED') {
+      d.confirmedAt = Date.now();
+      d.webhookVerified = true;
+      const amt = Number(d.amountInr || 0);
+
+      let u = (db.adminUsersList || []).find(x => x.userId === d.userId);
+      if (!u) {
+        u = {
+          userId: d.userId || 'UID-10001',
+          username: d.username || 'Player',
+          loginId: d.userId || 'UID-10001',
+          password: '—',
+          email: '—',
+          phone: '—',
+          status: 'ACTIVE',
+          kycStatus: 'VERIFIED',
+          cashBalanceInr: 0,
+          promoBalanceInr: 0,
+          registeredAt: Date.now()
+        };
+        if (!Array.isArray(db.adminUsersList)) db.adminUsersList = [];
+        db.adminUsersList.unshift(u);
+      }
+
+      let bonusInr = 0;
+      let bonusPct = 0;
+      if (!hadPriorConfirmedDeposit && !u.firstDepositBonusClaimed) {
+        bonusPct = window.getFirstDepositBonusPctForAmount(amt);
+        if (bonusPct > 0) {
+          bonusInr = +(amt * (bonusPct / 100)).toFixed(2);
+          u.firstDepositBonusClaimed = true;
+          d.firstDepositBonusPct = bonusPct;
+          d.firstDepositBonusInr = bonusInr;
+        }
+      }
+
+      const totalCreditInr = +(amt + bonusInr).toFixed(2);
+      const nextBal = +(Number(u.cashBalanceInr || 0) + totalCreditInr).toFixed(2);
+      u.cashBalanceInr = nextBal;
+      u.lastAdminBalanceUpdateAt = Date.now();
+      (db.registeredAccounts || []).forEach(a => {
+        if (a && a.userId === u.userId) {
+          a.cashBalanceInr = nextBal;
+          a.firstDepositBonusClaimed = u.firstDepositBonusClaimed;
+          a.lastAdminBalanceUpdateAt = Date.now();
+        }
+      });
+
+      (db.transactions || []).forEach(tx => {
+        if (tx.depositId === d.depositId || String(tx.id) === String(d.txId) || (tx.utrNumber && d.utrNumber && tx.utrNumber === d.utrNumber)) {
+          tx.status = 'Completed';
+        }
+      });
+
+      if (bonusInr > 0) {
+        if (!Array.isArray(db.transactions)) db.transactions = [];
+        db.transactions.unshift({
+          id: 'FDB-' + d.depositId,
+          userId: u.userId,
+          type: 'BONUS',
+          title: `First Deposit Bonus (+${bonusPct}% on ₹${amt.toLocaleString('en-IN')})`,
+          amount: bonusInr,
+          status: 'SUCCESS',
+          timestamp: Date.now()
+        });
+      }
+
+      const rates = (db.promoConfig && Array.isArray(db.promoConfig.levelRatesPercent))
+        ? db.promoConfig.levelRatesPercent
+        : [7, 6, 5, 4, 3, 2, 1];
+      const minQual = Number(db.promoConfig?.minQualifyingDepositInr || 100);
+      if (amt >= minQual) {
+        (db.referralMembers || []).forEach(rm => {
+          if (rm.memberId === u.userId) {
+            rm.depositCount = (rm.depositCount || 0) + 1;
+            rm.totalDepositsInr = +(Number(rm.totalDepositsInr || 0) + amt).toFixed(2);
+            rm.dailyDepositInr = +(Number(rm.dailyDepositInr || 0) + amt).toFixed(2);
+            rm.weeklyDepositInr = +(Number(rm.weeklyDepositInr || 0) + amt).toFixed(2);
+            rm.monthlyDepositInr = +(Number(rm.monthlyDepositInr || 0) + amt).toFixed(2);
+            const lvl = Number(rm.level || 1);
+            if (lvl >= 1 && lvl <= 7) {
+              const rPct = Number(rates[lvl - 1] || 0);
+              const commInr = +(amt * (rPct / 100)).toFixed(2);
+              if (commInr > 0) {
+                if (!Array.isArray(db.commissionLedger)) db.commissionLedger = [];
+                db.commissionLedger.unshift({
+                  ledgerId: 'COM-' + Math.floor(10000 + Math.random() * 89999),
+                  eventId: d.depositId,
+                  beneficiaryUserId: rm.rootAgentId || rm.parentId || 'SELF',
+                  memberId: u.userId,
+                  memberName: u.username,
+                  level: lvl,
+                  ratePct: rPct,
+                  depositInr: amt,
+                  commissionInr: commInr,
+                  status: 'APPROVED',
+                  ruleVersion: db.promoConfig?.version || 'v1.0',
+                  chainPath: rm.chainPath || `Level ${lvl}`,
+                  timestamp: Date.now()
+                });
+              }
+            }
+          }
+        });
+      }
+
+      if (!Array.isArray(db.adminLedger)) db.adminLedger = [];
+      db.adminLedger.unshift({
+        txCode: 'LDG-' + d.depositId,
+        userId: d.userId,
+        username: d.username,
+        type: 'DEPOSIT',
+        amountInr: totalCreditInr,
+        currency: d.method === 'USDT' ? 'USDT' : 'INR',
+        balanceType: 'CASH',
+        relatedRef: bonusInr > 0 ? `${d.depositId} (+₹${bonusInr} ${bonusPct}% 1st Dep Bonus)` : d.depositId,
+        reversalOf: null,
+        idempotencyKey: d.idempotencyKey || ('IDEMP-' + d.depositId),
+        status: 'COMPLETED',
+        actor: loggedInAdminAccount ? loggedInAdminAccount.username : 'Super Admin',
+        createdAt: Date.now()
+      });
+
+      appendAuditLog('DEPOSIT_CONFIRMED', `deposits:${d.depositId}`, oldSt, `CONFIRMED (Credited ₹${totalCreditInr})`, 'Approved deposit', d.providerRef);
+      saveAdminDb();
+      showAdmToast(
+        bonusInr > 0
+          ? `✅ Deposit ${depId} Approved! Credited ₹${amt} + ₹${bonusInr} (${bonusPct}% 1st Deposit Bonus) = ₹${totalCreditInr} to ${u.username}!`
+          : `✅ Deposit ${depId} Approved! Credited ₹${amt} to ${u.username}!`
+      );
+    } else {
+      (db.transactions || []).forEach(tx => {
+        if (tx.depositId === d.depositId || String(tx.id) === String(d.txId)) {
+          tx.status = 'Rejected';
+        }
+      });
+      appendAuditLog('DEPOSIT_FAILED', `deposits:${d.depositId}`, oldSt, 'FAILED', 'Rejected deposit', d.providerRef);
+      saveAdminDb();
+      showAdmToast(`✕ Deposit ${depId} Rejected.`);
+    }
+  };
+
+  window.renderFinanceModulePage = function(subPage) {
+    ensureBonusAndWithdrawConfigsInDb();
+    if (subPage === 'finance-gateway') {
+      return window.renderPaymentGatewayAdminPage();
+    }
+    if (subPage === 'finance-withdrawals') {
+      const wds = (db.adminWithdrawals || []).filter(w => wdStatusFilter === 'ALL' || w.reviewStatus === wdStatusFilter);
+      return `
+        <div class="page-header-row">
+          <div>
+            <h1 class="page-title-h1">📤 Finance — Withdrawal Management (Bank in INR • USDT in USDT)</h1>
+            <p class="page-subtitle">Bank withdrawals are always displayed in INR (₹) and USDT withdrawals are displayed in USDT (₮). Manage single-withdrawal limits and 24-hour cooldown below.</p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <select class="top-select" onchange="wdStatusFilter=this.value;renderCurrentAdminView()">
+              <option value="ALL" ${wdStatusFilter==='ALL'?'selected':''}>All Review Statuses</option>
+              <option value="PENDING" ${wdStatusFilter==='PENDING'?'selected':''}>Pending</option>
+              <option value="APPROVED" ${wdStatusFilter==='APPROVED'?'selected':''}>Approved</option>
+              <option value="REJECTED" ${wdStatusFilter==='REJECTED'?'selected':''}>Rejected</option>
+            </select>
+          </div>
+        </div>
+
+        ${window.renderWithdrawalLimitsManagerCardHtml()}
+
+        <div class="adm-card">
+          <div class="adm-card-head">
+            <div class="adm-card-title">📋 Customer Withdrawal Requests (${wds.length} Records)</div>
+            <span class="badge badge-blue">Bank = ₹ INR • USDT = ₮ USDT</span>
+          </div>
+          <div class="table-wrap">
+            <table class="adm-table">
+              <thead>
+                <tr>
+                  <th>Withdrawal ID</th>
+                  <th>User (UID &amp; Name)</th>
+                  <th>Method</th>
+                  <th>Requested Amount</th>
+                  <th>Net Payout</th>
+                  <th>Payout Destination</th>
+                  <th>Requested At</th>
+                  <th>Review Status</th>
+                  <th>Payout Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${wds.length === 0 ? `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text-muted);">No withdrawal requests submitted yet.</td></tr>` : wds.map(w => {
+                  const isUsdt = String(w.method || 'BANK').toUpperCase() === 'USDT';
+                  return `
+                    <tr>
+                      <td style="font-family:monospace;font-weight:800;">${w.withdrawalId}</td>
+                      <td>
+                        <span class="badge badge-blue" style="font-family:monospace;">${w.userId || 'UID'}</span>
+                        <div style="font-weight:700;margin-top:2px;">${w.username || 'Player'}</div>
+                      </td>
+                      <td><span class="badge ${isUsdt ? 'badge-purple' : 'badge-success'}">${isUsdt ? '₮ USDT' : '🏦 BANK (INR)'}</span></td>
+                      <td style="font-weight:800;">${window.fmtWithdrawStrictByMethod(w, 'requestedInr')}</td>
+                      <td style="font-weight:900;color:${isUsdt ? '#0D9488' : 'var(--success)'};">${window.fmtWithdrawStrictByMethod(w, 'netPayoutInr')}</td>
+                      <td><code style="font-size:0.73rem;">${w.destinationMasked || '—'}</code></td>
+                      <td style="font-size:0.72rem;">${fmtDateTime(w.createdAt)}</td>
+                      <td><span class="badge ${w.reviewStatus === 'APPROVED' ? 'badge-success' : (w.reviewStatus === 'REJECTED' ? 'badge-danger' : 'badge-warning')}">${w.reviewStatus}</span></td>
+                      <td><span class="badge ${w.payoutStatus === 'PAID' ? 'badge-success' : 'badge-blue'}">${w.payoutStatus}</span></td>
+                      <td>
+                        ${w.reviewStatus === 'PENDING' || w.reviewStatus === 'UNDER_REVIEW' ? `
+                          <div style="display:flex;gap:4px;">
+                            <button type="button" class="btn btn-success btn-sm" onclick="reviewWithdrawalRequest('${w.withdrawalId}', 'APPROVED')">✔ Approve</button>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="reviewWithdrawalRequest('${w.withdrawalId}', 'REJECTED')">✕ Reject</button>
+                          </div>
+                        ` : `<span style="font-size:0.7rem;color:var(--text-muted);">Settled</span>`}
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
+    if (subPage === 'finance-deposits' || !subPage) {
+      const deps = (db.adminDeposits || []).filter(d => depStatusFilter === 'ALL' || d.status === depStatusFilter);
+      return `
+        <div class="page-header-row">
+          <div>
+            <h1 class="page-title-h1">📥 Deposit Management (UPI in INR • USDT in USDT • First-Deposit Bonus)</h1>
+            <p class="page-subtitle">UPI deposits are displayed strictly in INR (₹) and USDT deposits are displayed in USDT (₮) only when the transaction was made via USDT.</p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            ${window.hasAdminFeature('PAYMENT_GATEWAY') ? `
+              <button type="button" class="btn btn-primary" onclick="navigateAdminPage('finance-gateway')">💳 Manage UPI &amp; USDT Gateway</button>
+            ` : ''}
+            <select class="top-select" onchange="depStatusFilter=this.value;renderCurrentAdminView()">
+              <option value="ALL" ${depStatusFilter==='ALL'?'selected':''}>All Statuses</option>
+              <option value="PENDING" ${depStatusFilter==='PENDING'?'selected':''}>Pending / Processing</option>
+              <option value="CONFIRMED" ${depStatusFilter==='CONFIRMED'?'selected':''}>Confirmed</option>
+              <option value="FAILED" ${depStatusFilter==='FAILED'?'selected':''}>Rejected / Failed</option>
+            </select>
+          </div>
+        </div>
+
+        ${window.renderFirstDepositBonusManagerCardHtml()}
+
+        <div class="adm-card">
+          <div class="adm-card-head">
+            <div class="adm-card-title">📋 Customer Deposit Requests (${deps.length} Records)</div>
+            <span class="badge badge-blue">UPI = ₹ INR Only • USDT = ₮ USDT Only</span>
+          </div>
+          <div class="table-wrap">
+            <table class="adm-table">
+              <thead>
+                <tr>
+                  <th>Deposit ID / Time</th>
+                  <th>Customer UID &amp; Name</th>
+                  <th>Method</th>
+                  <th>Deposit Amount</th>
+                  <th>1st Deposit Bonus</th>
+                  <th>Paid Into UPI ID / USDT Address</th>
+                  <th>12-Digit UTR / USDT TXID</th>
+                  <th>Status</th>
+                  <th>Admin Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${deps.length === 0 ? `<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--text-muted);">No deposit requests submitted yet.</td></tr>` : deps.map(d => {
+                  const isUsdt = String(d.method || 'UPI').toUpperCase() === 'USDT';
+                  const stBadge = d.status === 'CONFIRMED' ? 'badge-success' : (d.status === 'FAILED' ? 'badge-danger' : 'badge-warning');
+                  const stText = d.status === 'PENDING' ? 'PROCESSING / PENDING' : d.status;
+                  const paidTo = d.paidToId || (isUsdt ? (db.paymentGatewayConfig?.usdtAddresses?.[0] || '—') : (db.paymentGatewayConfig?.upiIds?.[0] || '—'));
+                  const utrClean = d.utrNumber || String(d.providerRef || '').replace(/^(UTR:|TXID:)\s*/i, '') || '—';
+                  const estPct = d.firstDepositBonusPct !== undefined ? d.firstDepositBonusPct : window.getFirstDepositBonusPctForAmount(d.amountInr);
+                  const estBonus = d.firstDepositBonusInr !== undefined ? d.firstDepositBonusInr : +(Number(d.amountInr || 0) * (estPct / 100)).toFixed(2);
+                  return `
+                    <tr>
+                      <td>
+                        <strong style="font-family:monospace;">${d.depositId}</strong>
+                        <div style="font-size:0.68rem;color:var(--text-muted);">${fmtDateTime(d.createdAt)}</div>
+                      </td>
+                      <td>
+                        <span class="badge badge-blue" style="font-family:monospace;font-size:0.74rem;">${d.userId || 'UID-10001'}</span>
+                        <div style="font-weight:700;font-size:0.76rem;margin-top:2px;">${d.username || 'Player'}</div>
+                      </td>
+                      <td>
+                        <span class="badge ${isUsdt ? 'badge-purple' : 'badge-success'}">${isUsdt ? '₮ USDT' : '🇮🇳 UPI (INR)'}</span>
+                      </td>
+                      <td>
+                        ${window.fmtDepositStrictByMethod(d)}
+                      </td>
+                      <td>
+                        ${d.firstDepositBonusInr > 0
+                          ? `<span class="badge badge-purple">+₹${d.firstDepositBonusInr} (${d.firstDepositBonusPct}% Credited)</span>`
+                          : (d.status === 'PENDING' && estBonus > 0
+                              ? `<span style="font-size:0.72rem;color:#6D28D9;font-weight:700;">+${estPct}% (+₹${estBonus} if 1st Dep)</span>`
+                              : `<span style="font-size:0.7rem;color:var(--text-muted);">—</span>`)
+                        }
+                      </td>
+                      <td>
+                        <code style="background:#EFF6FF;color:#1D4ED8;padding:4px 8px;border-radius:6px;font-weight:800;font-size:0.75rem;display:inline-block;word-break:break-all;">${paidTo}</code>
+                      </td>
+                      <td>
+                        <code style="background:#FEF3C7;color:#92400E;padding:4px 8px;border-radius:6px;font-weight:900;font-size:0.78rem;word-break:break-all;">${utrClean}</code>
+                      </td>
+                      <td><span class="badge ${stBadge}">${stText}</span></td>
+                      <td>
+                        ${d.status === 'PENDING' || d.status === 'PROCESSING' || d.status === 'UNDER_REVIEW' ? `
+                          <div style="display:flex;gap:5px;">
+                            <button type="button" class="btn btn-success btn-sm" onclick="approveDepositAdmin('${d.depositId}')">✔ Approve</button>
+                            <button type="button" class="btn btn-danger btn-sm" onclick="rejectDepositAdmin('${d.depositId}')">✕ Reject</button>
+                          </div>
+                        ` : `<span style="font-size:0.72rem;color:var(--text-muted);font-weight:700;">Settled</span>`}
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
+    return _origRenderFinanceModulePage(subPage);
+  };
+
+  // ===========================================================================
+  // 8. WINGO AUTO-RESULT = ALWAYS ADMIN PROFIT (LEAST BET EXPOSURE)
+  // ===========================================================================
+  window.computeLeastBetWingoOutcomeAdmin = function(slotKey, periodId) {
+    const bets = (db.myBets || []).filter(b => b && b.periodId === periodId && (!b.slotKey || b.slotKey === slotKey));
+    if (bets.length === 0) {
+      return deriveFairOutcomeNumber(periodId, slotKey);
+    }
+    let bestNum = 1;
+    let minPayout = Infinity;
+    let minDirectStake = Infinity;
+
+    for (let n = 0; n <= 9; n++) {
+      let totalPayout = 0;
+      let directStakeOnOutcome = 0;
+      const nColors = (n === 0) ? ['RED', 'VIOLET'] : (n === 5 ? ['GREEN', 'VIOLET'] : (n % 2 === 0 ? ['RED'] : ['GREEN']));
+      const nSize = n >= 5 ? 'BIG' : 'SMALL';
+
+      bets.forEach(bet => {
+        const pay = calculateWingoBetPayoutAdmin(bet, n);
+        totalPayout += pay;
+        const pick = String(bet.selection || '').toUpperCase();
+        const amt = Number(bet.amount || 0);
+        if (pick === String(n) || nColors.includes(pick) || pick === nSize) {
+          directStakeOnOutcome += amt;
+        }
+      });
+
+      if (totalPayout < minPayout || (totalPayout === minPayout && directStakeOnOutcome < minDirectStake)) {
+        minPayout = totalPayout;
+        minDirectStake = directStakeOnOutcome;
+        bestNum = n;
+      }
+    }
+    return bestNum;
+  };
+
+  const _origSimWingoAdvV8 = window.simulateLiveWingoPeriodAdvance;
+  window.simulateLiveWingoPeriodAdvance = function(modeKey) {
+    const cfg = db.wingoModesConfig?.[modeKey] || {};
+    const utc = getWingoModeUtcState(modeKey, cfg);
+    const pid = utc.periodId;
+    if (!db.manualOverrides) db.manualOverrides = {};
+    if (db.manualOverrides[pid] === undefined || db.manualOverrides[pid] === null) {
+      const profitWinNum = window.computeLeastBetWingoOutcomeAdmin(modeKey, pid);
+      if (!db.settledPeriodResults) db.settledPeriodResults = {};
+      db.settledPeriodResults[pid] = profitWinNum;
+      db.manualOverrides[pid] = profitWinNum;
+    }
+    if (typeof _origSimWingoAdvV8 === 'function') {
+      _origSimWingoAdvV8(modeKey);
+    }
+  };
+
+  window.syncTopbarAndShellForActiveAdmin();
+  if (loggedInAdminAccount) {
+    renderSidebarTree('');
+    renderCurrentAdminView();
+  }
+})();
+</script>
+<!-- === END XYZ ADMIN V8 FULL UPGRADES === -->
+
 </body>
 </html>

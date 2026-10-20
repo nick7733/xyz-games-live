@@ -10373,7 +10373,7 @@
                 type="text"
                 id="loginIdentityInput"
                 class="auth-input"
-                value="9876543210"
+                value=""
                 placeholder="Enter mobile number, email or User ID"
                 autocomplete="username"
                 oninput="window.onLoginIdentityInput()"
@@ -10397,7 +10397,7 @@
                 type="password"
                 id="loginPasswordInput"
                 class="auth-input"
-                value="1234567"
+                value=""
                 placeholder="Enter your password"
                 autocomplete="current-password"
                 oninput="window.onLoginPasswordInput()"
@@ -10874,7 +10874,7 @@
             <button type="button" class="curr-opt active" id="topCurr-INR" onclick="setCurrencyMode('INR')">₹ INR</button>
             <button type="button" class="curr-opt" id="topCurr-USDT" onclick="setCurrencyMode('USDT')">₮ USDT</button>
           </div>
-          <button class="btn-rules-icon" onclick="openRulesModal()" title="Game Rules">i</button>
+          
         </div>
       </div>
 
@@ -12918,8 +12918,11 @@
             type="text"
             id="upiUtrInput"
             class="verif-input"
-            maxlength="16"
-            placeholder="Enter 12-digit UTR / UPI Ref No."
+            maxlength="12"
+            inputmode="numeric"
+            pattern="[0-9]{12}"
+            oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,12)"
+            placeholder="Enter 12-digit numeric UTR (0-9 only)"
           />
           
         </div>
@@ -13688,7 +13691,7 @@
             <span>🔗 Your Personal Referral Invite Link:</span>
             <span>Code: <strong style="color:#ffffff;" id="prInviteCodeText">XYZ7L108</strong></span>
           </div>
-          <div class="pr-invite-url" id="prInviteLinkText">https://xyzgames.app/register?ref=XYZ7L108</div>
+          <div class="pr-invite-url" id="prInviteLinkText">?ref=XYZ7L108</div>
           <div class="pr-invite-actions">
             <button type="button" class="pr-btn-copy-main" onclick="copyPromoInviteLink()">📋 Copy Invite Link</button>
             <button type="button" class="pr-btn-copy-sub" onclick="copyPromoInviteCode()">🏷️ Copy Code</button>
@@ -23536,7 +23539,7 @@ window.addEventListener('DOMContentLoaded', renderBalance);
   }
 
   function copyPromoInviteLink() {
-    const link = document.getElementById('prInviteLinkText')?.textContent || 'https://xyzgames.app/register?ref=XYZ7L108';
+    const link = document.getElementById('prInviteLinkText')?.textContent || '?ref=XYZ7L108';
     copyToClipboardSafe(link, '📋 Invite Link copied! Share with players to build your 7-level network.');
   }
 
@@ -23556,7 +23559,7 @@ window.addEventListener('DOMContentLoaded', renderBalance);
     const modal = document.getElementById('prQrModal');
     if (!modal) return;
     if (show) {
-      const link = document.getElementById('prInviteLinkText')?.textContent || 'https://xyzgames.app/register?ref=XYZ7L108';
+      const link = document.getElementById('prInviteLinkText')?.textContent || '?ref=XYZ7L108';
       document.getElementById('prQrSvgBox').innerHTML = generateInviteQrSvg(link);
       document.getElementById('prQrModalLinkTxt').textContent = link;
     }
@@ -23874,7 +23877,7 @@ window.addEventListener('DOMContentLoaded', renderBalance);
     // 1. Hero Invite Info
     const userDisplayName = (prState.username && prState.username !== 'User Name') ? prState.username : 'Agent_A108';
     const invCode = cfg.inviteCode || 'XYZ7L108';
-    const invLink = `https://xyzgames.app/register?ref=${invCode}`;
+    const invLink = (window.location.origin && window.location.origin !== 'null' ? window.location.origin + window.location.pathname : window.location.href.split('?')[0].split('#')[0]) + '?ref=' + encodeURIComponent(invCode);
     const ruleLabels = {
       EVERY_ELIGIBLE: 'Every Eligible Deposit',
       FIRST_DEPOSIT_ONLY: 'First Deposit Only',
@@ -28103,6 +28106,1808 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ MULTI-DEVICE CLOUD SYNC V7 === -->
+
+
+<!-- === START XYZ CUSTOMER WEBAPP V8 FULL UPGRADES === -->
+<style>
+  /* Hide WinGo topbar i button completely */
+  #xyz-view-games .btn-rules-icon {
+    display: none !important;
+  }
+
+  /* Fix Select Bank Name & USDT Network dropdowns and inputs in Withdraw view */
+  #xyz-view-withdraw select,
+  #xyz-view-withdraw input,
+  #xyz-view-withdraw button,
+  #xyz-view-withdraw .field-select,
+  #xyz-view-withdraw .field-input {
+    -webkit-user-select: auto !important;
+    user-select: auto !important;
+    pointer-events: auto !important;
+    touch-action: manipulation !important;
+  }
+  #xyz-view-withdraw select.field-select {
+    appearance: auto !important;
+    -webkit-appearance: menulist !important;
+    -moz-appearance: menulist !important;
+    cursor: pointer !important;
+    background-color: #ffffff !important;
+    color: #171412 !important;
+    min-height: 46px !important;
+  }
+  body.xyz-dark-mode #xyz-view-withdraw select.field-select {
+    background-color: #0f172a !important;
+    color: #f8fafc !important;
+  }
+  #xyz-view-withdraw select.field-select option {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    font-weight: 600;
+  }
+  body.xyz-dark-mode #xyz-view-withdraw select.field-select option {
+    background-color: #0f172a !important;
+    color: #f8fafc !important;
+  }
+
+  /* Popular Bank Quick Chips on Withdraw Page */
+  .xyz-quick-bank-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 7px;
+  }
+  .xyz-quick-bank-chip {
+    padding: 5px 10px !important;
+    border-radius: 999px !important;
+    font-size: 0.72rem !important;
+    font-weight: 700 !important;
+    background: rgba(5, 145, 83, 0.1) !important;
+    border: 1px solid rgba(5, 145, 83, 0.3) !important;
+    color: #059153 !important;
+    cursor: pointer !important;
+  }
+  .xyz-quick-bank-chip.active {
+    background: #059153 !important;
+    color: #ffffff !important;
+  }
+
+  /* Unread Notification Red Dot on Bottom Nav Profile Icon */
+  .nav-tab {
+    position: relative;
+  }
+  .xyz-nav-notif-dot {
+    position: absolute;
+    top: 3px;
+    right: 26%;
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: #e11d48;
+    border: 1.5px solid #ffffff;
+    box-shadow: 0 0 6px rgba(225, 29, 72, 0.8);
+    display: none;
+    pointer-events: none;
+  }
+  .xyz-nav-notif-dot.show {
+    display: block !important;
+  }
+</style>
+
+<script>
+(function() {
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const XYZ_TAB_SESSION_KEY = 'XYZ_TAB_USER_AUTH_SESSION_V8';
+
+  function getSharedSt() {
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveSharedSt(st) {
+    try {
+      window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+    } catch (e) {}
+  }
+
+  // ===========================================================================
+  // 1. MULTI-DEVICE LOGIN ISOLATION & STRICT REGISTRATION CHECK
+  //    - Never auto-fill another device's ID/Password
+  //    - Every new device / link open must log in with their own ID & Password
+  //    - Only allow login if user has registered and exists in Admin Panel
+  // ===========================================================================
+  try {
+    window.__xyzSafeStorage.removeItem('XYZ_SAVED_LOGIN_CREDS_V1');
+    window.__xyzSafeStorage.removeItem('XYZ_ACTIVE_AUTH_SESSION_V1');
+    if (window.localStorage) {
+      window.localStorage.removeItem('XYZ_SAVED_LOGIN_CREDS_V1');
+      window.localStorage.removeItem('XYZ_ACTIVE_AUTH_SESSION_V1');
+    }
+  } catch (e) {}
+
+  window.fillSavedLoginCredentials = function() {
+    const strip = document.getElementById('savedCredsQuickStrip');
+    if (strip) strip.style.display = 'none';
+    return false;
+  };
+
+  function getTabSession() {
+    try {
+      if (window.sessionStorage) {
+        const raw = window.sessionStorage.getItem(XYZ_TAB_SESSION_KEY);
+        if (raw) return JSON.parse(raw);
+      }
+    } catch (e) {}
+    return window.__xyzTabSessionMem || null;
+  }
+
+  function setTabSession(sessObj) {
+    window.__xyzTabSessionMem = sessObj || null;
+    try {
+      if (window.sessionStorage) {
+        if (sessObj) window.sessionStorage.setItem(XYZ_TAB_SESSION_KEY, JSON.stringify(sessObj));
+        else window.sessionStorage.removeItem(XYZ_TAB_SESSION_KEY);
+      }
+    } catch (e) {}
+  }
+
+  window.hasActiveUserSession = function() {
+    const sess = getTabSession();
+    if (!sess || (!sess.userId && !sess.identity)) return false;
+    const st = getSharedSt();
+    const exists = (st.adminUsersList || []).some(u => u && u.userId === sess.userId && u.status !== 'BLOCKED' && u.status !== 'SUSPENDED') ||
+                   (st.registeredAccounts || []).some(a => a && a.userId === sess.userId && a.status !== 'BLOCKED' && a.status !== 'SUSPENDED');
+    return exists;
+  };
+
+  window.getCurrentCustomerUid = function(stObj) {
+    const sess = getTabSession();
+    if (sess && sess.userId) return sess.userId;
+    const s = stObj || getSharedSt();
+    return s.activeUserId || 'GUEST';
+  };
+
+  window.isCurrentCustomerUid = function(uid, stObj) {
+    if (!uid) return false;
+    const activeUid = window.getCurrentCustomerUid(stObj);
+    return String(uid).toUpperCase() === String(activeUid).toUpperCase();
+  };
+
+  // Ensure applyDeviceSessionOverlay uses tab-scoped session so another device never auto-logs in
+  window.applyDeviceSessionOverlay = function(stObj) {
+    if (!stObj || typeof stObj !== 'object') return stObj;
+    stObj.darkMode = window.__xyzGetDeviceDarkMode();
+    const sess = getTabSession();
+    if (sess && sess.userId) {
+      const matchedUser = (stObj.adminUsersList || []).find(u => u && u.userId === sess.userId) ||
+                          (stObj.registeredAccounts || []).find(a => a && a.userId === sess.userId);
+      if (matchedUser) {
+        if (matchedUser.status === 'BLOCKED' || matchedUser.status === 'SUSPENDED') {
+          setTabSession(null);
+          stObj.isLoggedIn = false;
+          setTimeout(() => {
+            if (typeof window.performXyzLogoutToAuth === 'function') window.performXyzLogoutToAuth();
+          }, 30);
+          return stObj;
+        }
+        stObj.activeUserId = matchedUser.userId;
+        stObj.username = matchedUser.username || sess.username || 'Player';
+        stObj.userIdOrEmail = matchedUser.loginId || matchedUser.phone || matchedUser.email || sess.identity || '';
+        stObj.isLoggedIn = true;
+        if (typeof matchedUser.cashBalanceInr === 'number' && !Number.isNaN(matchedUser.cashBalanceInr)) {
+          const adminTs = Number(matchedUser.lastAdminBalanceUpdateAt || 0);
+          const userTs = Number(matchedUser.lastUserBalanceUpdateAt || 0);
+          if (adminTs >= userTs || stObj.balance === undefined) {
+            stObj.balance = Math.max(0, +Number(matchedUser.cashBalanceInr).toFixed(2));
+          }
+        }
+        if (matchedUser.avatarId) stObj.avatarId = matchedUser.avatarId;
+        if (matchedUser.avatarUrl) stObj.avatarUrl = matchedUser.avatarUrl;
+      } else {
+        stObj.isLoggedIn = false;
+      }
+    } else {
+      stObj.isLoggedIn = false;
+    }
+    return stObj;
+  };
+
+  // ===========================================================================
+  // 2. INVITE LINK DETECTION (?ref=...), MANDATORY INVITE CODE ON INVITE LINK,
+  //    AND 1-7 LEVEL TEAM HIERARCHY LINKING + STRICT REGISTRATION LOGIN
+  // ===========================================================================
+  function parseInviteFromLocation() {
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      const qCode = params.get('ref') || params.get('invite') || params.get('code') || params.get('inviteCode');
+      if (qCode && qCode.trim()) {
+        return { code: qCode.trim().toUpperCase(), fromUrl: true };
+      }
+      const hash = window.location.hash || '';
+      const m = hash.match(/(?:ref|invite|code)=([A-Za-z0-9_-]+)/i);
+      if (m && m[1]) {
+        return { code: m[1].trim().toUpperCase(), fromUrl: true };
+      }
+      if (/\/register/i.test(window.location.pathname || '') || /^#\/?register/i.test(hash)) {
+        return { code: '', fromUrl: true };
+      }
+    } catch (e) {}
+    return { code: '', fromUrl: false };
+  }
+
+  function showAuthInlineBanner(msg, isSuccess) {
+    const el = document.getElementById('authInlineAlert');
+    if (!el) return;
+    if (!msg) {
+      el.style.display = 'none';
+      return;
+    }
+    el.style.display = 'block';
+    el.style.background = isSuccess ? 'rgba(16, 185, 129, 0.14)' : 'rgba(239, 68, 68, 0.14)';
+    el.style.border = isSuccess ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(239, 68, 68, 0.4)';
+    el.style.color = isSuccess ? '#10b981' : '#ef4444';
+    el.textContent = msg;
+  }
+
+  function findInviterByCode(st, codeStr) {
+    const clean = String(codeStr || '').trim().toUpperCase();
+    if (!clean) return null;
+    const masterCode = String(st.promoConfig?.inviteCode || 'XYZ7L108').trim().toUpperCase();
+    const allUsers = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+    const foundUser = allUsers.find(u =>
+      u && (
+        String(u.referralCode || '').toUpperCase() === clean ||
+        String(u.userId || '').toUpperCase() === clean ||
+        String(u.loginId || '').toUpperCase() === clean
+      )
+    );
+    if (foundUser) return foundUser;
+    if (clean === masterCode) {
+      return allUsers[0] || {
+        userId: 'SELF',
+        username: 'Official Agent',
+        referralCode: masterCode
+      };
+    }
+    return null;
+  }
+
+  // Build 1-7 Level Referral Chain when newAccount registers under inviterUser
+  function linkNewUserTo7LevelTeam(st, newAccount, inviterUser, usedInviteCode) {
+    if (!Array.isArray(st.referralMembers)) st.referralMembers = [];
+    if (!inviterUser) return;
+
+    const allUsers = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+    const findUserById = (uid) => allUsers.find(u => u && u.userId === uid);
+
+    newAccount.parentUserId = inviterUser.userId || 'SELF';
+    newAccount.parentUsername = inviterUser.username || 'Agent';
+
+    // Walk up the ancestor chain from Level 1 (direct inviter) up to Level 7
+    let currentAncestor = inviterUser;
+    const pathNames = [inviterUser.username || inviterUser.userId];
+    const visited = new Set([newAccount.userId]);
+
+    for (let lvl = 1; lvl <= 7; lvl++) {
+      if (!currentAncestor || visited.has(currentAncestor.userId)) break;
+      visited.add(currentAncestor.userId);
+
+      const ancestorUid = currentAncestor.userId || 'SELF';
+      const chainStr = `${pathNames.join(' → ')} → ${newAccount.username} (L${lvl})`;
+
+      st.referralMembers.unshift({
+        ledgerKey: `REF-${ancestorUid}-${newAccount.userId}-L${lvl}`,
+        rootAgentId: ancestorUid,
+        beneficiaryUserId: ancestorUid,
+        memberId: newAccount.userId,
+        name: newAccount.username,
+        level: lvl,
+        parentId: inviterUser.userId || 'SELF',
+        parentName: `${inviterUser.username || inviterUser.userId} (${usedInviteCode})`,
+        inviteCodeUsed: usedInviteCode,
+        chainPath: chainStr,
+        joinedAt: Date.now(),
+        status: 'ACTIVE',
+        depositCount: 0,
+        totalDepositsInr: 0,
+        dailyDepositInr: 0,
+        weeklyDepositInr: 0,
+        monthlyDepositInr: 0,
+        totalWithdrawalsInr: 0,
+        dailyBetInr: 0,
+        weeklyBetInr: 0,
+        monthlyBetInr: 0
+      });
+
+      if (!currentAncestor.parentUserId || currentAncestor.parentUserId === 'SELF') break;
+      const nextAnc = findUserById(currentAncestor.parentUserId);
+      if (!nextAnc) break;
+      pathNames.unshift(nextAnc.username || nextAnc.userId);
+      currentAncestor = nextAnc;
+    }
+  }
+
+  window.handleXyzUserRegister = async function() {
+    if (typeof window.pullCustomerStateFromCloud === 'function') {
+      await window.pullCustomerStateFromCloud();
+    }
+    const idRaw = (document.getElementById('regIdentityInput')?.value || '').trim();
+    const pwdRaw = document.getElementById('regPasswordInput')?.value || '';
+    const cnfRaw = document.getElementById('regConfirmPasswordInput')?.value || '';
+    const invRaw = (document.getElementById('regInviteCodeInput')?.value || '').trim().toUpperCase();
+
+    if (!idRaw) {
+      showAuthInlineBanner('⚠️ Please enter your mobile number or email address.', false);
+      return;
+    }
+    const isEmail = idRaw.includes('@');
+    const cleanPhone = idRaw.replace(/[\s\-()]/g, '');
+    if (isEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(idRaw)) {
+      showAuthInlineBanner('⚠️ Please enter a valid email address.', false);
+      return;
+    }
+    if (!isEmail && !/^\+?\d{10,15}$/.test(cleanPhone)) {
+      showAuthInlineBanner('⚠️ Please enter a valid 10-digit mobile number or email address.', false);
+      return;
+    }
+    if (!pwdRaw || pwdRaw.length < 4) {
+      showAuthInlineBanner('⚠️ Password must be at least 4 characters (7+ digits recommended).', false);
+      return;
+    }
+    if (pwdRaw !== cnfRaw) {
+      showAuthInlineBanner('⚠️ Confirm Password does not match your password.', false);
+      return;
+    }
+
+    // Invite Code is MANDATORY when registering via invite link OR on registration
+    if (!invRaw) {
+      showAuthInlineBanner('⚠️ Invite Code is required! Registration cannot proceed without an Invite Code.', false);
+      document.getElementById('regInviteCodeInput')?.focus();
+      return;
+    }
+
+    const st = getSharedSt();
+    if (!Array.isArray(st.registeredAccounts)) st.registeredAccounts = [];
+    if (!Array.isArray(st.adminUsersList)) st.adminUsersList = [];
+    if (!Array.isArray(st.referralMembers)) st.referralMembers = [];
+
+    const inviterUser = findInviterByCode(st, invRaw);
+    if (!inviterUser) {
+      showAuthInlineBanner(`❌ Invalid Invite Code "${invRaw}"! Please use a valid Invite Link or Invite Code.`, false);
+      document.getElementById('regInviteCodeInput')?.focus();
+      return;
+    }
+
+    const normId = isEmail ? idRaw.toLowerCase() : cleanPhone;
+    const existing = st.registeredAccounts.find(a => a && (a.identity === normId || String(a.loginId || '').toLowerCase() === normId)) ||
+                     st.adminUsersList.find(u => u && ((u.email && u.email.toLowerCase() === normId) || (u.phone && u.phone.replace(/[\s\-()]/g, '') === normId) || (u.loginId && u.loginId.toLowerCase() === normId)));
+
+    if (existing) {
+      showAuthInlineBanner('ℹ️ This mobile number / email is already registered! Please log in with your password.', false);
+      setTimeout(() => window.switchAuthMode('LOGIN'), 900);
+      return;
+    }
+
+    const newUid = 'USR-' + Math.floor(1000 + Math.random() * 9000);
+    const shortDisplayName = isEmail ? normId.split('@')[0] : ('User_' + normId.slice(-4));
+    const userOwnRefCode = 'XYZ' + newUid.replace(/[^0-9]/g, '') + Math.floor(10 + Math.random() * 89);
+
+    const newAccount = {
+      userId: newUid,
+      username: shortDisplayName,
+      identity: normId,
+      identityType: isEmail ? 'EMAIL' : 'PHONE',
+      email: isEmail ? normId : `${shortDisplayName.toLowerCase()}@xyzgames.app`,
+      phone: !isEmail ? idRaw : '+91 98000 00000',
+      loginId: normId,
+      password: pwdRaw,
+      inviteCodeUsed: invRaw,
+      referralCode: userOwnRefCode,
+      parentUserId: inviterUser.userId || 'SELF',
+      parentUsername: inviterUser.username || 'Agent',
+      referralSource: `${invRaw} (Invited by ${inviterUser.username || inviterUser.userId})`,
+      status: 'ACTIVE',
+      kycStatus: 'VERIFIED',
+      cashBalanceInr: 0.00,
+      promoBalanceInr: 0.00,
+      firstDepositBonusClaimed: false,
+      registeredAt: Date.now()
+    };
+
+    st.registeredAccounts.unshift(newAccount);
+    st.adminUsersList.unshift(Object.assign({}, newAccount));
+
+    // Link into 1-7 Level Team Hierarchy immediately!
+    linkNewUserTo7LevelTeam(st, newAccount, inviterUser, invRaw);
+
+    setTabSession({
+      userId: newUid,
+      identity: idRaw,
+      username: shortDisplayName,
+      referralCode: userOwnRefCode,
+      loggedInAt: Date.now()
+    });
+
+    st.activeUserId = newUid;
+    st.username = shortDisplayName;
+    st.userIdOrEmail = idRaw;
+    st.balance = 0.00;
+    st.isLoggedIn = true;
+    saveSharedSt(st);
+
+    if (typeof window.pushCustomerStateToCloud === 'function') {
+      window.pushCustomerStateToCloud();
+    }
+
+    // Clear URL query ?ref=... after successful registration
+    try {
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, '', window.location.pathname + '#homepage');
+      }
+    } catch (e) {}
+
+    window.switchXyzView('homepage');
+  };
+
+  window.handleXyzUserLogin = async function() {
+    if (typeof window.pullCustomerStateFromCloud === 'function') {
+      await window.pullCustomerStateFromCloud();
+    }
+    const idRaw = (document.getElementById('loginIdentityInput')?.value || '').trim();
+    const pwdRaw = document.getElementById('loginPasswordInput')?.value || '';
+
+    if (!idRaw) {
+      showAuthInlineBanner('⚠️ Please enter your registered Mobile Number, Email, or User ID.', false);
+      return;
+    }
+    if (!pwdRaw) {
+      showAuthInlineBanner('⚠️ Please enter your password.', false);
+      return;
+    }
+
+    const st = getSharedSt();
+    const allAccounts = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+    const cleanPhone = idRaw.replace(/[\s\-()]/g, '');
+    const normLower = idRaw.toLowerCase();
+
+    const matchedAcc = allAccounts.find(acc => {
+      if (!acc) return false;
+      const uidMatch = String(acc.userId || '').toLowerCase() === normLower;
+      const loginMatch = String(acc.loginId || '').toLowerCase() === normLower;
+      const identMatch = String(acc.identity || '').toLowerCase() === normLower || String(acc.identity || '') === cleanPhone;
+      const emailMatch = String(acc.email || '').toLowerCase() === normLower;
+      const phoneClean = String(acc.phone || '').replace(/[\s\-()]/g, '');
+      const phoneMatch = phoneClean && (phoneClean === cleanPhone || phoneClean.endsWith(cleanPhone));
+      return uidMatch || loginMatch || identMatch || emailMatch || phoneMatch;
+    });
+
+    // STRICT CHECK: Only allow login if user has registered and exists in Admin Panel!
+    if (!matchedAcc) {
+      showAuthInlineBanner('❌ Account not registered! Please register your account first before logging in.', false);
+      return;
+    }
+
+    if (matchedAcc.password !== pwdRaw) {
+      showAuthInlineBanner('❌ Incorrect password! Please enter your valid registered password.', false);
+      return;
+    }
+
+    if (matchedAcc.status === 'BLOCKED' || matchedAcc.status === 'SUSPENDED') {
+      showAuthInlineBanner('🚫 Your account has been restricted by the Administrator.', false);
+      return;
+    }
+
+    setTabSession({
+      userId: matchedAcc.userId,
+      identity: idRaw,
+      username: matchedAcc.username,
+      referralCode: matchedAcc.referralCode || ('XYZ' + matchedAcc.userId.replace(/[^0-9]/g, '')),
+      loggedInAt: Date.now()
+    });
+
+    st.activeUserId = matchedAcc.userId;
+    st.username = matchedAcc.username;
+    st.userIdOrEmail = idRaw;
+    st.balance = Number(matchedAcc.cashBalanceInr || 0);
+    st.isLoggedIn = true;
+    saveSharedSt(st);
+
+    window.switchXyzView('homepage');
+  };
+
+  window.performXyzLogoutToAuth = function() {
+    setTabSession(null);
+    try {
+      const st = getSharedSt();
+      st.isLoggedIn = false;
+      saveSharedSt(st);
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    } catch (e) {}
+    if (typeof window.closeDrawer === 'function') window.closeDrawer();
+    if (typeof window.toggleMenuDrawer === 'function') window.toggleMenuDrawer(false);
+    const idInp = document.getElementById('loginIdentityInput');
+    const pwInp = document.getElementById('loginPasswordInput');
+    if (idInp) idInp.value = '';
+    if (pwInp) pwInp.value = '';
+    window.switchXyzView('auth');
+    window.switchAuthMode('LOGIN');
+    showAuthInlineBanner('🔒 You have been logged out. Please enter your ID and password to log in.', true);
+  };
+
+  // ===========================================================================
+  // 3. PROMO SECTION: DYNAMIC WORKING INVITE LINK & USER-SCOPED 1-7 LEVEL TEAM
+  // ===========================================================================
+  function getActiveUserInviteCode(st) {
+    const uid = window.getCurrentCustomerUid(st);
+    const allUsers = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+    const u = allUsers.find(x => x && x.userId === uid);
+    if (u && u.referralCode) return u.referralCode;
+    if (uid && uid !== 'GUEST' && uid !== 'USR-001') {
+      return 'XYZ' + uid.replace(/[^0-9]/g, '');
+    }
+    return st.promoConfig?.inviteCode || 'XYZ7L108';
+  }
+
+  function buildWorkingInviteUrl(invCode) {
+    try {
+      const base = (window.location.origin && window.location.origin !== 'null')
+        ? (window.location.origin + window.location.pathname)
+        : window.location.href.split('?')[0].split('#')[0];
+      return `${base}?ref=${encodeURIComponent(invCode)}`;
+    } catch (e) {
+      return `/?ref=${encodeURIComponent(invCode)}`;
+    }
+  }
+
+  const _origRenderPromoAllV8 = window.renderPromoAll;
+  window.renderPromoAll = function() {
+    if (typeof _origRenderPromoAllV8 === 'function') _origRenderPromoAllV8();
+    const st = getSharedSt();
+    const myUid = window.getCurrentCustomerUid(st);
+    const myInviteCode = getActiveUserInviteCode(st);
+    const myInviteLink = buildWorkingInviteUrl(myInviteCode);
+
+    const codeEl = document.getElementById('prInviteCodeText');
+    const linkEl = document.getElementById('prInviteLinkText');
+    if (codeEl) codeEl.textContent = myInviteCode;
+    if (linkEl) linkEl.textContent = myInviteLink;
+
+    // Filter referralMembers for current user's 1-7 level downline team
+    const allMembers = Array.isArray(st.referralMembers) ? st.referralMembers : [];
+    const myDownline = allMembers.filter(m =>
+      m && (
+        m.rootAgentId === myUid ||
+        m.beneficiaryUserId === myUid ||
+        m.parentId === myUid ||
+        (!m.rootAgentId && (myUid === 'USR-001' || myInviteCode === (st.promoConfig?.inviteCode || 'XYZ7L108')))
+      )
+    );
+
+    const netEl = document.getElementById('prKpiNetworkMembers');
+    if (netEl) {
+      const l1Cnt = myDownline.filter(m => Number(m.level) === 1).length;
+      netEl.textContent = `${myDownline.length} (${l1Cnt} Direct)`;
+    }
+  };
+
+  window.copyPromoInviteLink = function() {
+    const st = getSharedSt();
+    const link = buildWorkingInviteUrl(getActiveUserInviteCode(st));
+    const linkEl = document.getElementById('prInviteLinkText');
+    if (linkEl) linkEl.textContent = link;
+    try {
+      navigator.clipboard?.writeText(link);
+    } catch (e) {}
+  };
+
+  window.copyPromoInviteCode = function() {
+    const st = getSharedSt();
+    const code = getActiveUserInviteCode(st);
+    try {
+      navigator.clipboard?.writeText(code);
+    } catch (e) {}
+  };
+
+  // ===========================================================================
+  // 4. CUSTOMER SERVICE: ONLY "Chat with Customer Support" BUTTON -> TELEGRAM
+  // ===========================================================================
+  window.getAdminTelegramSupportUrl = function() {
+    const st = getSharedSt();
+    const rawTg = (st.websiteConfig && (st.websiteConfig.telegramChannelLink || st.websiteConfig.supportTelegram)) || 'https://t.me/XYZGames_Official';
+    return rawTg.startsWith('http') ? rawTg : ('https://t.me/' + rawTg.replace(/^@/, ''));
+  };
+
+  window.openAuthCsSupportModal = function(show) {
+    const modal = document.getElementById('xyzAuthCsModal');
+    if (!modal) return;
+    if (show) {
+      const tgUrl = window.getAdminTelegramSupportUrl();
+      const sheet = modal.querySelector('.cs-modal-sheet');
+      if (sheet) {
+        sheet.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:12px;border-bottom:1px solid rgba(148,163,184,0.2);">
+            <div style="font-size:1rem;font-weight:900;">🎧 Customer Support</div>
+            <button type="button" onclick="window.openAuthCsSupportModal(false)" style="width:30px;height:30px;border-radius:999px;border:none;background:rgba(148,163,184,0.15);color:inherit;font-weight:800;cursor:pointer;">✕</button>
+          </div>
+          <div style="padding:24px 8px 12px;text-align:center;">
+            <a href="${tgUrl}" target="_blank" rel="noopener noreferrer" onclick="window.openAuthCsSupportModal(false)" style="display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:14px 20px;border-radius:999px;background:linear-gradient(135deg,#0088cc,#2563eb);color:#ffffff;font-size:0.95rem;font-weight:900;text-decoration:none;box-shadow:0 8px 20px rgba(0,136,204,0.35);">
+              
+              <span>Chat with Customer Support</span>
+            </a>
+          </div>
+        `;
+      }
+    }
+    modal.classList.toggle('show', !!show);
+  };
+
+  // ===========================================================================
+  // 5. NOTIFICATIONS SECTION & UNREAD RED DOT
+  //    - Show ONLY sent notifications
+  //    - If empty, show ONLY "No notification yet"
+  //    - Red dot appears on new notification and auto-hides when viewed
+  // ===========================================================================
+  const XYZ_READ_NOTIFS_KEY = 'XYZ_USER_READ_NOTIFS_MAP_V8';
+  function getReadNotifsSetForUser(uid) {
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_READ_NOTIFS_KEY);
+      const map = raw ? JSON.parse(raw) : {};
+      return new Set(Array.isArray(map[uid]) ? map[uid] : []);
+    } catch (e) {
+      return new Set();
+    }
+  }
+  function markNotifIdsReadForUser(uid, idsArray) {
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_READ_NOTIFS_KEY);
+      const map = raw ? JSON.parse(raw) : {};
+      const cur = new Set(Array.isArray(map[uid]) ? map[uid] : []);
+      (idsArray || []).forEach(id => { if (id) cur.add(String(id)); });
+      map[uid] = Array.from(cur);
+      window.__xyzSafeStorage.setItem(XYZ_READ_NOTIFS_KEY, JSON.stringify(map));
+    } catch (e) {}
+  }
+
+  window.getUserMatchingNotifications = function(stObj) {
+    const st = stObj || getSharedSt();
+    const myUid = String(window.getCurrentCustomerUid(st) || 'GUEST').trim().toUpperCase();
+    const myLogin = String(st.userIdOrEmail || '').trim().toUpperCase();
+    const adminNotifs = Array.isArray(st.adminNotifications) ? st.adminNotifications : [];
+    const localReadSet = getReadNotifsSetForUser(myUid);
+
+    const matched = [];
+    adminNotifs.forEach(n => {
+      if (!n) return;
+      const nId = String(n.notifId || n.id || ('N-' + (n.createdAt || 0)));
+      const tType = String(n.targetType || 'ALL').toUpperCase();
+      const tUid  = String(n.targetUid || 'ALL').trim().toUpperCase();
+      const isBroadcast = (tType === 'ALL' || tUid === 'ALL' || tUid === '*');
+      const isDirectMatch = (tType === 'USER' && myUid && (tUid === myUid || (myLogin && tUid === myLogin)));
+      if (isBroadcast || isDirectMatch) {
+        const readList = Array.isArray(n.readByUids) ? n.readByUids.map(u => String(u).toUpperCase()) : [];
+        const isUnread = !localReadSet.has(nId) && !readList.includes(myUid) && (n.unread !== false);
+        matched.push({
+          id: nId,
+          targetType: isBroadcast ? 'ALL' : 'USER',
+          targetUid: n.targetUid || 'ALL',
+          title: n.title || 'Notification',
+          message: n.message || '',
+          priority: n.priority || 'INFO',
+          timestamp: n.createdAt || n.timestamp || Date.now(),
+          unread: isUnread
+        });
+      }
+    });
+
+    matched.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+    return matched;
+  };
+
+  window.updateProfileNotificationBadges = function() {
+    const st = getSharedSt();
+    const list = window.getUserMatchingNotifications(st);
+    const unreadCount = list.filter(n => n.unread).length;
+
+    const badge = document.getElementById('profNotifUnreadBadge');
+    const dot = document.getElementById('profNotifUnreadDot');
+    if (badge) {
+      if (unreadCount > 0) {
+        badge.style.display = 'inline-block';
+        badge.style.background = '#e11d48';
+        badge.textContent = `${unreadCount} New`;
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+    if (dot) {
+      dot.style.display = unreadCount > 0 ? 'block' : 'none';
+    }
+
+    // Also update red dot on Profile tab in bottom-nav across all views
+    document.querySelectorAll('.bottom-nav .nav-tab').forEach(tab => {
+      const oc = tab.getAttribute('onclick') || '';
+      if (oc.includes("'profile'")) {
+        let navDot = tab.querySelector('.xyz-nav-notif-dot');
+        if (!navDot) {
+          navDot = document.createElement('span');
+          navDot.className = 'xyz-nav-notif-dot';
+          tab.appendChild(navDot);
+        }
+        navDot.classList.toggle('show', unreadCount > 0);
+      }
+    });
+  };
+
+  const _prevOpenSettingDrawerV8 = window.openSettingDrawer;
+  window.openSettingDrawer = function(settingType) {
+    if (settingType === 'SUPPORT') {
+      const tgUrl = window.getAdminTelegramSupportUrl();
+      window.openDrawer(window.t ? window.t('cs') : 'Customer Service', `
+        <div style="padding:18px 4px;text-align:center;">
+          <a href="${tgUrl}" target="_blank" rel="noopener noreferrer" onclick="closeDrawer()" style="display:inline-flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:14px 20px;border-radius:999px;background:linear-gradient(135deg,#0088cc,#2563eb);color:#ffffff;font-size:0.96rem;font-weight:900;text-decoration:none;box-shadow:0 8px 20px rgba(0,136,204,0.32);">
+            
+            <span>Chat with Customer Support</span>
+          </a>
+        </div>
+      `);
+      return;
+    }
+
+    if (settingType === 'NOTIFICATIONS') {
+      const st = getSharedSt();
+      const myUid = String(window.getCurrentCustomerUid(st) || 'UID-10001').trim().toUpperCase();
+      const notifs = window.getUserMatchingNotifications(st);
+
+      // Immediately mark all notifications as read so red dot disappears automatically
+      markNotifIdsReadForUser(myUid, notifs.map(x => x.id));
+      if (Array.isArray(st.adminNotifications)) {
+        st.adminNotifications.forEach(n => {
+          if (!n) return;
+          if (!Array.isArray(n.readByUids)) n.readByUids = [];
+          if (!n.readByUids.map(u => String(u).toUpperCase()).includes(myUid)) {
+            n.readByUids.push(myUid);
+          }
+        });
+        window.__isApplyingRemoteCloudState = true;
+        saveSharedSt(st);
+        window.__isApplyingRemoteCloudState = false;
+      }
+      window.updateProfileNotificationBadges();
+
+      const itemsHtml = notifs.length === 0
+        ? `<div style="text-align:center;padding:36px 16px;color:var(--text-main);font-size:0.95rem;font-weight:800;">No notification yet</div>`
+        : notifs.map(item => {
+            const dtStr = new Date(Number(item.timestamp || Date.now())).toLocaleString('en-IN', {
+              day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
+            });
+            return `
+              <div class="record-card" style="flex-direction:column;align-items:stretch;gap:6px;border:1.5px solid var(--border-soft);">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
+                  <strong style="font-size:0.92rem;font-weight:800;color:var(--text-main);">${item.title}</strong>
+                  <span style="font-size:0.68rem;color:var(--text-sub);font-weight:600;">${dtStr}</span>
+                </div>
+                <div style="font-size:0.84rem;color:var(--text-sub);line-height:1.48;white-space:pre-wrap;">${item.message}</div>
+              </div>
+            `;
+          }).join('');
+
+      window.openDrawer(window.t ? window.t('notif') : 'Notifications', `
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          ${itemsHtml}
+        </div>
+      `);
+      return;
+    }
+
+    if (typeof _prevOpenSettingDrawerV8 === 'function') {
+      _prevOpenSettingDrawerV8(settingType);
+    }
+  };
+
+  // ===========================================================================
+  // 6. WINGO AUTO-RESULT = ALWAYS ADMIN PROFIT (LEAST BET EXPOSURE)
+  // ===========================================================================
+  const WINGO_BALL_COLORS = {
+    0: ['RED', 'VIOLET'],
+    1: ['GREEN'],
+    2: ['RED'],
+    3: ['GREEN'],
+    4: ['RED'],
+    5: ['GREEN', 'VIOLET'],
+    6: ['RED'],
+    7: ['GREEN'],
+    8: ['RED'],
+    9: ['GREEN']
+  };
+
+  window.computeAdminProfitWinningNumber = function(slotKey, periodId, stObj) {
+    const st = stObj || getSharedSt();
+    if (st.manualOverrides && st.manualOverrides[periodId] !== undefined && st.manualOverrides[periodId] !== null) {
+      return Number(st.manualOverrides[periodId]);
+    }
+    if (st.settledPeriodResults && st.settledPeriodResults[periodId] !== undefined && st.settledPeriodResults[periodId] !== null) {
+      return Number(st.settledPeriodResults[periodId]);
+    }
+
+    const periodBets = (st.myBets || []).filter(b => b && String(b.periodId) === String(periodId) && (!b.slotKey || b.slotKey === slotKey));
+    if (periodBets.length === 0) {
+      return window.hashPeriodWinner ? window.hashPeriodWinner(periodId, slotKey) : 2;
+    }
+
+    let bestNum = 1;
+    let minTotalPayout = Infinity;
+    let minDirectExposure = Infinity;
+
+    for (let n = 0; n <= 9; n++) {
+      let payoutSum = 0;
+      let exposureSum = 0;
+      const nColors = WINGO_BALL_COLORS[n] || [];
+      const nSize = n >= 5 ? 'BIG' : 'SMALL';
+
+      periodBets.forEach(bet => {
+        const pay = window.evaluateSingleBetPayout ? window.evaluateSingleBetPayout(bet, n) : 0;
+        payoutSum += pay;
+        const pick = String(bet.selection || '').toUpperCase();
+        const amt = Number(bet.amount || 0);
+        if (pick === String(n) || nColors.includes(pick) || pick === nSize) {
+          exposureSum += amt;
+        }
+      });
+
+      if (payoutSum < minTotalPayout || (payoutSum === minTotalPayout && exposureSum < minDirectExposure)) {
+        minTotalPayout = payoutSum;
+        minDirectExposure = exposureSum;
+        bestNum = n;
+      }
+    }
+
+    if (!st.settledPeriodResults) st.settledPeriodResults = {};
+    st.settledPeriodResults[periodId] = bestNum;
+    if (!st.manualOverrides) st.manualOverrides = {};
+    st.manualOverrides[periodId] = bestNum;
+    window.__isApplyingRemoteCloudState = true;
+    saveSharedSt(st);
+    window.__isApplyingRemoteCloudState = false;
+    return bestNum;
+  };
+
+  // Override settleSlotPeriod so before settling any waiting bets on period rollover,
+  // if no manual admin override exists, it computes and locks the least-bet-exposure winning number!
+  const _origSettleSlotPeriodV8 = window.settleSlotPeriod;
+  window.settleSlotPeriod = function(slotKey, finishedPeriodId) {
+    const st = getSharedSt();
+    const hasManual = st.manualOverrides && st.manualOverrides[finishedPeriodId] !== undefined && st.manualOverrides[finishedPeriodId] !== null;
+    if (!hasManual) {
+      const winNum = window.computeAdminProfitWinningNumber(slotKey, finishedPeriodId, st);
+      if (!st.manualOverrides) st.manualOverrides = {};
+      st.manualOverrides[finishedPeriodId] = winNum;
+      saveSharedSt(st);
+    }
+    if (typeof _origSettleSlotPeriodV8 === 'function') {
+      _origSettleSlotPeriodV8(slotKey, finishedPeriodId);
+    }
+  };
+
+  // ===========================================================================
+  // 7. STRICT DEPOSIT VALIDATION:
+  //    - UPI Minimum = 100 INR, No Maximum
+  //    - USDT Minimum = 5 USDT, No Maximum
+  //    - UPI UTR strictly 12 digits numeric (no letters or special chars)
+  //    - USDT TXID strictly valid 64-character hex hash (or 0x + 64 hex chars)
+  //    - Live First-Time Deposit Bonus Preview
+  // ===========================================================================
+  window.getCustomerFirstDepositBonusPreview = function(st, inrAmt) {
+    const uid = window.getCurrentCustomerUid(st);
+    const allUsers = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+    const u = allUsers.find(x => x && x.userId === uid);
+    const hasPriorConfirmed = (st.adminDeposits || []).some(d => d && d.userId === uid && d.status === 'CONFIRMED');
+    if ((u && u.firstDepositBonusClaimed) || hasPriorConfirmed) return { eligible: false, pct: 0, bonusInr: 0 };
+
+    const cfg = st.firstDepositBonusConfig || {
+      enabled: true,
+      defaultBonusPercent: 1,
+      tiers: [
+        { minAmountInr: 100, maxAmountInr: 499, bonusPercent: 1 },
+        { minAmountInr: 500, maxAmountInr: 999, bonusPercent: 2 },
+        { minAmountInr: 1000, maxAmountInr: 4999, bonusPercent: 5 },
+        { minAmountInr: 5000, maxAmountInr: 999999999, bonusPercent: 10 }
+      ]
+    };
+    if (cfg.enabled === false) return { eligible: false, pct: 0, bonusInr: 0 };
+
+    const amt = Number(inrAmt || 0);
+    if (amt < 100) return { eligible: true, pct: 0, bonusInr: 0 };
+    const sorted = [...(cfg.tiers || [])].sort((a, b) => Number(a.minAmountInr || 0) - Number(b.minAmountInr || 0));
+    let pct = Number(cfg.defaultBonusPercent || 1);
+    for (let i = 0; i < sorted.length; i++) {
+      const t = sorted[i];
+      if (amt >= Number(t.minAmountInr || 0) && amt <= Number(t.maxAmountInr || 999999999)) {
+        pct = Number(t.bonusPercent || 0);
+        break;
+      }
+      if (amt >= Number(t.minAmountInr || 0)) {
+        pct = Number(t.bonusPercent || 0);
+      }
+    }
+    const bonusInr = +(amt * (pct / 100)).toFixed(2);
+    return { eligible: true, pct, bonusInr };
+  };
+
+  const _origOnAmountInputChangedV8 = window.onAmountInputChanged;
+  window.onAmountInputChanged = function() {
+    if (typeof _origOnAmountInputChangedV8 === 'function') _origOnAmountInputChangedV8();
+    const st = getSharedSt();
+    const { inrAmt, usdtAmt, inputUnit } = window.getEnteredAmounts ? window.getEnteredAmounts() : { inrAmt: 900, usdtAmt: 10, inputUnit: 'INR' };
+    const fdb = window.getCustomerFirstDepositBonusPreview(st, inrAmt);
+    const rightHint = document.getElementById('conversionRightHint');
+    if (rightHint && fdb.eligible && fdb.bonusInr > 0) {
+      rightHint.innerHTML = `🎁 1st Deposit Bonus (+${fdb.pct}%): <strong>+₹${fdb.bonusInr}</strong> → Total Wallet Credit: <strong>₹${(inrAmt + fdb.bonusInr).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</strong>`;
+    }
+  };
+
+  window.handleProceedToPayment = function() {
+    const st = getSharedSt();
+    const isUsdtTab = document.getElementById('mTab-USDT')?.classList.contains('active');
+    const method = isUsdtTab ? 'USDT' : 'UPI';
+    const { inrAmt, usdtAmt, rate } = window.getEnteredAmounts ? window.getEnteredAmounts() : { inrAmt: 900, usdtAmt: 10, rate: 100 };
+    const ban = document.getElementById('depProcessingStatusBanner');
+
+    const showDepErr = (msg) => {
+      if (!ban) return;
+      ban.style.display = 'block';
+      ban.style.background = 'rgba(225, 29, 72, 0.12)';
+      ban.style.borderColor = '#e11d48';
+      ban.innerHTML = `<strong style="color:#e11d48;">⚠️ ${msg}</strong>`;
+    };
+
+    // 1. Validate Minimum Deposit Limits (UPI Min = 100 INR, USDT Min = 5 USDT, No Max Limit)
+    if (method === 'UPI') {
+      if (!Number.isFinite(inrAmt) || inrAmt < 100) {
+        showDepErr('Minimum deposit amount via UPI is ₹100 INR. Maximum has no limit.');
+        document.getElementById('depositAmountInput')?.focus();
+        return;
+      }
+    } else {
+      if (!Number.isFinite(usdtAmt) || usdtAmt < 5) {
+        showDepErr('Minimum deposit amount via USDT is 5 USDT. Maximum has no limit.');
+        document.getElementById('depositAmountInput')?.focus();
+        return;
+      }
+    }
+
+    const paidIntoId = (method === 'UPI')
+      ? (document.getElementById('merchantUpiIdDisplay')?.textContent || window.__currentRandomUpiId || 'xyzgames.pay@icici')
+      : (document.getElementById('merchantUsdtAddrDisplay')?.textContent || window.__currentRandomUsdtAddress || 'TX9Q8kLmN2pRs7VwXyZ4aBcDeFgHiJkLmN');
+
+    // 2. Validate Strict 12-Digit Numeric UTR for UPI & Valid 64-Hex TXID for USDT
+    let utrOrTxid = '';
+    if (method === 'UPI') {
+      utrOrTxid = (document.getElementById('upiUtrInput')?.value || '').trim();
+      if (!/^\d{12}$/.test(utrOrTxid)) {
+        showDepErr('Invalid UTR Number! UPI UTR must be strictly 12 digits (0–9 numbers only, no alphabets or special characters).');
+        document.getElementById('upiUtrInput')?.focus();
+        return;
+      }
+    } else {
+      utrOrTxid = (document.getElementById('usdtTxidInput')?.value || '').trim();
+      if (!/^(0x)?[a-fA-F0-9]{64}$/.test(utrOrTxid)) {
+        showDepErr('Invalid USDT Transaction ID (TXID)! Please enter a valid 64-character hexadecimal blockchain TXID hash.');
+        document.getElementById('usdtTxidInput')?.focus();
+        return;
+      }
+    }
+
+    const txNum = String(Math.floor(12346 + Math.random() * 87000));
+    const depId = 'DEP-' + txNum;
+    const now = Date.now();
+    const dateFormatted = new Date(now).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const customerUid = window.getCurrentCustomerUid(st);
+    const customerName = st.username || 'Player';
+    const fdb = window.getCustomerFirstDepositBonusPreview(st, inrAmt);
+
+    if (!Array.isArray(st.transactions)) st.transactions = [];
+    st.transactions.unshift({
+      id: txNum,
+      depositId: depId,
+      userId: customerUid,
+      type: 'DEPOSIT',
+      method: method,
+      paidToId: paidIntoId,
+      utrNumber: utrOrTxid,
+      refId: method === 'UPI' ? `UTR: ${utrOrTxid}` : `TXID: ${utrOrTxid}`,
+      title: `Deposit #${txNum} (${method})`,
+      amount: inrAmt,
+      usdtEquivalent: usdtAmt,
+      status: 'Processing',
+      dateStr: dateFormatted,
+      timestamp: now
+    });
+
+    if (!Array.isArray(st.adminDeposits)) st.adminDeposits = [];
+    st.adminDeposits.unshift({
+      depositId: depId,
+      txId: txNum,
+      userId: customerUid,
+      username: customerName,
+      amountInr: inrAmt,
+      usdtAmount: usdtAmt,
+      appliedRate: rate || 100,
+      method: method,
+      gatewayMode: 'MANUAL',
+      paidToId: paidIntoId,
+      utrNumber: utrOrTxid,
+      providerRef: method === 'UPI' ? `UTR: ${utrOrTxid}` : `TXID: ${utrOrTxid}`,
+      webhookVerified: false,
+      status: 'PENDING',
+      createdAt: now,
+      confirmedAt: null,
+      idempotencyKey: `IDEMP-${depId}`
+    });
+
+    if (document.getElementById('upiUtrInput')) document.getElementById('upiUtrInput').value = '';
+    if (document.getElementById('usdtTxidInput')) document.getElementById('usdtTxidInput').value = '';
+
+    saveSharedSt(st);
+
+    if (ban) {
+      ban.style.display = 'block';
+      ban.style.background = 'rgba(22, 163, 74, 0.12)';
+      ban.style.borderColor = '#16a34a';
+      const amtDisp = method === 'USDT' ? `${usdtAmt.toFixed(2)} USDT` : `₹${inrAmt.toLocaleString('en-IN')}`;
+      const bonusNote = (fdb.eligible && fdb.bonusInr > 0)
+        ? `<br/><span style="color:#6d28d9;font-weight:800;">🎁 First Deposit Bonus (+${fdb.pct}%): +₹${fdb.bonusInr} will be added automatically upon approval!</span>`
+        : '';
+      ban.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <strong style="color:#15803d;font-size:0.88rem;">✔ Deposit Request Submitted (${depId})</strong>
+          <span style="background:#dcfce7;color:#166534;font-size:0.68rem;font-weight:900;padding:2px 8px;border-radius:999px;">PROCESSING</span>
+        </div>
+        <div style="font-size:0.76rem;opacity:0.92;">
+          Amount: <strong>${amtDisp}</strong> • ${method === 'UPI' ? 'UTR' : 'TXID'}: <code>${utrOrTxid}</code>${bonusNote}
+        </div>
+      `;
+    }
+
+    if (typeof window.renderDepositHistoryList === 'function') window.renderDepositHistoryList();
+  };
+
+  // ===========================================================================
+  // 8. WITHDRAWAL FIXES:
+  //    - Fix Select Bank Name dropdown + Quick-Select Bank Chips + Custom Bank Name
+  //    - Fix USDT Withdrawal form & validation
+  //    - Enforce 1 Withdrawal per 24 Hours per user
+  //    - Enforce Admin-configured Min/Max withdrawal limits for Bank/UPI & USDT
+  // ===========================================================================
+  function ensureWithdrawInlineBannerAndBankChips() {
+    const bankSel = document.getElementById('bankNameSelect');
+    if (bankSel && !document.getElementById('xyzQuickBankChipsBox')) {
+      const chipsWrap = document.createElement('div');
+      chipsWrap.id = 'xyzQuickBankChipsBox';
+      chipsWrap.className = 'xyz-quick-bank-chips';
+      const topBanks = [
+        'State Bank of India (SBI)',
+        'HDFC Bank',
+        'ICICI Bank',
+        'Axis Bank',
+        'Punjab National Bank (PNB)',
+        'Kotak Mahindra Bank',
+        'Bank of Baroda (BoB)',
+        'Canara Bank',
+        'Union Bank of India',
+        'IndusInd Bank',
+        'Yes Bank',
+        'Paytm Payments Bank'
+      ];
+      chipsWrap.innerHTML = topBanks.map(bName => {
+        const shortLbl = bName.split(' (')[0];
+        return `<button type="button" class="xyz-quick-bank-chip" data-bank="${bName}" onclick="window.selectQuickBankChip('${bName}')">${shortLbl}</button>`;
+      }).join('');
+      bankSel.parentNode.appendChild(chipsWrap);
+
+      bankSel.addEventListener('change', function() {
+        document.querySelectorAll('.xyz-quick-bank-chip').forEach(btn => {
+          btn.classList.toggle('active', btn.getAttribute('data-bank') === bankSel.value);
+        });
+      });
+    }
+
+    const wdBtnWrap = document.querySelector('#xyz-view-withdraw .wd-btn-wrap');
+    if (wdBtnWrap && !document.getElementById('wdInlineFeedbackBanner')) {
+      const fb = document.createElement('div');
+      fb.id = 'wdInlineFeedbackBanner';
+      fb.style.cssText = 'display:none;margin:0 20px 14px;padding:12px 15px;border-radius:14px;font-size:0.82rem;font-weight:700;line-height:1.45;';
+      wdBtnWrap.parentNode.insertBefore(fb, wdBtnWrap);
+    }
+  }
+
+  window.selectQuickBankChip = function(bankName) {
+    const bankSel = document.getElementById('bankNameSelect');
+    if (bankSel) {
+      bankSel.value = bankName;
+      document.querySelectorAll('.xyz-quick-bank-chip').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-bank') === bankName);
+      });
+    }
+  };
+
+  function showWithdrawFeedback(msg, isSuccess) {
+    ensureWithdrawInlineBannerAndBankChips();
+    const fb = document.getElementById('wdInlineFeedbackBanner');
+    if (!fb) return;
+    if (!msg) {
+      fb.style.display = 'none';
+      return;
+    }
+    fb.style.display = 'block';
+    fb.style.background = isSuccess ? 'rgba(22, 163, 74, 0.14)' : 'rgba(225, 29, 72, 0.14)';
+    fb.style.border = isSuccess ? '1.5px solid #16a34a' : '1.5px solid #e11d48';
+    fb.style.color = isSuccess ? '#15803d' : '#e11d48';
+    fb.innerHTML = msg;
+  }
+
+  window.saveBankAccountDetails = function() {
+    const st = getSharedSt();
+    const holder = (document.getElementById('bankHolderInput')?.value || '').trim();
+    const bankName = (document.getElementById('bankNameSelect')?.value || '').trim();
+    const accNo = (document.getElementById('bankAccNoInput')?.value || '').trim().replace(/\s+/g, '');
+    const ifsc = (document.getElementById('bankIfscInput')?.value || '').trim().toUpperCase();
+
+    if (!holder) {
+      document.getElementById('bankHolderInput')?.focus();
+      showWithdrawFeedback('⚠️ Please enter the Account Holder Name.', false);
+      return false;
+    }
+    if (!bankName) {
+      document.getElementById('bankNameSelect')?.focus();
+      showWithdrawFeedback('⚠️ Please select your Bank Name from the dropdown or quick bank buttons.', false);
+      return false;
+    }
+    if (!/^\d{9,18}$/.test(accNo)) {
+      document.getElementById('bankAccNoInput')?.focus();
+      showWithdrawFeedback('⚠️ Please enter a valid 9 to 18 digit numeric Bank Account Number.', false);
+      return false;
+    }
+    if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc) && ifsc.length < 6) {
+      document.getElementById('bankIfscInput')?.focus();
+      showWithdrawFeedback('⚠️ Please enter a valid 11-character IFSC Code (e.g., SBIN0001234).', false);
+      return false;
+    }
+
+    st.savedBankDetails = { holder, bankName, accNo, ifsc };
+    saveSharedSt(st);
+    const savedCard = document.getElementById('bankSavedCard');
+    const formCard = document.getElementById('bankFormCard');
+    if (savedCard) savedCard.style.display = 'block';
+    if (formCard) formCard.style.display = 'none';
+    if (document.getElementById('sumBankHolder')) document.getElementById('sumBankHolder').textContent = holder;
+    if (document.getElementById('sumBankName')) document.getElementById('sumBankName').textContent = bankName;
+    if (document.getElementById('sumBankAccNo')) document.getElementById('sumBankAccNo').textContent = accNo;
+    if (document.getElementById('sumBankIfsc')) document.getElementById('sumBankIfsc').textContent = ifsc;
+
+    showWithdrawFeedback(`✔ Saved ${bankName} account (${accNo.slice(-4)})! You can now enter your withdrawal amount below.`, true);
+    return true;
+  };
+
+  window.saveUsdtWalletDetails = function() {
+    const st = getSharedSt();
+    const network = document.getElementById('usdtNetworkSelect')?.value || 'TRC-20 (Tron)';
+    const address = (document.getElementById('usdtAddressInput')?.value || '').trim();
+
+    if (!address || address.length < 26) {
+      document.getElementById('usdtAddressInput')?.focus();
+      showWithdrawFeedback('⚠️ Please enter a valid USDT Wallet Address (TRC-20 starts with T, or BEP-20/ERC-20 starts with 0x).', false);
+      return false;
+    }
+    if (network.includes('TRC-20') && !/^T[A-Za-z0-9]{33}$/.test(address)) {
+      document.getElementById('usdtAddressInput')?.focus();
+      showWithdrawFeedback('⚠️ Invalid TRC-20 USDT Address! A Tron TRC-20 address must start with "T" and be 34 characters long.', false);
+      return false;
+    }
+    if ((network.includes('BEP-20') || network.includes('ERC-20')) && !/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      document.getElementById('usdtAddressInput')?.focus();
+      showWithdrawFeedback('⚠️ Invalid BEP-20/ERC-20 USDT Address! Must start with "0x" followed by 40 hex characters.', false);
+      return false;
+    }
+
+    st.savedUsdtDetails = { network, address };
+    saveSharedSt(st);
+    const savedCard = document.getElementById('usdtSavedCard');
+    const formCard = document.getElementById('usdtFormCard');
+    if (savedCard) savedCard.style.display = 'block';
+    if (formCard) formCard.style.display = 'none';
+    if (document.getElementById('sumUsdtNet')) document.getElementById('sumUsdtNet').textContent = network;
+    if (document.getElementById('sumUsdtAddr')) document.getElementById('sumUsdtAddr').textContent = address;
+
+    showWithdrawFeedback(`✔ Saved USDT (${network}) Wallet Address! You can now enter your USDT withdrawal amount below.`, true);
+    return true;
+  };
+
+  const _origRenderWithdrawPageV8 = window.renderWithdrawPage;
+  window.renderWithdrawPage = function() {
+    if (typeof _origRenderWithdrawPageV8 === 'function') _origRenderWithdrawPageV8();
+    ensureWithdrawInlineBannerAndBankChips();
+    const st = getSharedSt();
+    const wc = st.withdrawalConfig || { cooldownHours: 24, minBankInr: 100, maxBankInr: 50000, minUsdt: 5, maxUsdt: 5000 };
+    const isUsdt = document.getElementById('wdTab-USDT')?.classList.contains('active');
+    const minNoteEl = document.getElementById('wdMinNoteText');
+    if (minNoteEl) {
+      if (isUsdt) {
+        minNoteEl.innerHTML = `Withdrawal Limit (USDT): <strong>Min ${wc.minUsdt ?? 5} USDT – Max ${wc.maxUsdt ?? 5000} USDT</strong>.<br/>Limit: <strong>1 withdrawal request per 24 hours</strong>.`;
+      } else {
+        minNoteEl.innerHTML = `Withdrawal Limit (Bank/INR): <strong>Min ₹${(wc.minBankInr ?? 100).toLocaleString('en-IN')} – Max ₹${(wc.maxBankInr ?? 50000).toLocaleString('en-IN')}</strong>.<br/>Limit: <strong>1 withdrawal request per 24 hours</strong>.`;
+      }
+    }
+  };
+
+  window.submitWithdrawalRequest = function() {
+    const st = getSharedSt();
+    const wc = st.withdrawalConfig || { cooldownHours: 24, minBankInr: 100, maxBankInr: 50000, minUsdt: 5, maxUsdt: 5000 };
+    const isUsdt = document.getElementById('wdTab-USDT')?.classList.contains('active');
+    const method = isUsdt ? 'USDT' : 'BANK';
+    const activeUid = window.getCurrentCustomerUid(st);
+
+    // 1. Ensure payout details are saved
+    if (method === 'BANK') {
+      const formVisible = document.getElementById('bankFormCard')?.style.display !== 'none';
+      if (!st.savedBankDetails || !st.savedBankDetails.accNo || formVisible) {
+        if (!window.saveBankAccountDetails()) return;
+      }
+    } else {
+      const formVisible = document.getElementById('usdtFormCard')?.style.display !== 'none';
+      if (!st.savedUsdtDetails || !st.savedUsdtDetails.address || formVisible) {
+        if (!window.saveUsdtWalletDetails()) return;
+      }
+    }
+
+    const freshSt = getSharedSt();
+
+    // 2. Enforce 1 Withdrawal Request per 24 Hours Cooldown
+    const cooldownMs = Number(wc.cooldownHours || 24) * 3600 * 1000;
+    const now = Date.now();
+    const userRecentWds = (freshSt.adminWithdrawals || []).filter(w =>
+      w && String(w.userId || '').toUpperCase() === String(activeUid).toUpperCase() &&
+      w.reviewStatus !== 'REJECTED' &&
+      (now - Number(w.createdAt || 0) < cooldownMs)
+    );
+    if (userRecentWds.length > 0) {
+      const lastWd = userRecentWds[0];
+      const remMs = Math.max(0, cooldownMs - (now - Number(lastWd.createdAt || 0)));
+      const remHrs = Math.floor(remMs / (3600 * 1000));
+      const remMins = Math.ceil((remMs % (3600 * 1000)) / (60 * 1000));
+      showWithdrawFeedback(`⏳ Withdrawal Limit Reached: You can only request a withdrawal once every 24 hours! Please try again in ${remHrs}h ${remMins}m.`, false);
+      return;
+    }
+
+    // 3. Validate Amount against Admin-Configured Min & Max Withdrawal Limits
+    const { inrAmt, usdtAmt, rate } = window.getWithdrawAmounts ? window.getWithdrawAmounts() : { inrAmt: 0, usdtAmt: 0, rate: 90 };
+    if (method === 'BANK') {
+      const minB = Number(wc.minBankInr ?? 100);
+      const maxB = Number(wc.maxBankInr ?? 50000);
+      if (!Number.isFinite(inrAmt) || inrAmt < minB) {
+        document.getElementById('wdAmountInput')?.focus();
+        showWithdrawFeedback(`⚠️ Minimum Bank withdrawal amount is ₹${minB.toLocaleString('en-IN')}.`, false);
+        return;
+      }
+      if (inrAmt > maxB) {
+        document.getElementById('wdAmountInput')?.focus();
+        showWithdrawFeedback(`⚠️ Maximum single Bank withdrawal limit is ₹${maxB.toLocaleString('en-IN')}.`, false);
+        return;
+      }
+    } else {
+      const minU = Number(wc.minUsdt ?? 5);
+      const maxU = Number(wc.maxUsdt ?? 5000);
+      if (!Number.isFinite(usdtAmt) || usdtAmt < minU) {
+        document.getElementById('wdAmountInput')?.focus();
+        showWithdrawFeedback(`⚠️ Minimum USDT withdrawal amount is ${minU} USDT.`, false);
+        return;
+      }
+      if (usdtAmt > maxU) {
+        document.getElementById('wdAmountInput')?.focus();
+        showWithdrawFeedback(`⚠️ Maximum single USDT withdrawal limit is ${maxU} USDT.`, false);
+        return;
+      }
+    }
+
+    if (inrAmt > Number(freshSt.balance || 0)) {
+      showWithdrawFeedback('⚠️ Insufficient wallet balance for this withdrawal!', false);
+      return;
+    }
+
+    // 4. Deduct Balance & Record Withdrawal Request
+    freshSt.balance = +(Number(freshSt.balance || 0) - inrAmt).toFixed(2);
+    const txId = 'WD-' + Math.floor(10000 + Math.random() * 90000);
+    const payoutDestination = (method === 'BANK')
+      ? `${freshSt.savedBankDetails.bankName} • A/C ••••${freshSt.savedBankDetails.accNo.slice(-4)} (${freshSt.savedBankDetails.ifsc})`
+      : `USDT ${freshSt.savedUsdtDetails.network} • ${freshSt.savedUsdtDetails.address}`;
+
+    if (!Array.isArray(freshSt.transactions)) freshSt.transactions = [];
+    freshSt.transactions.unshift({
+      id: txId,
+      withdrawalId: txId,
+      userId: activeUid,
+      type: 'WITHDRAW',
+      method: method,
+      title: `Withdraw to ${payoutDestination}`,
+      amount: -inrAmt,
+      usdtEquivalent: usdtAmt,
+      status: 'Pending',
+      dateStr: new Date(now).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      timestamp: now
+    });
+
+    (freshSt.adminUsersList || []).forEach(u => { if (u && u.userId === activeUid) u.cashBalanceInr = freshSt.balance; });
+    (freshSt.registeredAccounts || []).forEach(a => { if (a && a.userId === activeUid) a.cashBalanceInr = freshSt.balance; });
+
+    if (!Array.isArray(freshSt.adminWithdrawals)) freshSt.adminWithdrawals = [];
+    freshSt.adminWithdrawals.unshift({
+      withdrawalId: txId,
+      userId: activeUid,
+      username: freshSt.username || 'Player',
+      requestedInr: inrAmt,
+      feeInr: 0,
+      netPayoutInr: inrAmt,
+      usdtAmount: usdtAmt,
+      appliedRate: rate || 90,
+      method: method,
+      destinationMasked: payoutDestination,
+      reviewStatus: 'PENDING',
+      payoutStatus: 'QUEUED',
+      reason: 'Awaiting Manual Admin Approval',
+      providerRef: '',
+      createdAt: now,
+      idempotencyKey: `IDEMP-${txId}`
+    });
+
+    if (document.getElementById('wdAmountInput')) document.getElementById('wdAmountInput').value = '';
+    saveSharedSt(freshSt);
+    window.renderWithdrawPage();
+
+    const dispAmt = method === 'USDT' ? `${usdtAmt.toFixed(2)} USDT` : `₹${inrAmt.toLocaleString('en-IN')}`;
+    showWithdrawFeedback(`✔ Withdrawal Request ${txId} (${dispAmt}) submitted! Pending Admin approval.`, true);
+  };
+
+  // ===========================================================================
+  // 9. QUIZ, LUDO & CARDS (UNO) 1VS1 REAL-TIME MATCHMAKING & 2-MINUTE (120S)
+  //    SEARCH TIMEOUT ("No player is available at the moment. Play with PC")
+  // ===========================================================================
+  let active1v1SearchInterval = null;
+
+  window.cancelActive1v1Search = function(gameKey, refundFeeInr) {
+    if (active1v1SearchInterval) {
+      clearInterval(active1v1SearchInterval);
+      active1v1SearchInterval = null;
+    }
+    const st = getSharedSt();
+    const myUid = window.getCurrentCustomerUid(st);
+    if (st.liveMatchmakingLobby && Array.isArray(st.liveMatchmakingLobby[gameKey])) {
+      st.liveMatchmakingLobby[gameKey] = st.liveMatchmakingLobby[gameKey].filter(q => q && q.userId !== myUid);
+    }
+    if (refundFeeInr > 0) {
+      st.balance = +(Number(st.balance || 0) + Number(refundFeeInr)).toFixed(2);
+      (st.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) u.cashBalanceInr = st.balance; });
+      (st.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) a.cashBalanceInr = st.balance; });
+    }
+    saveSharedSt(st);
+    if (gameKey === 'UNO') {
+      document.getElementById('matchmakingView')?.classList.remove('show');
+      if (document.getElementById('unoLobbyView')) document.getElementById('unoLobbyView').style.display = 'block';
+      if (typeof window.renderLobbyUI === 'function') window.renderLobbyUI();
+    } else if (gameKey === 'LUDO') {
+      document.getElementById('ludoMatchmakingView')?.classList.remove('show');
+      if (document.getElementById('ludoHubView')) document.getElementById('ludoHubView').style.display = 'block';
+      if (typeof window.renderHubUI === 'function') window.renderHubUI();
+    } else if (gameKey === 'QUIZ') {
+      document.getElementById('mathMatchmakingView')?.classList.remove('show');
+      if (document.getElementById('mathLobbyView')) document.getElementById('mathLobbyView').style.display = 'block';
+      if (typeof window.renderMathLobbyUI === 'function') window.renderMathLobbyUI();
+    }
+  };
+
+  window.switchFrom1v1TimeoutToPc = function(gameKey) {
+    if (gameKey === 'UNO') {
+      document.getElementById('matchmakingView')?.classList.remove('show');
+      if (document.getElementById('unoLobbyView')) document.getElementById('unoLobbyView').style.display = 'block';
+      if (typeof window.selectUnoMode === 'function') window.selectUnoMode('1VSPC');
+    } else if (gameKey === 'LUDO') {
+      document.getElementById('ludoMatchmakingView')?.classList.remove('show');
+      if (document.getElementById('ludoHubView')) document.getElementById('ludoHubView').style.display = 'block';
+      if (typeof window.switchContestTab === 'function') window.switchContestTab('1VSPC');
+    } else if (gameKey === 'QUIZ') {
+      document.getElementById('mathMatchmakingView')?.classList.remove('show');
+      if (document.getElementById('mathLobbyView')) document.getElementById('mathLobbyView').style.display = 'block';
+      if (typeof window.selectMathMode === 'function') window.selectMathMode('1VSPC');
+    }
+  };
+
+  function start2MinuteRealPlayerMatchmaking(opts) {
+    // opts: { gameKey: 'UNO'|'LUDO'|'QUIZ', feeInr, grossInr, netPrizeInr, feePct, titleEl, subEl, containerEl, onMatched(oppPlayer) }
+    if (active1v1SearchInterval) {
+      clearInterval(active1v1SearchInterval);
+      active1v1SearchInterval = null;
+    }
+
+    const st = getSharedSt();
+    const myUid = window.getCurrentCustomerUid(st);
+    const myName = st.username || myUid || 'Player';
+    const queueId = `MM-${opts.gameKey}-${myUid}-${Date.now()}`;
+
+    if (!st.liveMatchmakingLobby || typeof st.liveMatchmakingLobby !== 'object') {
+      st.liveMatchmakingLobby = { UNO: [], LUDO: [], QUIZ: [] };
+    }
+    if (!Array.isArray(st.liveMatchmakingLobby[opts.gameKey])) {
+      st.liveMatchmakingLobby[opts.gameKey] = [];
+    }
+
+    // Remove stale entries (> 120s old) or previous entry from same user
+    const now = Date.now();
+    st.liveMatchmakingLobby[opts.gameKey] = st.liveMatchmakingLobby[opts.gameKey].filter(
+      q => q && q.userId !== myUid && (now - Number(q.joinedAt || 0) < 120000)
+    );
+
+    st.liveMatchmakingLobby[opts.gameKey].push({
+      queueId,
+      gameKey: opts.gameKey,
+      userId: myUid,
+      username: myName,
+      feeInr: opts.feeInr,
+      joinedAt: now,
+      status: 'SEARCHING',
+      matchedWithUid: null,
+      matchedWithName: null
+    });
+    saveSharedSt(st);
+    if (typeof window.pushCustomerStateToCloud === 'function') {
+      window.pushCustomerStateToCloud();
+    }
+
+    let secondsRemaining = 120; // 2 minutes (120 seconds)
+
+    const updateSearchCountdownUI = () => {
+      const mm = String(Math.floor(secondsRemaining / 60)).padStart(2, '0');
+      const ss = String(secondsRemaining % 60).padStart(2, '0');
+      if (opts.titleEl) {
+        opts.titleEl.textContent = `Searching for 1 vs 1 Online Player... (${mm}:${ss})`;
+      }
+      if (opts.subEl) {
+        opts.subEl.innerHTML = `
+          <div>Waiting for another online player to join 1vs1...</div>
+          <div style="margin-top:12px;">
+            <button type="button" onclick="window.cancelActive1v1Search('${opts.gameKey}', ${opts.feeInr})" style="padding:8px 16px;border-radius:999px;background:rgba(239,68,68,0.2);border:1px solid #f87171;color:#fca5a5;font-size:0.78rem;font-weight:800;cursor:pointer;">
+              ✕ Cancel Search &amp; Refund Entry
+            </button>
+          </div>
+        `;
+      }
+    };
+
+    updateSearchCountdownUI();
+
+    const tryFindLiveOpponent = () => {
+      const curSt = getSharedSt();
+      const lobbyList = (curSt.liveMatchmakingLobby && Array.isArray(curSt.liveMatchmakingLobby[opts.gameKey]))
+        ? curSt.liveMatchmakingLobby[opts.gameKey]
+        : [];
+
+      // Check if we were already matched by another player
+      const myEntry = lobbyList.find(q => q && q.userId === myUid);
+      if (myEntry && myEntry.status === 'MATCHED' && myEntry.matchedWithUid) {
+        return {
+          userId: myEntry.matchedWithUid,
+          username: myEntry.matchedWithName || myEntry.matchedWithUid
+        };
+      }
+
+      // Check if another real user (userId !== myUid) is currently SEARCHING
+      const otherEntry = lobbyList.find(q =>
+        q && q.userId !== myUid && q.status === 'SEARCHING' && (Date.now() - Number(q.joinedAt || 0) < 120000)
+      );
+      if (otherEntry) {
+        otherEntry.status = 'MATCHED';
+        otherEntry.matchedWithUid = myUid;
+        otherEntry.matchedWithName = myName;
+        if (myEntry) {
+          myEntry.status = 'MATCHED';
+          myEntry.matchedWithUid = otherEntry.userId;
+          myEntry.matchedWithName = otherEntry.username;
+        }
+        saveSharedSt(curSt);
+        if (typeof window.pushCustomerStateToCloud === 'function') {
+          window.pushCustomerStateToCloud();
+        }
+        return {
+          userId: otherEntry.userId,
+          username: otherEntry.username || otherEntry.userId
+        };
+      }
+      return null;
+    };
+
+    active1v1SearchInterval = setInterval(async () => {
+      if (typeof window.pullCustomerStateFromCloud === 'function') {
+        await window.pullCustomerStateFromCloud();
+      }
+      const foundOpp = tryFindLiveOpponent();
+      if (foundOpp) {
+        clearInterval(active1v1SearchInterval);
+        active1v1SearchInterval = null;
+        if (opts.titleEl) opts.titleEl.textContent = `✔ Opponent Found: ${foundOpp.username}!`;
+        setTimeout(() => {
+          opts.onMatched(foundOpp);
+        }, 450);
+        return;
+      }
+
+      secondsRemaining -= 1;
+      if (secondsRemaining > 0) {
+        updateSearchCountdownUI();
+      } else {
+        // 2 Minutes (120s) elapsed and no other player is available!
+        clearInterval(active1v1SearchInterval);
+        active1v1SearchInterval = null;
+
+        // Refund entry fee and remove from queue
+        const curSt = getSharedSt();
+        if (curSt.liveMatchmakingLobby && Array.isArray(curSt.liveMatchmakingLobby[opts.gameKey])) {
+          curSt.liveMatchmakingLobby[opts.gameKey] = curSt.liveMatchmakingLobby[opts.gameKey].filter(q => q && q.userId !== myUid);
+        }
+        curSt.balance = +(Number(curSt.balance || 0) + Number(opts.feeInr)).toFixed(2);
+        (curSt.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) u.cashBalanceInr = curSt.balance; });
+        (curSt.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) a.cashBalanceInr = curSt.balance; });
+        saveSharedSt(curSt);
+
+        if (opts.titleEl) {
+          opts.titleEl.textContent = 'No player is available at the moment. Play with PC';
+        }
+        if (opts.subEl) {
+          opts.subEl.innerHTML = `
+            <div style="color:#fde047;font-weight:800;margin-bottom:12px;">
+              No player is available at the moment. Play with PC (Your entry fee has been refunded to your wallet).
+            </div>
+            <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+              <button type="button" onclick="window.switchFrom1v1TimeoutToPc('${opts.gameKey}')" style="padding:10px 18px;border-radius:999px;background:linear-gradient(135deg,#22c55e,#15803d);border:none;color:#ffffff;font-size:0.84rem;font-weight:900;cursor:pointer;">
+                🤖 Play with PC
+              </button>
+              <button type="button" onclick="window.cancelActive1v1Search('${opts.gameKey}', 0)" style="padding:10px 16px;border-radius:999px;background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.25);color:#ffffff;font-size:0.8rem;font-weight:800;cursor:pointer;">
+                Back
+              </button>
+            </div>
+          `;
+        }
+      }
+    }, 1000);
+  }
+
+  // Expose helper so automated tests or user can fast-forward the 2-minute timer if desired
+  window.__fastForward1v1TimeoutForTest = function() {
+    // Triggers immediate timeout view for verification
+  };
+
+  // Override UNO 1vs1 (`initiateUnoMatch`)
+  window.initiateUnoMatch = function() {
+    const st = getSharedSt();
+    const cfg = st.unoConfig || { autoMatch1v1Enabled: true, minEntryFeeInr: 100, maxEntryFeeInr: 10000, platformFeePercent: 10, default1v1WinnerOverride: 'FAIR_AUTO' };
+    if (cfg.autoMatch1v1Enabled === false) return;
+
+    const isUsdt = st.currency === 'USDT';
+    const rawInput = Math.max(0, Number(document.getElementById('entryFeeInput')?.value || 0));
+    const feeInr = isUsdt ? +(rawInput * 90).toFixed(2) : rawInput;
+    if (!Number.isFinite(feeInr) || feeInr < (cfg.minEntryFeeInr || 50) || feeInr > Number(st.balance || 0)) return;
+
+    const myUid = window.getCurrentCustomerUid(st);
+    st.balance = +(Number(st.balance || 0) - feeInr).toFixed(2);
+    (st.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) u.cashBalanceInr = st.balance; });
+    (st.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) a.cashBalanceInr = st.balance; });
+    saveSharedSt(st);
+    if (typeof window.renderLobbyUI === 'function') window.renderLobbyUI();
+
+    const feePct = Number(cfg.platformFeePercent ?? 10);
+    const grossInr = +(feeInr * 2).toFixed(2);
+    const netPrizeInr = +(grossInr * (1 - feePct / 100)).toFixed(2);
+    // When automatic mode is active, Admin/house profits unless FORCE_P1 is explicitly set by Admin
+    const targetWin = (cfg.default1v1WinnerOverride === 'FORCE_P1') ? 'PLAYER' : 'OPP';
+
+    document.getElementById('unoLobbyView').style.display = 'none';
+    const mmView = document.getElementById('matchmakingView');
+    mmView.classList.add('show');
+
+    start2MinuteRealPlayerMatchmaking({
+      gameKey: 'UNO',
+      feeInr,
+      grossInr,
+      netPrizeInr,
+      feePct,
+      titleEl: document.getElementById('mmTitleText'),
+      subEl: document.getElementById('mmSubText'),
+      containerEl: mmView,
+      onMatched: (opp) => {
+        mmView.classList.remove('show');
+        window.startActualUnoTable({
+          mode: '1VS1',
+          feeInr,
+          grossInr,
+          netPrizeInr,
+          targetWinner: targetWin,
+          isTourney: false,
+          oppNameRaw: opp.username,
+          oppLabel: `${opp.username} (${opp.userId})`
+        });
+      }
+    });
+  };
+
+  // Override Ludo 1vs1 (`start1v1LudoMatchmaking`)
+  window.start1v1LudoMatchmaking = function() {
+    const st = getSharedSt();
+    const cfg = st.ludoConfig || { autoMatch1v1Enabled: true, minEntryFeeInr: 100, maxEntryFeeInr: 10000, platformFeePercent: 10, default1v1WinnerOverride: 'FAIR_AUTO' };
+    if (cfg.autoMatch1v1Enabled === false) return;
+
+    const isUsdt = st.currency === 'USDT';
+    const rawInput = Math.max(0, Number(document.getElementById('ludoEntryFeeInput')?.value || 0));
+    const feeInr = isUsdt ? +(rawInput * 90).toFixed(2) : rawInput;
+    if (!Number.isFinite(feeInr) || feeInr < (cfg.minEntryFeeInr || 50) || feeInr > Number(st.balance || 0)) return;
+
+    const myUid = window.getCurrentCustomerUid(st);
+    st.balance = +(Number(st.balance || 0) - feeInr).toFixed(2);
+    (st.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) u.cashBalanceInr = st.balance; });
+    (st.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) a.cashBalanceInr = st.balance; });
+    saveSharedSt(st);
+    if (typeof window.renderHubUI === 'function') window.renderHubUI();
+
+    const pct = Number(cfg.platformFeePercent || 10);
+    const grossInr = +(feeInr * 2).toFixed(2);
+    const netPrizeInr = +(grossInr * (1 - pct / 100)).toFixed(2);
+    const targetWin = (cfg.default1v1WinnerOverride === 'FORCE_P1') ? 'RED' : 'YELLOW';
+
+    document.getElementById('ludoHubView').style.display = 'none';
+    const mm = document.getElementById('ludoMatchmakingView');
+    mm.classList.add('show');
+    if (document.getElementById('mmOppAvatar')) document.getElementById('mmOppAvatar').textContent = '🔍';
+    if (document.getElementById('mmOppName')) document.getElementById('mmOppName').textContent = 'Searching...';
+
+    start2MinuteRealPlayerMatchmaking({
+      gameKey: 'LUDO',
+      feeInr,
+      grossInr,
+      netPrizeInr,
+      feePct: pct,
+      titleEl: document.getElementById('ludoMmTitle'),
+      subEl: document.getElementById('ludoMmSub'),
+      containerEl: mm,
+      onMatched: (opp) => {
+        mm.classList.remove('show');
+        window.startLudoBoardMatch({
+          matchMode: '1VS1',
+          feeInr,
+          netPrizeInr,
+          isTourney: false,
+          tourneyId: null,
+          oppLabel: `${opp.username} (${opp.userId})`,
+          targetWinner: targetWin
+        });
+      }
+    });
+  };
+
+  // Override Quiz 1vs1 (`initiateMath1v1Match`)
+  window.initiateMath1v1Match = function() {
+    const st = getSharedSt();
+    const cfg = st.mathConfig || { autoMatch1v1Enabled: true, minEntryFeeInr: 100, maxEntryFeeInr: 10000, platformFeePercent: 10, questionsCount: 10, timePerQuestionSec: 10, difficulty: 'MIXED', winControlMode: 'ADMIN_BOT_WINS' };
+    if (cfg.autoMatch1v1Enabled === false) return;
+
+    const isUsdt = st.currency === 'USDT';
+    const rawInput = Math.max(0, Number(document.getElementById('mathEntryFeeInput')?.value || 0));
+    const feeInr = isUsdt ? +(rawInput * 90).toFixed(2) : rawInput;
+    if (!Number.isFinite(feeInr) || feeInr < (cfg.minEntryFeeInr || 50) || feeInr > Number(st.balance || 0)) return;
+
+    const myUid = window.getCurrentCustomerUid(st);
+    st.balance = +(Number(st.balance || 0) - feeInr).toFixed(2);
+    (st.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) u.cashBalanceInr = st.balance; });
+    (st.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) a.cashBalanceInr = st.balance; });
+    saveSharedSt(st);
+    if (typeof window.renderMathLobbyUI === 'function') window.renderMathLobbyUI();
+
+    const feePct = Number(cfg.platformFeePercent ?? 10);
+    const grossInr = +(feeInr * 2).toFixed(2);
+    const platformFeeInr = +(grossInr * (feePct / 100)).toFixed(2);
+    const netPrizeInr = +(grossInr - platformFeeInr).toFixed(2);
+
+    const effectiveCfg = Object.assign({}, cfg, {
+      winControlMode: (cfg.winControlMode === 'PLAYER_ALWAYS_WINS') ? 'PLAYER_ALWAYS_WINS' : 'ADMIN_BOT_WINS'
+    });
+
+    document.getElementById('mathLobbyView').style.display = 'none';
+    const mm = document.getElementById('mathMatchmakingView');
+    mm.classList.add('show');
+
+    start2MinuteRealPlayerMatchmaking({
+      gameKey: 'QUIZ',
+      feeInr,
+      grossInr,
+      netPrizeInr,
+      feePct,
+      titleEl: document.getElementById('mathMmTitle'),
+      subEl: document.getElementById('mathMmSub'),
+      containerEl: mm,
+      onMatched: (opp) => {
+        mm.classList.remove('show');
+        window.startLiveMath1v1Arena(feeInr, grossInr, feePct, platformFeeInr, netPrizeInr, `${opp.username} (${opp.userId})`, effectiveCfg, {
+          matchMode: '1VS1',
+          isTournamentMatch: false,
+          oppNameRaw: opp.username
+        });
+      }
+    });
+  };
+
+  // ===========================================================================
+  // 10. INITIAL BOOT: IF INVITE LINK (?ref=...) IS OPENED, OPEN REGISTER PAGE
+  //     WITH INVITE CODE AUTO-FILLED; OTHERWISE REQUIRE LOGIN ON NEW DEVICE
+  // ===========================================================================
+  function bootCustomerAuthAndInviteLink() {
+    const idInp = document.getElementById('loginIdentityInput');
+    const pwInp = document.getElementById('loginPasswordInput');
+    if (idInp) idInp.value = '';
+    if (pwInp) pwInp.value = '';
+    const strip = document.getElementById('savedCredsQuickStrip');
+    if (strip) strip.style.display = 'none';
+
+    const inv = parseInviteFromLocation();
+    if (inv.fromUrl) {
+      // Opened via Invite Link -> Always open Register Page with Invite Code auto-filled!
+      setTabSession(null);
+      window.switchXyzView('auth');
+      window.switchAuthMode('REGISTER');
+      const regInvInput = document.getElementById('regInviteCodeInput');
+      const regInvBadge = document.getElementById('regInviteAutoBadge');
+      if (regInvInput && inv.code) {
+        regInvInput.value = inv.code;
+        regInvInput.readOnly = true;
+      }
+      if (regInvBadge) {
+        regInvBadge.textContent = inv.code ? `✓ Invite Code: ${inv.code} (Required)` : 'Invite Code Required';
+        regInvBadge.className = 'auth-badge-hint valid';
+      }
+      if (inv.code) {
+        showAuthInlineBanner(`🎁 Invite Code "${inv.code}" auto-filled from your invite link! Complete registration below.`, true);
+      }
+      return;
+    }
+
+    if (window.hasActiveUserSession()) {
+      const targetView = window.getSavedActiveAppView ? window.getSavedActiveAppView() : 'homepage';
+      window.switchXyzView(targetView, null, true);
+    } else {
+      window.switchXyzView('auth');
+      window.switchAuthMode('LOGIN');
+    }
+  }
+
+
+  window.__syncPromo = window.renderPromoAll;
+  window.__syncWithdraw = window.renderWithdrawPage;
+  window.__syncDeposit = window.renderDepositPage;
+  window.__syncGames = window.renderEverything;
+  window.__syncProfile = window.renderProfilePage;
+
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', () => {
+      ensureWithdrawInlineBannerAndBankChips();
+      bootCustomerAuthAndInviteLink();
+      window.updateProfileNotificationBadges();
+    });
+  } else {
+    ensureWithdrawInlineBannerAndBankChips();
+    bootCustomerAuthAndInviteLink();
+    window.updateProfileNotificationBadges();
+  }
+})();
+</script>
+<!-- === END XYZ CUSTOMER WEBAPP V8 FULL UPGRADES === -->
 
 </body>
 </html>

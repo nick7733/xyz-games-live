@@ -1,8 +1,25 @@
 {
-  "name": "xyz-games",
-  "version": "1.0.0",
+  "name": "xyz-games-platform",
+  "version": "8.0.0",
+  "description": "XYZ Games Full-Stack Multi-Device Gaming Webapp & Role-Scoped Super Admin Server (WinGo, 5/100 Lottery, Classic UNO, Aviator, Ludo & Speed Math Quiz)",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
-  }
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "xyz-games",
+    "wingo",
+    "ludo",
+    "uno",
+    "quiz",
+    "aviator",
+    "lottery",
+    "admin-panel"
+  ],
+  "author": "XYZ Games",
+  "license": "PROPRIETARY"
 }
