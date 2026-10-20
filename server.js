@@ -119,10 +119,11 @@ const DEVICE_LOCAL_UI_KEYS = [
 // Keys that are authoritatively controlled by the Admin Panel
 const ADMIN_EXCLUSIVE_KEYS = [
   'websiteConfig', 'paymentGatewayConfig', 'upiId', 'usdtAddress', 'currencyConfig',
-  'firstDepositBonusConfig', 'withdrawalConfig',
+  'firstDepositBonusConfig', 'withdrawalConfig', 'depositMinConfig',
   'wingoModesConfig', 'wingoRules', 'manualOverrides', 'settledPeriodResults',
   'ludoConfig', 'unoConfig', 'mathConfig', 'aviatorConfig', 'promoConfig',
-  'quizQuestions', 'staffAdmins', 'superAdminConfigured', 'systemToggles', 'auditModalConfig'
+  'quizQuestions', 'staffAdmins', 'superAdminConfigured', 'systemToggles', 'auditModalConfig',
+  'deletedDeviceIds'
 ];
 
 function mergeServerState(currentSt, incomingSt, isAdminPush) {
@@ -275,7 +276,24 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
   base.adminActiveSessions = cur.adminActiveSessions || {};
   base.evictedAdminSessions = cur.evictedAdminSessions || [];
 
-  base.connectedDevices = Object.assign({}, cur.connectedDevices || {}, incomingSt.connectedDevices || {});
+  base.deletedDeviceIds = Object.assign({}, cur.deletedDeviceIds || {}, incomingSt.deletedDeviceIds || {});
+  if (isAdminPush && incomingSt.connectedDevices && typeof incomingSt.connectedDevices === 'object') {
+    base.connectedDevices = Object.assign({}, incomingSt.connectedDevices);
+  } else {
+    base.connectedDevices = Object.assign({}, cur.connectedDevices || {}, incomingSt.connectedDevices || {});
+  }
+  Object.keys(base.deletedDeviceIds).forEach(delId => {
+    const delAt = Number(base.deletedDeviceIds[delId] || 0);
+    const devEntry = base.connectedDevices[delId];
+    if (devEntry && Number(devEntry.lastSeenAt || 0) <= delAt) {
+      delete base.connectedDevices[delId];
+    }
+  });
+  if (Array.isArray(cur.remoteCommandsQueue) || Array.isArray(incomingSt.remoteCommandsQueue)) {
+    base.remoteCommandsQueue = mergeArrayById(cur.remoteCommandsQueue, incomingSt.remoteCommandsQueue, 'cmdId', isAdminPush)
+      .filter(c => c && (Date.now() - Number(c.createdAt || 0) < 120000))
+      .slice(0, 40);
+  }
 
   DEVICE_LOCAL_UI_KEYS.forEach(k => {
     delete base[k];

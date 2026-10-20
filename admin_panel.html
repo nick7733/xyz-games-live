@@ -2358,7 +2358,7 @@
 
             <div style="display:flex;gap:8px;">
               <button type="button" class="btn btn-primary btn-sm" style="flex:1;" onclick="navigateAdminPage('${routeId}')">⚙️ Open ${meta.short} Console</button>
-              <button type="button" class="btn btn-outline btn-sm" onclick="navigateAdminPage('wingo-results')">🎯 Manual/Auto Result</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="window.openWingoManualResultForMode('${mKey}')">🎯 Manual/Auto Result</button>
             </div>
           </div>
         `;
@@ -2407,7 +2407,7 @@
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
             <button type="button" class="btn btn-outline" onclick="simulateLiveWingoPeriodAdvance('${modeKey}')">⚡ Simulate Period Close & Auto-Settle</button>
-            <button type="button" class="btn btn-primary" onclick="navigateAdminPage('wingo-results')">🎯 Open Manual Result Entry</button>
+            <button type="button" class="btn btn-primary" onclick="window.openWingoManualResultForMode('${modeKey}')">🎯 Open Manual Result Entry</button>
           </div>
         </div>
 
@@ -2694,7 +2694,7 @@
             <td><span class="badge badge-slate">PENDING</span></td>
             <td>
               <div style="display:flex;gap:4px;">
-                <button type="button" class="btn btn-outline btn-sm" onclick="navigateAdminPage('wingo-results')">🎯 Set Result</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="window.openWingoManualResultForMode('${mKey}')">🎯 Set Result</button>
                 <button type="button" class="btn btn-danger btn-sm" onclick="pauseOrCancelPeriod('${utc.periodId}', '${mKey}')">⏸️ Incident</button>
               </div>
             </td>
@@ -4593,6 +4593,10 @@
           <div class="adm-card">
             <div class="adm-card-head">
               <div class="adm-card-title">🎟️ 5/100 Lottery Draw & Tiered Ticket Pricing (Max 3 Tickets)</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Lottery Draw Name</label>
+              <input type="text" id="lotQuickDrawName" class="form-input" value="Weekly Grand Lottery Draw" />
             </div>
             <div class="grid-3" style="gap:8px;">
               <div class="form-group">
@@ -7894,11 +7898,15 @@ ADMIN_JWT_ENFORCEMENT_SECRET="server_side_rbac_signing_key"</pre>
           if (usr) {
             usr.cashBalanceInr = +(Number(usr.cashBalanceInr || 0) + wonAmt).toFixed(2);
             usr.totalWonInr = +(Number(usr.totalWonInr || 0) + wonAmt).toFixed(2);
+            usr.lastAdminBalanceUpdateAt = now;
             if (usr.isPrimaryWebappUser || usr.userId === 'USR-001' || usr.userId === db.activeUserId) {
               db.balance = usr.cashBalanceInr;
             }
             (db.registeredAccounts || []).forEach(a => {
-              if (a.userId === usr.userId || a.isPrimaryWebappUser) a.cashBalanceInr = usr.cashBalanceInr;
+              if (a.userId === usr.userId || a.isPrimaryWebappUser) {
+                a.cashBalanceInr = usr.cashBalanceInr;
+                a.lastAdminBalanceUpdateAt = now;
+              }
             });
           } else if (tk.userId === 'USR-001' || tk.userId === db.activeUserId) {
             db.balance = +(Number(db.balance || 0) + wonAmt).toFixed(2);
@@ -16401,11 +16409,18 @@ ADMIN_JWT_ENFORCEMENT_SECRET="server_side_rbac_signing_key"</pre>
     // 6. Universal User Balance & State Merger so Admin Panel & Customer Webapp never overwrite each other's data!
     window.syncUserBalanceAcrossRecords = function(userId, newBalanceInr) {
       const bal = Math.max(0, +Number(newBalanceInr || 0).toFixed(2));
+      const nowTs = Date.now();
       (db.adminUsersList || []).forEach(u => {
-        if (u.userId === userId) u.cashBalanceInr = bal;
+        if (u.userId === userId) {
+          u.cashBalanceInr = bal;
+          u.lastAdminBalanceUpdateAt = nowTs;
+        }
       });
       (db.registeredAccounts || []).forEach(a => {
-        if (a.userId === userId) a.cashBalanceInr = bal;
+        if (a.userId === userId) {
+          a.cashBalanceInr = bal;
+          a.lastAdminBalanceUpdateAt = nowTs;
+        }
       });
       if (!db.activeUserId || userId === db.activeUserId || userId === 'USR-001' || userId === 'UID-10001' || (db.adminUsersList || []).length <= 1) {
         db.balance = bal;
@@ -20881,5 +20896,1870 @@ function generateGenuineQrMatrix(text) {
 </script>
 <!-- === END XYZ ADMIN V8 FULL UPGRADES === -->
 
+<!-- === START XYZ ADMIN V9 FULL FIXES === -->
+<script>
+(function() {
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const XYZ_REMOTE_CMDS_KEY = 'XYZ_REMOTE_COMMANDS_V1';
+
+  // ===========================================================================
+  // 1. ENSURE SEPARATE UPI & USDT DEPOSIT BONUS CONFIG + DEPOSIT/WITHDRAW LIMITS
+  // ===========================================================================
+  function ensureV9FinanceConfigs(targetDb) {
+    const d = targetDb || db;
+    if (!d) return;
+
+    if (!d.depositMinConfig || typeof d.depositMinConfig !== 'object') {
+      d.depositMinConfig = {
+        minUpiInr: 100,
+        minUsdt: 5
+      };
+    }
+
+    if (!d.withdrawalConfig || typeof d.withdrawalConfig !== 'object') {
+      d.withdrawalConfig = {
+        cooldownHours: 24,
+        minBankInr: 1,
+        maxBankInr: 50000,
+        minUsdt: 1,
+        maxUsdt: 5000
+      };
+    } else {
+      // Remove forced 100 INR minimum on withdrawal unless explicitly set higher later
+      if (d.withdrawalConfig.minBankInr === 100 && !d.withdrawalConfig.adminCustomSet) {
+        d.withdrawalConfig.minBankInr = 1;
+      }
+      if (d.withdrawalConfig.minUsdt === 5 && !d.withdrawalConfig.adminCustomSet) {
+        d.withdrawalConfig.minUsdt = 1;
+      }
+    }
+
+    if (!d.firstDepositBonusConfig || typeof d.firstDepositBonusConfig !== 'object') {
+      d.firstDepositBonusConfig = {};
+    }
+    const fdb = d.firstDepositBonusConfig;
+    if (fdb.enabled === undefined) fdb.enabled = true;
+    if (fdb.upiEnabled === undefined) fdb.upiEnabled = true;
+    if (fdb.usdtEnabled === undefined) fdb.usdtEnabled = true;
+    if (!fdb.upiApplyOn) fdb.upiApplyOn = 'EVERY_DEPOSIT';
+    if (!fdb.usdtApplyOn) fdb.usdtApplyOn = 'EVERY_DEPOSIT';
+    if (fdb.upiDefaultBonusPercent === undefined) fdb.upiDefaultBonusPercent = Number(fdb.defaultBonusPercent ?? 2);
+    if (fdb.usdtDefaultBonusPercent === undefined) fdb.usdtDefaultBonusPercent = 5;
+
+    if (!Array.isArray(fdb.upiTiers) || fdb.upiTiers.length === 0) {
+      fdb.upiTiers = Array.isArray(fdb.tiers) && fdb.tiers.length > 0
+        ? JSON.parse(JSON.stringify(fdb.tiers))
+        : [
+            { minAmountInr: 100, maxAmountInr: 499, bonusPercent: 2 },
+            { minAmountInr: 500, maxAmountInr: 999, bonusPercent: 3 },
+            { minAmountInr: 1000, maxAmountInr: 4999, bonusPercent: 5 },
+            { minAmountInr: 5000, maxAmountInr: 999999999, bonusPercent: 10 }
+          ];
+    }
+    // Keep fdb.tiers synced with fdb.upiTiers for backward compatibility
+    fdb.tiers = fdb.upiTiers;
+
+    if (!Array.isArray(fdb.usdtTiers) || fdb.usdtTiers.length === 0) {
+      fdb.usdtTiers = [
+        { minUsdt: 5, maxUsdt: 19, bonusPercent: 3 },
+        { minUsdt: 20, maxUsdt: 49, bonusPercent: 5 },
+        { minUsdt: 50, maxUsdt: 199, bonusPercent: 8 },
+        { minUsdt: 200, maxUsdt: 999999, bonusPercent: 12 }
+      ];
+    }
+
+    if (!d.deletedDeviceIds || typeof d.deletedDeviceIds !== 'object') {
+      d.deletedDeviceIds = {};
+    }
+  }
+
+  ensureV9FinanceConfigs(db);
+
+  // Calculate Deposit Bonus % based on Method ('UPI' vs 'USDT')
+  window.getDepositBonusPctByMethodAndAmount = function(method, amountInr, usdtAmount, hadPriorConfirmedDeposit) {
+    ensureV9FinanceConfigs(db);
+    const fdb = db.firstDepositBonusConfig || {};
+    if (fdb.enabled === false) return 0;
+
+    const isUsdt = String(method || 'UPI').toUpperCase() === 'USDT';
+    if (isUsdt) {
+      if (fdb.usdtEnabled === false) return 0;
+      if (fdb.usdtApplyOn === 'FIRST_DEPOSIT' && hadPriorConfirmedDeposit) return 0;
+      const uAmt = Number(usdtAmount || (Number(amountInr || 0) / Number(getDepositRate() || 100)));
+      if (uAmt <= 0) return 0;
+      const sorted = [...(fdb.usdtTiers || [])].sort((a, b) => Number(a.minUsdt || 0) - Number(b.minUsdt || 0));
+      let matchedPct = Number(fdb.usdtDefaultBonusPercent ?? 5);
+      for (let i = 0; i < sorted.length; i++) {
+        const t = sorted[i];
+        const minU = Number(t.minUsdt || 0);
+        const maxU = Number(t.maxUsdt || 999999999);
+        if (uAmt >= minU && uAmt <= maxU) return Number(t.bonusPercent || 0);
+        if (uAmt >= minU) matchedPct = Number(t.bonusPercent || 0);
+      }
+      return matchedPct;
+    } else {
+      if (fdb.upiEnabled === false) return 0;
+      if (fdb.upiApplyOn === 'FIRST_DEPOSIT' && hadPriorConfirmedDeposit) return 0;
+      const inr = Number(amountInr || 0);
+      if (inr <= 0) return 0;
+      const sorted = [...(fdb.upiTiers || [])].sort((a, b) => Number(a.minAmountInr || 0) - Number(b.minAmountInr || 0));
+      let matchedPct = Number(fdb.upiDefaultBonusPercent ?? 2);
+      for (let i = 0; i < sorted.length; i++) {
+        const t = sorted[i];
+        const minA = Number(t.minAmountInr || 0);
+        const maxA = Number(t.maxAmountInr || 999999999);
+        if (inr >= minA && inr <= maxA) return Number(t.bonusPercent || 0);
+        if (inr >= minA) matchedPct = Number(t.bonusPercent || 0);
+      }
+      return matchedPct;
+    }
+  };
+
+  window.getFirstDepositBonusPctForAmount = function(amountInr, method, usdtAmt) {
+    return window.getDepositBonusPctByMethodAndAmount(method || 'UPI', amountInr, usdtAmt, false);
+  };
+
+  // Render Separate UPI Deposit Bonus & USDT Deposit Bonus Sections in Admin Panel
+  window.renderFirstDepositBonusManagerCardHtml = function() {
+    ensureV9FinanceConfigs(db);
+    const fdb = db.firstDepositBonusConfig;
+    const upiTiers = fdb.upiTiers || [];
+    const usdtTiers = fdb.usdtTiers || [];
+    const depMinCfg = db.depositMinConfig || { minUpiInr: 100, minUsdt: 5 };
+
+    return `
+      <!-- Minimum Deposit Limits Bar (UPI Min = 100 INR, USDT Min = 5 USDT) -->
+      <div class="adm-card" style="border-left:4px solid #16A36A;margin-bottom:16px;">
+        <div class="adm-card-head">
+          <div>
+            <div class="adm-card-title">📥 Minimum Deposit Limit Settings (UPI ₹ INR &amp; USDT)</div>
+            <p style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">
+              Minimum deposit limit is enforced on Deposit (default ₹100 INR for UPI and 5 USDT for USDT).
+            </p>
+          </div>
+          <span class="badge badge-success">Enforced on Customer Deposit Page</span>
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:180px;">
+            <label class="form-label">🇮🇳 Minimum UPI Deposit Amount (₹ INR)</label>
+            <input type="number" id="admMinUpiDepositInput" class="form-input" value="${depMinCfg.minUpiInr ?? 100}" min="1" />
+          </div>
+          <div class="form-group" style="margin-bottom:0;flex:1;min-width:180px;">
+            <label class="form-label">₮ Minimum USDT Deposit Amount (USDT)</label>
+            <input type="number" id="admMinUsdtDepositInput" class="form-input" value="${depMinCfg.minUsdt ?? 5}" min="1" step="0.5" />
+          </div>
+          <button type="button" class="btn btn-primary" onclick="window.saveDepositMinLimitsAdmin()">
+            💾 Save Deposit Minimum Limits
+          </button>
+        </div>
+      </div>
+
+      <div class="grid-2" style="gap:16px;margin-bottom:18px;">
+        <!-- SECTION A: SEPARATE UPI DEPOSIT BONUS (%) -->
+        <div class="adm-card" style="border-top:4px solid #16A36A;margin-bottom:0;">
+          <div class="adm-card-head">
+            <div>
+              <div class="adm-card-title">🇮🇳 1. UPI Deposit Bonus Section (Separate % for UPI)</div>
+              <p style="font-size:0.73rem;color:var(--text-secondary);margin-top:2px;">
+                Configure separate bonus percentages specifically for <strong>UPI (₹ INR)</strong> deposits.
+              </p>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span class="badge ${fdb.upiEnabled !== false ? 'badge-success' : 'badge-danger'}">
+                ${fdb.upiEnabled !== false ? '🟢 UPI Bonus ON' : '🔴 UPI Bonus OFF'}
+              </span>
+              <button type="button" class="btn ${fdb.upiEnabled !== false ? 'btn-warning' : 'btn-success'} btn-sm" onclick="window.toggleUpiDepositBonusEnabledAdmin()">
+                ${fdb.upiEnabled !== false ? 'Disable' : 'Enable'}
+              </button>
+            </div>
+          </div>
+
+          <div class="grid-2" style="gap:10px;margin-bottom:10px;">
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label">UPI Bonus Eligibility Mode</label>
+              <select id="fdbUpiApplyOnSelect" class="form-select" onchange="window.saveUpiBonusHeaderConfigAdmin()">
+                <option value="EVERY_DEPOSIT" ${fdb.upiApplyOn !== 'FIRST_DEPOSIT' ? 'selected' : ''}>🎁 Every UPI Deposit</option>
+                <option value="FIRST_DEPOSIT" ${fdb.upiApplyOn === 'FIRST_DEPOSIT' ? 'selected' : ''}>🥇 First-Time UPI Deposit Only</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label">Default / Fallback UPI Bonus (%)</label>
+              <div style="display:flex;gap:6px;">
+                <input type="number" id="fdbUpiDefaultPctInput" class="form-input" value="${fdb.upiDefaultBonusPercent ?? 2}" min="0" max="500" step="0.1" />
+                <button type="button" class="btn btn-outline btn-sm" onclick="window.saveUpiBonusHeaderConfigAdmin()">Save</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-wrap" style="margin-bottom:10px;">
+            <table class="adm-table">
+              <thead>
+                <tr>
+                  <th>Min (₹ INR)</th>
+                  <th>Max (₹ INR)</th>
+                  <th>UPI Bonus (%)</th>
+                  <th>Example Credit</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${upiTiers.map((t, idx) => {
+                  const exBase = Number(t.minAmountInr || 100);
+                  const exBonus = +(exBase * (Number(t.bonusPercent || 0) / 100)).toFixed(2);
+                  return `
+                    <tr>
+                      <td><input type="number" id="fdbMin-${idx}" class="form-input" style="width:90px;padding:4px 6px;" value="${t.minAmountInr}" min="1" /></td>
+                      <td><input type="number" id="fdbMax-${idx}" class="form-input" style="width:105px;padding:4px 6px;" value="${t.maxAmountInr}" min="1" /></td>
+                      <td>
+                        <div style="display:flex;align-items:center;gap:3px;">
+                          <input type="number" id="fdbPct-${idx}" class="form-input" style="width:70px;padding:4px 6px;font-weight:900;color:#15803D;" value="${t.bonusPercent}" min="0" max="500" step="0.1" />
+                          <strong>%</strong>
+                        </div>
+                      </td>
+                      <td style="font-size:0.72rem;color:var(--success);font-weight:800;">
+                        ₹${exBase} → +₹${exBonus}
+                      </td>
+                      <td>
+                        <div style="display:flex;gap:4px;">
+                          <button type="button" class="btn btn-primary btn-sm" onclick="window.saveFirstDepositBonusTierRowAdmin(${idx})">💾</button>
+                          <button type="button" class="btn btn-danger btn-sm" onclick="window.removeFirstDepositBonusTierAdmin(${idx})" ${upiTiers.length <= 1 ? 'disabled' : ''}>🗑️</button>
+                        </div>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:10px;padding:9px 10px;display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;">
+            <div class="form-group" style="margin-bottom:0;flex:1;min-width:80px;">
+              <label class="form-label">Min (₹)</label>
+              <input type="number" id="newFdbMinInput" class="form-input" style="background:#fff;padding:5px 7px;" value="200" min="1" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;flex:1;min-width:80px;">
+              <label class="form-label">Max (₹)</label>
+              <input type="number" id="newFdbMaxInput" class="form-input" style="background:#fff;padding:5px 7px;" value="999" min="1" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;flex:1;min-width:75px;">
+              <label class="form-label">UPI Bonus %</label>
+              <input type="number" id="newFdbPctInput" class="form-input" style="background:#fff;padding:5px 7px;" value="4" min="0" max="500" step="0.1" />
+            </div>
+            <button type="button" class="btn btn-success btn-sm" onclick="window.addFirstDepositBonusTierAdmin()">➕ Add UPI Tier</button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="window.saveAllFirstDepositBonusTiersAdmin()">💾 Save UPI Tiers</button>
+          </div>
+        </div>
+
+        <!-- SECTION B: SEPARATE USDT DEPOSIT BONUS (%) -->
+        <div class="adm-card" style="border-top:4px solid #0D9488;margin-bottom:0;">
+          <div class="adm-card-head">
+            <div>
+              <div class="adm-card-title">₮ 2. USDT Deposit Bonus Section (Separate % for USDT)</div>
+              <p style="font-size:0.73rem;color:var(--text-secondary);margin-top:2px;">
+                Configure separate bonus percentages specifically for <strong>USDT (Crypto)</strong> deposits.
+              </p>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span class="badge ${fdb.usdtEnabled !== false ? 'badge-success' : 'badge-danger'}">
+                ${fdb.usdtEnabled !== false ? '🟢 USDT Bonus ON' : '🔴 USDT Bonus OFF'}
+              </span>
+              <button type="button" class="btn ${fdb.usdtEnabled !== false ? 'btn-warning' : 'btn-success'} btn-sm" onclick="window.toggleUsdtDepositBonusEnabledAdmin()">
+                ${fdb.usdtEnabled !== false ? 'Disable' : 'Enable'}
+              </button>
+            </div>
+          </div>
+
+          <div class="grid-2" style="gap:10px;margin-bottom:10px;">
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label">USDT Bonus Eligibility Mode</label>
+              <select id="fdbUsdtApplyOnSelect" class="form-select" onchange="window.saveUsdtBonusHeaderConfigAdmin()">
+                <option value="EVERY_DEPOSIT" ${fdb.usdtApplyOn !== 'FIRST_DEPOSIT' ? 'selected' : ''}>🎁 Every USDT Deposit</option>
+                <option value="FIRST_DEPOSIT" ${fdb.usdtApplyOn === 'FIRST_DEPOSIT' ? 'selected' : ''}>🥇 First-Time USDT Deposit Only</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+              <label class="form-label">Default / Fallback USDT Bonus (%)</label>
+              <div style="display:flex;gap:6px;">
+                <input type="number" id="fdbUsdtDefaultPctInput" class="form-input" value="${fdb.usdtDefaultBonusPercent ?? 5}" min="0" max="500" step="0.1" />
+                <button type="button" class="btn btn-outline btn-sm" onclick="window.saveUsdtBonusHeaderConfigAdmin()">Save</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-wrap" style="margin-bottom:10px;">
+            <table class="adm-table">
+              <thead>
+                <tr>
+                  <th>Min (USDT)</th>
+                  <th>Max (USDT)</th>
+                  <th>USDT Bonus (%)</th>
+                  <th>Example Credit</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${usdtTiers.map((t, idx) => {
+                  const exU = Number(t.minUsdt || 5);
+                  const exBonusU = +(exU * (Number(t.bonusPercent || 0) / 100)).toFixed(2);
+                  return `
+                    <tr>
+                      <td><input type="number" id="fdbUsdtMin-${idx}" class="form-input" style="width:85px;padding:4px 6px;" value="${t.minUsdt}" min="1" step="0.5" /></td>
+                      <td><input type="number" id="fdbUsdtMax-${idx}" class="form-input" style="width:95px;padding:4px 6px;" value="${t.maxUsdt}" min="1" step="1" /></td>
+                      <td>
+                        <div style="display:flex;align-items:center;gap:3px;">
+                          <input type="number" id="fdbUsdtPct-${idx}" class="form-input" style="width:70px;padding:4px 6px;font-weight:900;color:#0F766E;" value="${t.bonusPercent}" min="0" max="500" step="0.1" />
+                          <strong>%</strong>
+                        </div>
+                      </td>
+                      <td style="font-size:0.72rem;color:#0D9488;font-weight:800;">
+                        ${exU} USDT → +${exBonusU} USDT
+                      </td>
+                      <td>
+                        <div style="display:flex;gap:4px;">
+                          <button type="button" class="btn btn-primary btn-sm" onclick="window.saveUsdtDepositBonusTierRowAdmin(${idx})">💾</button>
+                          <button type="button" class="btn btn-danger btn-sm" onclick="window.removeUsdtDepositBonusTierAdmin(${idx})" ${usdtTiers.length <= 1 ? 'disabled' : ''}>🗑️</button>
+                        </div>
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <div style="background:#F0FDFA;border:1px solid #99F6E4;border-radius:10px;padding:9px 10px;display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap;">
+            <div class="form-group" style="margin-bottom:0;flex:1;min-width:80px;">
+              <label class="form-label">Min (USDT)</label>
+              <input type="number" id="newFdbUsdtMinInput" class="form-input" style="background:#fff;padding:5px 7px;" value="10" min="1" step="0.5" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;flex:1;min-width:80px;">
+              <label class="form-label">Max (USDT)</label>
+              <input type="number" id="newFdbUsdtMaxInput" class="form-input" style="background:#fff;padding:5px 7px;" value="99" min="1" step="1" />
+            </div>
+            <div class="form-group" style="margin-bottom:0;flex:1;min-width:75px;">
+              <label class="form-label">USDT Bonus %</label>
+              <input type="number" id="newFdbUsdtPctInput" class="form-input" style="background:#fff;padding:5px 7px;" value="6" min="0" max="500" step="0.1" />
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" style="background:#0D9488;" onclick="window.addUsdtDepositBonusTierAdmin()">➕ Add USDT Tier</button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="window.saveAllUsdtDepositBonusTiersAdmin()">💾 Save USDT Tiers</button>
+          </div>
+        </div>
+      </div>
+    `;
+  };
+
+  window.saveDepositMinLimitsAdmin = function() {
+    ensureV9FinanceConfigs(db);
+    const minUpi = Math.max(1, Number(document.getElementById('admMinUpiDepositInput')?.value || 100));
+    const minUsdt = Math.max(1, Number(document.getElementById('admMinUsdtDepositInput')?.value || 5));
+    db.depositMinConfig = { minUpiInr: minUpi, minUsdt: minUsdt };
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`✅ Saved Deposit Minimum Limits: UPI Min ₹${minUpi} INR | USDT Min ${minUsdt} USDT!`);
+  };
+
+  window.toggleUpiDepositBonusEnabledAdmin = function() {
+    ensureV9FinanceConfigs(db);
+    db.firstDepositBonusConfig.upiEnabled = !(db.firstDepositBonusConfig.upiEnabled !== false);
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`🇮🇳 UPI Deposit Bonus is now ${db.firstDepositBonusConfig.upiEnabled ? 'ENABLED' : 'DISABLED'}!`);
+  };
+
+  window.toggleUsdtDepositBonusEnabledAdmin = function() {
+    ensureV9FinanceConfigs(db);
+    db.firstDepositBonusConfig.usdtEnabled = !(db.firstDepositBonusConfig.usdtEnabled !== false);
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`₮ USDT Deposit Bonus is now ${db.firstDepositBonusConfig.usdtEnabled ? 'ENABLED' : 'DISABLED'}!`);
+  };
+
+  window.saveUpiBonusHeaderConfigAdmin = function() {
+    ensureV9FinanceConfigs(db);
+    const fdb = db.firstDepositBonusConfig;
+    const modeEl = document.getElementById('fdbUpiApplyOnSelect');
+    const pctEl = document.getElementById('fdbUpiDefaultPctInput');
+    if (modeEl) fdb.upiApplyOn = modeEl.value;
+    if (pctEl) {
+      fdb.upiDefaultBonusPercent = Math.max(0, Number(pctEl.value || 0));
+      fdb.defaultBonusPercent = fdb.upiDefaultBonusPercent;
+    }
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`✅ Updated UPI Deposit Bonus settings (Default: ${fdb.upiDefaultBonusPercent}%, Mode: ${fdb.upiApplyOn})!`);
+  };
+
+  window.saveUsdtBonusHeaderConfigAdmin = function() {
+    ensureV9FinanceConfigs(db);
+    const fdb = db.firstDepositBonusConfig;
+    const modeEl = document.getElementById('fdbUsdtApplyOnSelect');
+    const pctEl = document.getElementById('fdbUsdtDefaultPctInput');
+    if (modeEl) fdb.usdtApplyOn = modeEl.value;
+    if (pctEl) fdb.usdtDefaultBonusPercent = Math.max(0, Number(pctEl.value || 0));
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`✅ Updated USDT Deposit Bonus settings (Default: ${fdb.usdtDefaultBonusPercent}%, Mode: ${fdb.usdtApplyOn})!`);
+  };
+
+  window.saveFirstDepositBonusTierRowAdmin = function(idx) {
+    ensureV9FinanceConfigs(db);
+    const t = db.firstDepositBonusConfig.upiTiers[idx];
+    if (!t) return;
+    t.minAmountInr = Math.max(1, Number(document.getElementById(`fdbMin-${idx}`)?.value || 100));
+    t.maxAmountInr = Math.max(t.minAmountInr, Number(document.getElementById(`fdbMax-${idx}`)?.value || 999999999));
+    t.bonusPercent = Math.max(0, Number(document.getElementById(`fdbPct-${idx}`)?.value || 0));
+    db.firstDepositBonusConfig.tiers = db.firstDepositBonusConfig.upiTiers;
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`✅ Saved UPI Bonus Tier #${idx + 1}: ₹${t.minAmountInr}–₹${t.maxAmountInr} → +${t.bonusPercent}%!`);
+  };
+
+  window.saveAllFirstDepositBonusTiersAdmin = function() {
+    ensureV9FinanceConfigs(db);
+    db.firstDepositBonusConfig.upiTiers.forEach((t, idx) => {
+      const minEl = document.getElementById(`fdbMin-${idx}`);
+      const maxEl = document.getElementById(`fdbMax-${idx}`);
+      const pctEl = document.getElementById(`fdbPct-${idx}`);
+      if (minEl) t.minAmountInr = Math.max(1, Number(minEl.value || 100));
+      if (maxEl) t.maxAmountInr = Math.max(t.minAmountInr, Number(maxEl.value || 999999999));
+      if (pctEl) t.bonusPercent = Math.max(0, Number(pctEl.value || 0));
+    });
+    db.firstDepositBonusConfig.tiers = db.firstDepositBonusConfig.upiTiers;
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast('✅ Saved all UPI Deposit Bonus percentage tiers!');
+  };
+
+  window.addFirstDepositBonusTierAdmin = function() {
+    ensureV9FinanceConfigs(db);
+    const minA = Math.max(1, Number(document.getElementById('newFdbMinInput')?.value || 100));
+    const maxA = Math.max(minA, Number(document.getElementById('newFdbMaxInput')?.value || 999));
+    const pct  = Math.max(0, Number(document.getElementById('newFdbPctInput')?.value || 2));
+    db.firstDepositBonusConfig.upiTiers.push({ minAmountInr: minA, maxAmountInr: maxA, bonusPercent: pct });
+    db.firstDepositBonusConfig.tiers = db.firstDepositBonusConfig.upiTiers;
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`➕ Added UPI Deposit Bonus Tier: ₹${minA}–₹${maxA} → +${pct}%!`);
+  };
+
+  window.removeFirstDepositBonusTierAdmin = function(idx) {
+    ensureV9FinanceConfigs(db);
+    if (db.firstDepositBonusConfig.upiTiers.length <= 1) return;
+    db.firstDepositBonusConfig.upiTiers.splice(idx, 1);
+    db.firstDepositBonusConfig.tiers = db.firstDepositBonusConfig.upiTiers;
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast('🗑️ Removed UPI bonus tier.');
+  };
+
+  window.saveUsdtDepositBonusTierRowAdmin = function(idx) {
+    ensureV9FinanceConfigs(db);
+    const t = db.firstDepositBonusConfig.usdtTiers[idx];
+    if (!t) return;
+    t.minUsdt = Math.max(1, Number(document.getElementById(`fdbUsdtMin-${idx}`)?.value || 5));
+    t.maxUsdt = Math.max(t.minUsdt, Number(document.getElementById(`fdbUsdtMax-${idx}`)?.value || 999999));
+    t.bonusPercent = Math.max(0, Number(document.getElementById(`fdbUsdtPct-${idx}`)?.value || 0));
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`✅ Saved USDT Bonus Tier #${idx + 1}: ${t.minUsdt}–${t.maxUsdt} USDT → +${t.bonusPercent}%!`);
+  };
+
+  window.saveAllUsdtDepositBonusTiersAdmin = function() {
+    ensureV9FinanceConfigs(db);
+    db.firstDepositBonusConfig.usdtTiers.forEach((t, idx) => {
+      const minEl = document.getElementById(`fdbUsdtMin-${idx}`);
+      const maxEl = document.getElementById(`fdbUsdtMax-${idx}`);
+      const pctEl = document.getElementById(`fdbUsdtPct-${idx}`);
+      if (minEl) t.minUsdt = Math.max(1, Number(minEl.value || 5));
+      if (maxEl) t.maxUsdt = Math.max(t.minUsdt, Number(maxEl.value || 999999));
+      if (pctEl) t.bonusPercent = Math.max(0, Number(pctEl.value || 0));
+    });
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast('✅ Saved all USDT Deposit Bonus percentage tiers!');
+  };
+
+  window.addUsdtDepositBonusTierAdmin = function() {
+    ensureV9FinanceConfigs(db);
+    const minU = Math.max(1, Number(document.getElementById('newFdbUsdtMinInput')?.value || 10));
+    const maxU = Math.max(minU, Number(document.getElementById('newFdbUsdtMaxInput')?.value || 99));
+    const pct  = Math.max(0, Number(document.getElementById('newFdbUsdtPctInput')?.value || 5));
+    db.firstDepositBonusConfig.usdtTiers.push({ minUsdt: minU, maxUsdt: maxU, bonusPercent: pct });
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`➕ Added USDT Deposit Bonus Tier: ${minU}–${maxU} USDT → +${pct}%!`);
+  };
+
+  window.removeUsdtDepositBonusTierAdmin = function(idx) {
+    ensureV9FinanceConfigs(db);
+    if (db.firstDepositBonusConfig.usdtTiers.length <= 1) return;
+    db.firstDepositBonusConfig.usdtTiers.splice(idx, 1);
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast('🗑️ Removed USDT bonus tier.');
+  };
+
+  const _origSaveWdLimitsV8 = window.saveWithdrawalLimitsConfigAdmin;
+  window.saveWithdrawalLimitsConfigAdmin = function() {
+    if (typeof _origSaveWdLimitsV8 === 'function') _origSaveWdLimitsV8();
+    if (db.withdrawalConfig) db.withdrawalConfig.adminCustomSet = true;
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+  };
+
+  // Override resolveDepositRequest so UPI uses UPI bonus % and USDT uses USDT bonus %
+  const _origResolveDepV8 = window.resolveDepositRequest;
+  window.resolveDepositRequest = function(depId, newStatus) {
+    const d = (db.adminDeposits || []).find(x => x && x.depositId === depId);
+    if (d && newStatus === 'CONFIRMED') {
+      const hadPrior = (db.adminDeposits || []).some(
+        x => x && x.depositId !== depId && x.userId === d.userId && x.status === 'CONFIRMED'
+      );
+      const pct = window.getDepositBonusPctByMethodAndAmount(d.method || 'UPI', d.amountInr, d.usdtAmount, hadPrior);
+      d.firstDepositBonusPct = pct;
+      d.firstDepositBonusInr = +(Number(d.amountInr || 0) * (pct / 100)).toFixed(2);
+      // Temporarily allow _origResolveDepV8 to apply this exact bonus even on repeat deposits if configured
+      const u = (db.adminUsersList || []).find(x => x && x.userId === d.userId);
+      if (u && pct > 0) u.firstDepositBonusClaimed = false;
+    }
+    if (typeof _origResolveDepV8 === 'function') {
+      _origResolveDepV8(depId, newStatus);
+    }
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+  };
+
+  // ===========================================================================
+  // 2. FIX MULTI-DEVICE CLOUD SYNC, CONNECTED DEVICES, BROADCAST ALERT &
+  //    REMOTELY SWITCH SCREEN
+  // ===========================================================================
+  function pruneGhostOfflineDevices() {
+    if (!db || !db.connectedDevices || typeof db.connectedDevices !== 'object') return;
+    if (!db.deletedDeviceIds || typeof db.deletedDeviceIds !== 'object') db.deletedDeviceIds = {};
+    const now = Date.now();
+    Object.keys(db.connectedDevices).forEach(devId => {
+      const dev = db.connectedDevices[devId];
+      const delAt = Number(db.deletedDeviceIds[devId] || 0);
+      if (!dev || (delAt > 0 && Number(dev.lastSeenAt || 0) <= delAt)) {
+        delete db.connectedDevices[devId];
+        return;
+      }
+      // Auto-prune old stale ghost devices (> 90 seconds old and offline)
+      const age = now - Number(dev.lastSeenAt || 0);
+      if (age > 90000) {
+        delete db.connectedDevices[devId];
+      }
+    });
+  }
+  pruneGhostOfflineDevices();
+
+  window.clearOfflineDevicesAdmin = function() {
+    if (!db.connectedDevices) db.connectedDevices = {};
+    if (!db.deletedDeviceIds) db.deletedDeviceIds = {};
+    const now = Date.now();
+    let removed = 0;
+    Object.keys(db.connectedDevices).forEach(devId => {
+      const dev = db.connectedDevices[devId];
+      if (!dev || (now - Number(dev.lastSeenAt || 0) > 30000)) {
+        db.deletedDeviceIds[devId] = now;
+        delete db.connectedDevices[devId];
+        removed++;
+      }
+    });
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`🧹 Cleared ${removed} offline device(s) from monitor!`);
+  };
+
+  window.removeStaleDeviceFromList = function(devId) {
+    if (!db.deletedDeviceIds || typeof db.deletedDeviceIds !== 'object') db.deletedDeviceIds = {};
+    db.deletedDeviceIds[devId] = Date.now();
+    if (db.connectedDevices && db.connectedDevices[devId]) {
+      delete db.connectedDevices[devId];
+    }
+    try {
+      const raw = safeGetStorage(XYZ_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.connectedDevices) delete parsed.connectedDevices[devId];
+        if (parsed) {
+          parsed.deletedDeviceIds = Object.assign({}, parsed.deletedDeviceIds || {}, db.deletedDeviceIds);
+          safeSetStorage(XYZ_STATE_KEY, JSON.stringify(parsed));
+        }
+      }
+    } catch (e) {}
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`🗑️ Removed device ${devId} from monitor.`);
+  };
+
+  // Upgrade mergeXyzMultiDeviceState in Admin Panel so deletedDeviceIds and connectedDevices merge cleanly
+  const _origMergeAdmV7 = window.mergeXyzMultiDeviceState;
+  window.mergeXyzMultiDeviceState = function(localSt, remoteSt, isInitialBootPull) {
+    const base = _origMergeAdmV7 ? _origMergeAdmV7(localSt, remoteSt, isInitialBootPull) : Object.assign({}, localSt, remoteSt);
+    base.deletedDeviceIds = Object.assign({}, (localSt && localSt.deletedDeviceIds) || {}, (remoteSt && remoteSt.deletedDeviceIds) || {});
+    const mergedDevs = Object.assign({}, (localSt && localSt.connectedDevices) || {}, (remoteSt && remoteSt.connectedDevices) || {});
+    Object.keys(mergedDevs).forEach(dId => {
+      const lDev = localSt && localSt.connectedDevices ? localSt.connectedDevices[dId] : null;
+      const rDev = remoteSt && remoteSt.connectedDevices ? remoteSt.connectedDevices[dId] : null;
+      if (lDev && rDev) {
+        mergedDevs[dId] = Number(rDev.lastSeenAt || 0) >= Number(lDev.lastSeenAt || 0) ? rDev : lDev;
+      }
+      const delAt = Number(base.deletedDeviceIds[dId] || 0);
+      if (delAt > 0 && Number((mergedDevs[dId] && mergedDevs[dId].lastSeenAt) || 0) <= delAt) {
+        delete mergedDevs[dId];
+      }
+    });
+    base.connectedDevices = mergedDevs;
+    if (Array.isArray(localSt && localSt.remoteCommandsQueue) || Array.isArray(remoteSt && remoteSt.remoteCommandsQueue)) {
+      const cmdMap = new Map();
+      [...((localSt && localSt.remoteCommandsQueue) || []), ...((remoteSt && remoteSt.remoteCommandsQueue) || [])].forEach(c => {
+        if (c && c.cmdId && (Date.now() - Number(c.createdAt || 0) < 120000)) {
+          cmdMap.set(c.cmdId, c);
+        }
+      });
+      base.remoteCommandsQueue = Array.from(cmdMap.values()).sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0)).slice(0, 40);
+    }
+    return base;
+  };
+
+  // Ensure saveAdminDb merges latest connectedDevices from localStorage before writing
+  const _origSaveAdminDbV8 = window.saveAdminDb;
+  window.saveAdminDb = function(quiet) {
+    try {
+      const raw = safeGetStorage(XYZ_STATE_KEY);
+      if (raw) {
+        const latest = JSON.parse(raw);
+        if (latest && latest.connectedDevices && typeof latest.connectedDevices === 'object') {
+          if (!db.connectedDevices) db.connectedDevices = {};
+          if (!db.deletedDeviceIds) db.deletedDeviceIds = {};
+          Object.keys(latest.connectedDevices).forEach(dId => {
+            const incDev = latest.connectedDevices[dId];
+            const delAt = Number(db.deletedDeviceIds[dId] || 0);
+            if (incDev && Number(incDev.lastSeenAt || 0) > delAt) {
+              const curDev = db.connectedDevices[dId];
+              if (!curDev || Number(incDev.lastSeenAt || 0) >= Number(curDev.lastSeenAt || 0)) {
+                db.connectedDevices[dId] = incDev;
+              }
+            }
+          });
+        }
+      }
+    } catch (e) {}
+    pruneGhostOfflineDevices();
+    const nowAdmSaveTs = Date.now();
+    (db.adminUsersList || []).forEach(u => {
+      if (!u || !u.userId) return;
+      if (u._lastSeenAdmBal !== u.cashBalanceInr) {
+        if (u._lastSeenAdmBal !== undefined) {
+          u.lastAdminBalanceUpdateAt = nowAdmSaveTs;
+        }
+        u._lastSeenAdmBal = u.cashBalanceInr;
+      }
+      (db.registeredAccounts || []).forEach(a => {
+        if (a && a.userId === u.userId) {
+          a.cashBalanceInr = u.cashBalanceInr;
+          if (u.lastAdminBalanceUpdateAt) a.lastAdminBalanceUpdateAt = u.lastAdminBalanceUpdateAt;
+        }
+      });
+    });
+    if (typeof _origSaveAdminDbV8 === 'function') {
+      _origSaveAdminDbV8(quiet);
+    }
+    try {
+      if (syncChannel) {
+        syncChannel.postMessage({ type: 'SYNC', sourceDeviceId: 'ADMIN_PANEL', isAdminPush: true, state: db });
+      }
+    } catch (e) {}
+  };
+
+  // Listen to BroadcastChannel in Admin Panel for instant Customer Webapp updates
+  if (syncChannel) {
+    syncChannel.onmessage = function(ev) {
+      try {
+        const data = ev.data;
+        if (!data || data.sourceDeviceId === 'ADMIN_PANEL') return;
+        if (data.type === 'SYNC' && data.state) {
+          db = window.mergeXyzMultiDeviceState(db, data.state, false);
+          safeSetStorage(XYZ_STATE_KEY, JSON.stringify(db));
+          updateLiveDevicesTableInPlace();
+        } else if (data.type === 'HEARTBEAT' && data.device) {
+          if (!db.connectedDevices) db.connectedDevices = {};
+          const d = data.device;
+          const delAt = Number((db.deletedDeviceIds && db.deletedDeviceIds[d.deviceId]) || 0);
+          if (d && d.deviceId && Number(d.lastSeenAt || 0) > delAt) {
+            db.connectedDevices[d.deviceId] = d;
+            updateLiveDevicesTableInPlace();
+          }
+        }
+      } catch (e) {}
+    };
+  }
+
+  // Upgrade sendRemoteCommandToDevice, promptRemoteAlertForDevice, and remoteSwitchDeviceView
+  window.sendRemoteCommandToDevice = function(targetDevId, actionType, payloadObj) {
+    if (!Array.isArray(db.remoteCommandsQueue)) db.remoteCommandsQueue = [];
+    const targetClean = String(targetDevId || 'ALL').trim();
+    const cmd = Object.assign({
+      cmdId: 'CMD-' + Date.now() + '-' + Math.floor(1000 + Math.random() * 8999),
+      targetDeviceId: targetClean,
+      action: actionType,
+      createdAt: Date.now()
+    }, payloadObj || {});
+
+    db.remoteCommandsQueue.unshift(cmd);
+    if (db.remoteCommandsQueue.length > 40) {
+      db.remoteCommandsQueue = db.remoteCommandsQueue.slice(0, 40);
+    }
+
+    // If switching view, immediately reflect the new view on the target device(s) in connectedDevices
+    if (actionType === 'FORCE_VIEW' && payloadObj && payloadObj.viewKey && db.connectedDevices) {
+      Object.keys(db.connectedDevices).forEach(dId => {
+        if (targetClean === 'ALL' || dId.toUpperCase() === targetClean.toUpperCase()) {
+          db.connectedDevices[dId].currentView = payloadObj.viewKey;
+          db.connectedDevices[dId].lastSeenAt = Date.now();
+        }
+      });
+    }
+
+    try {
+      window.__xyzSafeStorage.setItem(XYZ_REMOTE_CMDS_KEY, JSON.stringify(db.remoteCommandsQueue));
+    } catch (e) {}
+
+    try {
+      if (syncChannel) {
+        syncChannel.postMessage({
+          type: 'REMOTE_CMD',
+          sourceDeviceId: 'ADMIN_PANEL',
+          cmd: cmd,
+          state: db
+        });
+      }
+    } catch (e) {}
+
+    appendAuditLog('REMOTE_DEVICE_COMMAND', `device:${targetClean}`, actionType, JSON.stringify(payloadObj || {}), `Sent remote ${actionType} to ${targetClean}`);
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+    showAdmToast(`📡 Executed remote "${actionType}" on ${targetClean === 'ALL' ? 'ALL connected devices' : targetClean}!`);
+  };
+
+  window.promptRemoteAlertForDevice = function(targetDevId) {
+    const msgInput = document.getElementById('admRemoteBroadcastMsgInput');
+    const titleInput = document.getElementById('admRemoteBroadcastTitleInput');
+    const title = (titleInput && titleInput.value.trim()) ? titleInput.value.trim() : '📢 Live Admin Broadcast';
+    const msg = (msgInput && msgInput.value.trim()) ? msgInput.value.trim() : '🔥 Welcome! New Wingo & Lottery round is now live across all devices!';
+    window.sendRemoteCommandToDevice(targetDevId || 'ALL', 'ALERT_MODAL', { title, message: msg });
+  };
+
+  window.remoteSwitchDeviceView = function(targetDevId, selectElId) {
+    const sel = document.getElementById(selectElId) || document.getElementById('devViewSel-' + targetDevId);
+    const viewKey = (sel && sel.value) ? sel.value : 'homepage';
+    window.sendRemoteCommandToDevice(targetDevId || 'ALL', 'FORCE_VIEW', { viewKey });
+  };
+
+  function getLiveConnectedDevicesListV9() {
+    pruneGhostOfflineDevices();
+    const map = (db && db.connectedDevices && typeof db.connectedDevices === 'object') ? db.connectedDevices : {};
+    const now = Date.now();
+    return Object.values(map)
+      .filter(d => d && d.deviceId)
+      .map(d => {
+        const ageMs = Math.max(0, now - Number(d.lastSeenAt || 0));
+        return Object.assign({}, d, {
+          ageMs,
+          isOnlineNow: ageMs <= 35000
+        });
+      })
+      .sort((a, b) => Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0));
+  }
+
+  function renderConnectedDevicesRowsHtml(devs) {
+    if (!devs || devs.length === 0) {
+      return `<tr><td colspan="7" style="text-align:center;padding:26px;color:var(--text-muted);">No customer devices currently connected. Open the Customer Webapp in another tab or device to see it live here!</td></tr>`;
+    }
+    return devs.map((d, idx) => {
+      const isMob = d.deviceType === 'MOBILE';
+      const secAgo = Math.max(0, Math.round(d.ageMs / 1000));
+      const curV = d.currentView || 'homepage';
+      const viewOpts = [
+        { k: 'homepage', l: '🏠 Lobby' },
+        { k: 'games',    l: '🎰 Wingo' },
+        { k: 'lottery',  l: '🎟️ Lottery' },
+        { k: 'cards',    l: '🃏 UNO' },
+        { k: 'aviator',  l: '✈️ Aviator' },
+        { k: 'contest',  l: '🎲 Ludo' },
+        { k: 'math',     l: '🧮 Quiz' },
+        { k: 'deposit',  l: '📥 Deposit' },
+        { k: 'withdraw', l: '📤 Withdraw' },
+        { k: 'promo',    l: '🤝 Promo' },
+        { k: 'profile',  l: '👤 Profile' }
+      ];
+      return `
+        <tr data-device-row="${d.deviceId}">
+          <td>
+            <span class="badge ${isMob ? 'badge-success' : 'badge-blue'}" style="font-size:0.72rem;">
+              ${isMob ? '📱 MOBILE' : '💻 LAPTOP'}
+            </span>
+            <div style="font-family:monospace;font-weight:900;margin-top:3px;color:var(--text-primary);">${d.deviceId}</div>
+          </td>
+          <td>
+            <div style="font-weight:700;font-size:0.78rem;">${d.platformName || 'Browser'}</div>
+            <div style="font-size:0.68rem;color:var(--text-muted);">${d.timezone || 'Asia/Kolkata'} • ${d.screen || ''}</div>
+          </td>
+          <td>
+            <span class="badge badge-purple" style="font-family:monospace;">${d.userId || 'GUEST'}</span>
+            <div style="font-weight:800;font-size:0.78rem;margin-top:2px;">${d.username || 'Guest'}</div>
+            ${d.userIdOrEmail ? `<div style="font-size:0.68rem;color:var(--text-secondary);">${d.userIdOrEmail}</div>` : ''}
+          </td>
+          <td>
+            <span class="badge badge-slate" style="text-transform:uppercase;font-weight:800;" data-dev-curview="${d.deviceId}">📍 ${curV}</span>
+          </td>
+          <td>
+            <strong style="color:var(--success);font-size:0.9rem;" data-dev-bal="${d.deviceId}">${fmtMoney(d.balanceInr || 0)}</strong>
+          </td>
+          <td>
+            <span class="badge ${d.isOnlineNow ? 'badge-success' : 'badge-warning'}" data-dev-status="${d.deviceId}">
+              ${d.isOnlineNow ? '🟢 ONLINE NOW' : `⏳ ${secAgo}s ago`}
+            </span>
+          </td>
+          <td>
+            <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
+              <select id="devViewSel-${d.deviceId}" class="form-select" style="width:118px;padding:4px 6px;font-size:0.72rem;">
+                ${viewOpts.map(vo => `<option value="${vo.k}" ${curV === vo.k ? 'selected' : ''}>${vo.l}</option>`).join('')}
+              </select>
+              <button type="button" class="btn btn-primary btn-sm" onclick="window.remoteSwitchDeviceView('${d.deviceId}', 'devViewSel-${d.deviceId}')">🎯 Go</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="window.promptRemoteAlertForDevice('${d.deviceId}')">📢 Alert</button>
+              ${d.userId && d.userId !== 'GUEST' ? `
+                <button type="button" class="btn btn-success btn-sm" onclick="window.remoteCreditDeviceUserBalance('${d.userId}', 500)">+₹500</button>
+              ` : ''}
+              <button type="button" class="btn btn-warning btn-sm" onclick="window.sendRemoteCommandToDevice('${d.deviceId}', 'FORCE_LOGOUT', {})" title="Force Logout Device">🚪</button>
+              <button type="button" class="btn btn-danger btn-sm" onclick="window.removeStaleDeviceFromList('${d.deviceId}')" title="Remove Device">🗑️</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function updateLiveDevicesTableInPlace() {
+    const devs = getLiveConnectedDevicesListV9();
+    const onlineCnt = devs.filter(d => d.isOnlineNow).length;
+    const topBtn = document.getElementById('topCloudSyncQuickBtn');
+    if (topBtn) {
+      topBtn.innerHTML = `🌐 India Sync (${onlineCnt} Online)`;
+    }
+    if (currentAdminPage !== 'cloud-devices') return;
+
+    // Do not clobber if Admin is actively interacting with a select dropdown inside the table
+    const activeEl = document.activeElement;
+    if (activeEl && activeEl.id && activeEl.id.startsWith('devViewSel-')) return;
+
+    const tbody = document.getElementById('admConnectedDevicesTbody');
+    if (tbody) {
+      // Preserve any custom selected values in dropdowns before updating
+      const savedSelections = {};
+      tbody.querySelectorAll('select[id^="devViewSel-"]').forEach(sel => {
+        savedSelections[sel.id] = sel.value;
+      });
+      tbody.innerHTML = renderConnectedDevicesRowsHtml(devs);
+      Object.keys(savedSelections).forEach(selId => {
+        const el = document.getElementById(selId);
+        if (el) el.value = savedSelections[selId];
+      });
+    }
+    const hdrCnt = document.getElementById('admConnectedDevicesHeaderCount');
+    if (hdrCnt) {
+      hdrCnt.textContent = `📱💻 3. Connected Mobiles & Laptops Across India (${devs.length} Devices Tracked • ${onlineCnt} Online)`;
+    }
+    const kpiTot = document.getElementById('admCloudKpiTotalDevs');
+    const kpiSub = document.getElementById('admCloudKpiOnlineSub');
+    if (kpiTot) kpiTot.textContent = `${devs.length} Devices`;
+    if (kpiSub) kpiSub.textContent = `${onlineCnt} Online Right Now`;
+  }
+
+  // Override renderAdminCloudDevicesPage with clean IDs and "Clear Offline Devices" button
+  const _origRenderCloudPageV7 = window.renderAdminCloudDevicesPage;
+  window.renderAdminCloudDevicesPage = function() {
+    const devs = getLiveConnectedDevicesListV9();
+    const onlineDevs = devs.filter(d => d.isOnlineNow);
+    const mobileCount = devs.filter(d => d.deviceType === 'MOBILE').length;
+    const laptopCount = devs.filter(d => d.deviceType === 'LAPTOP').length;
+    const cfg = window.getXyzCloudConfig();
+    const shareLink = window.buildShareablePlayerSyncUrl();
+    const qrSvg = typeof window.makeGenuineQrSvg === 'function'
+      ? window.makeGenuineQrSvg(shareLink, '#0f172a', 110)
+      : '';
+
+    return `
+      <div class="page-header-row">
+        <div>
+          <h1 class="page-title-h1">🌐 Multi-Device Cloud Sync &amp; Live Devices Control Center (All Over India)</h1>
+          <p class="page-subtitle">Control all mobiles and laptops testing or playing from anywhere in India in real time. Broadcast instant pop-up alerts or remotely switch any device's active screen with one click.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-outline" onclick="window.clearOfflineDevicesAdmin()">🧹 Clear Offline Devices</button>
+          <button type="button" class="btn btn-outline" onclick="window.pullAdminStateFromCloudNow(true);renderCurrentAdminView();showAdmToast('↻ Pulled latest state from all connected devices!')">↻ Pull Device Updates</button>
+          <button type="button" class="btn btn-primary" onclick="window.pushAdminStateToCloudNow(true);showAdmToast('🚀 Pushed master Admin state to all devices!')">🚀 Push Master State to All Devices</button>
+        </div>
+      </div>
+
+      <div class="kpi-grid">
+        <div class="kpi-blue-card">
+          <div>
+            <div class="kpi-lbl">1. Total Connected Devices</div>
+            <div class="kpi-val" id="admCloudKpiTotalDevs">${devs.length} Devices</div>
+            <div class="kpi-sub" id="admCloudKpiOnlineSub">${onlineDevs.length} Online Right Now</div>
+          </div>
+          <div class="kpi-icon-circle">🌐</div>
+        </div>
+        <div class="kpi-blue-card" style="background:linear-gradient(135deg,#059669 0%,#047857 100%);">
+          <div>
+            <div class="kpi-lbl">2. Connected Mobiles</div>
+            <div class="kpi-val">${mobileCount} Mobiles</div>
+            <div class="kpi-sub">Android &amp; iOS Phones</div>
+          </div>
+          <div class="kpi-icon-circle" style="color:#059669;">📱</div>
+        </div>
+        <div class="kpi-blue-card" style="background:linear-gradient(135deg,#4F46E5 0%,#312E81 100%);">
+          <div>
+            <div class="kpi-lbl">3. Connected Laptops / PCs</div>
+            <div class="kpi-val">${laptopCount} Laptops</div>
+            <div class="kpi-sub">Windows, Mac &amp; Linux</div>
+          </div>
+          <div class="kpi-icon-circle" style="color:#4F46E5;">💻</div>
+        </div>
+        <div class="kpi-blue-card" style="background:linear-gradient(135deg,#D97706 0%,#92400E 100%);">
+          <div>
+            <div class="kpi-lbl">4. Active Sync Mode</div>
+            <div class="kpi-val">${cfg.provider === 'FIREBASE' ? 'Firebase RTDB' : (cfg.provider === 'SUPABASE' ? 'Supabase DB' : (cfg.provider === 'CUSTOM_REST' ? 'Cloud REST' : 'Live Server'))}</div>
+            <div class="kpi-sub">Real-Time Bidirectional Sync</div>
+          </div>
+          <div class="kpi-icon-circle" style="color:#D97706;">⚡</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="adm-card" style="border-top:4px solid var(--primary-blue);">
+          <div class="adm-card-head">
+            <div class="adm-card-title">⚙️ 1. Cloud &amp; Server Sync Configuration (Connect All Mobiles &amp; Laptops)</div>
+            <span class="badge badge-success">Multi-Device Sync</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Select Multi-Device Sync Provider</label>
+            <select id="admCloudProviderSel" class="form-select">
+              <option value="AUTO_SERVER" ${cfg.provider === 'AUTO_SERVER' ? 'selected' : ''}>⚡ Mode A: Built-in Node.js Server (/api/xyz-state + SSE Stream — Default)</option>
+              <option value="FIREBASE" ${cfg.provider === 'FIREBASE' ? 'selected' : ''}>🔥 Mode B: Firebase Realtime Database URL</option>
+              <option value="SUPABASE" ${cfg.provider === 'SUPABASE' ? 'selected' : ''}>⚡ Mode C: Supabase Cloud Database (REST API)</option>
+              <option value="CUSTOM_REST" ${cfg.provider === 'CUSTOM_REST' ? 'selected' : ''}>🔗 Mode D: Custom Remote Server URL</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Cloud Database URL or Remote Server URL (Leave blank if running on same server.js origin)</label>
+            <input type="text" id="admCloudEndpointInput" class="form-input" style="font-family:monospace;" placeholder="Leave blank for same server origin..." value="${cfg.endpointUrl || cfg.supabaseUrl || ''}" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Supabase Anon Key (Optional)</label>
+            <input type="text" id="admCloudSupaKeyInput" class="form-input" style="font-family:monospace;font-size:0.75rem;" value="${cfg.supabaseAnonKey || ''}" />
+          </div>
+          <button type="button" class="btn btn-primary" style="width:100%;padding:10px;" onclick="window.saveAdminCloudSyncSettings()">
+            💾 Save Cloud Sync Config &amp; Push Master State
+          </button>
+          <div style="margin-top:14px;padding:12px;background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            ${qrSvg}
+            <div style="flex:1;min-width:200px;">
+              <div style="font-size:0.78rem;font-weight:900;color:#166534;margin-bottom:4px;">📲 Shareable Customer Webapp Link &amp; QR</div>
+              <div style="display:flex;gap:6px;">
+                <input type="text" id="admShareableSyncLinkInput" class="form-input" style="background:#ffffff;font-family:monospace;font-size:0.72rem;padding:6px 8px;" value="${shareLink}" readonly />
+                <button type="button" class="btn btn-success btn-sm" onclick="window.copyShareablePlayerSyncUrl()">📋 Copy Link</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="adm-card" style="border-top:4px solid #6D28D9;">
+          <div class="adm-card-head">
+            <div class="adm-card-title">📡 2. Broadcast Remote Action to All Mobiles &amp; Laptops Simultaneously</div>
+            <span class="badge badge-purple">Instant Remote Execution</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Live Screen Popup Title</label>
+            <input type="text" id="admRemoteBroadcastTitleInput" class="form-input" value="📢 Live Admin Broadcast" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Live Screen Popup Message</label>
+            <textarea id="admRemoteBroadcastMsgInput" class="form-textarea" rows="2">🔥 Welcome! New Wingo & Lottery round is now live across all devices!</textarea>
+          </div>
+          <button type="button" class="btn btn-primary" id="btnBroadcastAlertAllDevices" style="width:100%;margin-bottom:14px;background:linear-gradient(135deg,#6D28D9,#4F46E5);" onclick="window.promptRemoteAlertForDevice('ALL')">
+            📢 Pop Up This Alert on ALL Connected Mobiles &amp; Laptops Now
+          </button>
+          <div style="border-top:1px dashed var(--border-color);padding-top:12px;">
+            <label class="form-label">🎯 Remotely Switch Screen on All Connected Devices</label>
+            <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">
+              <select id="admBroadcastViewSelect" class="form-select" style="flex:1;min-width:170px;">
+                <option value="homepage">🏠 Lobby Homepage</option>
+                <option value="games">🎰 Wingo Games (30s–5m)</option>
+                <option value="lottery">🎟️ 5/100 Lottery Draw</option>
+                <option value="cards">🃏 Classic UNO Cards</option>
+                <option value="aviator">✈️ Aviator Crash Game</option>
+                <option value="contest">🎲 Ludo Arena &amp; Tournaments</option>
+                <option value="math">🧮 Quiz Game (Speed Math)</option>
+                <option value="deposit">📥 Deposit Funds Page</option>
+                <option value="withdraw">📤 Withdraw Page</option>
+                <option value="promo">🤝 7-Level Agent Promo</option>
+                <option value="profile">👤 Player Profile</option>
+              </select>
+              <button type="button" class="btn btn-success" id="btnSwitchAllDevicesScreen" onclick="window.remoteSwitchDeviceView('ALL', 'admBroadcastViewSelect')">
+                🎯 Switch All Devices
+              </button>
+              <button type="button" class="btn btn-outline" onclick="window.sendRemoteCommandToDevice('ALL', 'FORCE_RELOAD', {})">
+                🔄 Refresh All
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="adm-card">
+        <div class="adm-card-head">
+          <div class="adm-card-title" id="admConnectedDevicesHeaderCount">📱💻 3. Connected Mobiles &amp; Laptops Across India (${devs.length} Devices Tracked • ${onlineDevs.length} Online)</div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="window.clearOfflineDevicesAdmin()">🧹 Clear Offline</button>
+            <span class="badge badge-blue">Live Device Monitor</span>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="adm-table">
+            <thead>
+              <tr>
+                <th>Device ID &amp; Type</th>
+                <th>Platform / Timezone</th>
+                <th>Logged-In User (UID &amp; Name)</th>
+                <th>Current Screen</th>
+                <th>Live Wallet Balance</th>
+                <th>Status / Last Seen</th>
+                <th>Remote Device Controls</th>
+              </tr>
+            </thead>
+            <tbody id="admConnectedDevicesTbody">
+              ${renderConnectedDevicesRowsHtml(devs)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  };
+
+  setInterval(updateLiveDevicesTableInPlace, 1500);
+
+  // ===========================================================================
+  // 3. FIX WINGO CONTROLS, PERIOD NUMBER SYNC & MANUAL RESULT ENTRY (wingo-results)
+  // ===========================================================================
+  selectedManualMode = '30SEC';
+  const lastAdminWingoPeriodMap = {};
+  ['30SEC', '1MIN', '2MIN', '3MIN', '5MIN'].forEach(mk => {
+    lastAdminWingoPeriodMap[mk] = getWingoModeUtcState(mk, db.wingoModesConfig?.[mk]).periodId;
+  });
+
+  // Helper to jump directly to Manual Result Entry for a specific timer mode
+  window.openWingoManualResultForMode = function(modeKey) {
+    if (modeKey && WINGO_MODES[modeKey]) {
+      selectedManualMode = modeKey;
+    }
+    navigateAdminPage('wingo-results');
+  };
+
+  // Upgrade saveWingoModeConfig so Cutoff (1..dur-1), Min/Max Entry, Operational State, Maintenance Mode, and Status Banner Message save and push immediately
+  window.saveWingoModeConfig = function(modeKey) {
+    if (!requirePermission('wingo.configure', `Configure Wingo ${modeKey}`)) return;
+    const meta = WINGO_MODES[modeKey] || WINGO_MODES['30SEC'];
+    const dur = Number(document.getElementById(`cfgDur-${modeKey}`)?.value || meta.duration);
+    const cut = Number(document.getElementById(`cfgCutoff-${modeKey}`)?.value || meta.cutoff);
+    const minB = Number(document.getElementById(`cfgMinBet-${modeKey}`)?.value || 10);
+    const maxB = Number(document.getElementById(`cfgMaxBet-${modeKey}`)?.value || 50000);
+
+    if (!Number.isFinite(cut) || cut < 1 || cut >= dur) {
+      showAdmToast(`⚠️ Invalid Cutoff: Entry cutoff (${cut}s) must be between 1s and ${dur - 1}s.`);
+      return;
+    }
+    if (!Number.isFinite(minB) || minB < 1 || !Number.isFinite(maxB) || maxB < minB) {
+      showAdmToast('⚠️ Invalid Entry Limits: Maximum entry amount must be greater than or equal to minimum entry amount.');
+      return;
+    }
+
+    if (!db.wingoModesConfig) db.wingoModesConfig = {};
+    const prevCfg = Object.assign({}, db.wingoModesConfig[modeKey]);
+    const nextCfg = {
+      enabled: document.getElementById(`cfgEnabled-${modeKey}`)?.value === 'true',
+      maintenanceMode: document.getElementById(`cfgMaint-${modeKey}`)?.value === 'true',
+      duration: dur,
+      cutoff: cut,
+      minBetInr: minB,
+      maxBetInr: maxB,
+      scheduleMode: document.getElementById(`cfgSched-${modeKey}`)?.value || 'AUTO_CSPRNG',
+      settlementRule: document.getElementById(`cfgSettle-${modeKey}`)?.value || 'ATOMIC_AUTO',
+      statusMessage: (document.getElementById(`cfgMsg-${modeKey}`)?.value || '').trim() || `Live ${meta.short} UTC Draw Active`,
+      version: 'v2.5'
+    };
+
+    db.wingoModesConfig[modeKey] = nextCfg;
+    appendAuditLog('WINGO_CONFIG_UPDATED', `game_modes:${modeKey}`, prevCfg, nextCfg, 'Updated Wingo mode configuration', 'DIRECT-CFG');
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`✅ ${meta.name} settings saved & synced live to Customer Webapp (State: ${nextCfg.enabled ? (nextCfg.maintenanceMode ? 'MAINTENANCE' : 'ENABLED') : 'DISABLED'}, Cutoff: ${cut}s, Min: ₹${minB}, Max: ₹${maxB})!`);
+  };
+
+  // Upgrade submitManualResultPrePublish so it always uses the live period ID (or settles immediately if requested)
+  window.submitManualResultPrePublish = function(modeKey, periodIdArg, winNumArg, settleImmediately) {
+    if (!requirePermission('wingo.manual_result', 'Publish Manual Result')) return;
+    const mKey = modeKey || selectedManualMode || '30SEC';
+    const cfg = (db.wingoModesConfig && db.wingoModesConfig[mKey]) || {};
+    const liveUtc = getWingoModeUtcState(mKey, cfg);
+    const livePid = liveUtc.periodId;
+    const winNum = Number(winNumArg !== undefined ? winNumArg : selectedManualNumber);
+    const supRef = (document.getElementById('manResRefInput')?.value || 'AUTH-WGO-2026').trim();
+
+    if (!db.manualOverrides) db.manualOverrides = {};
+    if (!db.settledPeriodResults) db.settledPeriodResults = {};
+    const prevVal = db.manualOverrides[livePid] ?? 'AUTO_CSPRNG';
+    db.manualOverrides[livePid] = winNum;
+    db.settledPeriodResults[livePid] = winNum;
+
+    // Also update the input field if present
+    const pidInp = document.getElementById('manResPeriodId');
+    if (pidInp) pidInp.value = livePid;
+
+    appendAuditLog('WINGO_MANUAL_RESULT_SET', `game_results:${livePid}`, prevVal, `BALL_${winNum}`, `Authorized manual result #${winNum} for ${mKey} Period ${livePid}`, supRef);
+
+    if (settleImmediately) {
+      window.simulateLiveWingoPeriodAdvance(mKey, livePid, winNum);
+      return;
+    }
+
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`✅ Manual result #${winNum} (${BALL_OUTCOMES[winNum].size} • ${BALL_OUTCOMES[winNum].colors.join('/')}) locked for ${WINGO_MODES[mKey].name} Period #${livePid}!`);
+  };
+
+  window.clearManualResultOverride = function(periodIdArg) {
+    if (!requirePermission('wingo.manual_result', 'Clear Manual Result Override')) return;
+    const cfg = (db.wingoModesConfig && db.wingoModesConfig[selectedManualMode]) || {};
+    const livePid = periodIdArg || getWingoModeUtcState(selectedManualMode, cfg).periodId;
+    if (db.manualOverrides) delete db.manualOverrides[livePid];
+    if (db.settledPeriodResults) delete db.settledPeriodResults[livePid];
+    appendAuditLog('WINGO_MANUAL_OVERRIDE_CLEARED', `game_results:${livePid}`, 'MANUAL', 'AUTO_CSPRNG', 'Restored automatic draw');
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`✔ Cleared manual override for Period #${livePid}.`);
+  };
+
+  // Upgrade simulateLiveWingoPeriodAdvance to accept optional explicit periodId and forcedWinNum, and settle smoothly
+  window.simulateLiveWingoPeriodAdvance = function(modeKey, explicitPeriodId, explicitWinNum) {
+    if (!requirePermission('wingo.settle', 'Simulate Period Draw & Settlement')) return;
+    const mKey = modeKey || selectedManualMode || '30SEC';
+    const cfg = (db.wingoModesConfig && db.wingoModesConfig[mKey]) || {};
+    const utc = getWingoModeUtcState(mKey, cfg);
+    const pid = explicitPeriodId || utc.periodId;
+
+    if (!db.manualOverrides) db.manualOverrides = {};
+    if (!db.settledPeriodResults) db.settledPeriodResults = {};
+
+    let winNum;
+    if (explicitWinNum !== undefined && explicitWinNum !== null) {
+      winNum = Number(explicitWinNum);
+      db.manualOverrides[pid] = winNum;
+      db.settledPeriodResults[pid] = winNum;
+    } else if (db.manualOverrides[pid] !== undefined && db.manualOverrides[pid] !== null) {
+      winNum = Number(db.manualOverrides[pid]);
+      db.settledPeriodResults[pid] = winNum;
+    } else {
+      winNum = window.computeLeastBetWingoOutcomeAdmin ? window.computeLeastBetWingoOutcomeAdmin(mKey, pid) : deriveFairOutcomeNumber(pid, mKey);
+      db.settledPeriodResults[pid] = winNum;
+    }
+
+    const spec = BALL_OUTCOMES[winNum] || BALL_OUTCOMES[0];
+    const now = Date.now();
+    const seedStr = `SERVER_SEED_${pid}_${now}`;
+    const commitH = computeCommitHashHex(seedStr);
+
+    // Settle any waiting customer bets for this period or slot
+    let settledWaitingPayout = 0;
+    const periodBets = [];
+    (db.myBets || []).forEach(bet => {
+      if (!bet) return;
+      const matchesPid = String(bet.periodId) === String(pid);
+      const matchesSlotWaiting = (bet.status === 'WAITING' && bet.slotKey === mKey && !explicitPeriodId);
+      if (matchesPid || matchesSlotWaiting) {
+        if (bet.status === 'WAITING') {
+          const pay = calculateWingoBetPayoutAdmin(bet, winNum);
+          bet.status = pay > 0 ? 'WIN' : 'LOSE';
+          bet.winAmount = pay;
+          bet.winningNumber = winNum;
+          settledWaitingPayout += pay;
+          if (pay > 0 && bet.userId) {
+            const u = (db.adminUsersList || []).find(x => x && x.userId === bet.userId);
+            if (u) {
+              u.cashBalanceInr = +(Number(u.cashBalanceInr || 0) + pay).toFixed(2);
+              u.lastAdminBalanceUpdateAt = now;
+              (db.registeredAccounts || []).forEach(a => {
+                if (a && a.userId === u.userId) {
+                  a.cashBalanceInr = u.cashBalanceInr;
+                  a.lastAdminBalanceUpdateAt = now;
+                }
+              });
+            }
+          }
+        }
+        periodBets.push(bet);
+      }
+    });
+
+    const realEntryCount = periodBets.length;
+    const realUsersCount = new Set(periodBets.map(b => b.userId || 'USER')).size;
+    const realWageredInr = +periodBets.reduce((s, b) => s + Number(b.amount || 0), 0).toFixed(2);
+    const realPayoutInr = +periodBets.reduce((s, b) => s + Number(b.winAmount || 0), 0).toFixed(2);
+    const isManual = (db.manualOverrides && db.manualOverrides[pid] !== undefined);
+
+    if (!Array.isArray(db.wingoPeriods)) db.wingoPeriods = [];
+    const existingPIdx = db.wingoPeriods.findIndex(p => p && p.periodId === pid);
+    const newPeriodRec = {
+      periodId: pid,
+      modeKey: mKey,
+      openingAt: now - utc.duration * 1000,
+      cutoffAt: now - utc.cutoff * 1000,
+      closingAt: now,
+      publishedAt: now,
+      periodStatus: 'SETTLED',
+      entryCount: realEntryCount,
+      participatingUsers: realUsersCount,
+      totalEntryAmountInr: realWageredInr,
+      winningNumber: winNum,
+      winningColors: spec.colors,
+      winningSize: spec.size,
+      generationMethod: isManual ? 'MANUAL_AUTHORIZED' : 'CSPRNG_COMMIT_REVEAL',
+      resultStatus: 'PUBLISHED',
+      settlementStatus: 'SETTLED',
+      correctionStatus: 'NONE',
+      commitHash: commitH,
+      revealedSeed: seedStr,
+      auditRef: `AUD-WGO-${String(pid).slice(-6)}`,
+      updatedAt: now
+    };
+    if (existingPIdx >= 0) db.wingoPeriods[existingPIdx] = newPeriodRec;
+    else db.wingoPeriods.unshift(newPeriodRec);
+
+    if (!Array.isArray(db.wingoSettlements)) db.wingoSettlements = [];
+    const existingSIdx = db.wingoSettlements.findIndex(s => s && s.periodId === pid);
+    const newStlRec = {
+      settlementId: `STL-${String(pid).slice(-8)}`,
+      periodId: pid,
+      modeKey: mKey,
+      winningNumber: winNum,
+      eligibleEntries: realEntryCount,
+      totalWageredInr: realWageredInr,
+      totalPayoutInr: realPayoutInr,
+      totalRefundInr: 0,
+      discrepancyInr: 0,
+      rulesVersion: db.wingoRules?.version || 'v2.5',
+      status: 'SETTLED',
+      idempotencyKey: `IDEMP-STL-${pid}`,
+      settledAt: now,
+      updatedAt: now
+    };
+    if (existingSIdx >= 0) db.wingoSettlements[existingSIdx] = newStlRec;
+    else db.wingoSettlements.unshift(newStlRec);
+
+    appendAuditLog('PERIOD_SETTLED', `game_periods:${pid}`, 'OPEN', `SETTLED (#${winNum} ${spec.size})`, 'Published & settled Wingo period');
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`🎰 Period #${pid} (${WINGO_MODES[mKey].name}) published Result #${winNum} (${spec.size} • ${spec.colors.join('/')}) & settled!`);
+  };
+
+  // Override renderWingoResultsPage so Period ID is always live, shows all 5 modes' live Period IDs, and has both Lock & Publish Now buttons
+  window.renderWingoResultsPage = function() {
+    if (!WINGO_MODES[selectedManualMode]) selectedManualMode = '30SEC';
+    const cfg = (db.wingoModesConfig && db.wingoModesConfig[selectedManualMode]) || {};
+    const utc = getWingoModeUtcState(selectedManualMode, cfg);
+    const previewSpec = BALL_OUTCOMES[selectedManualNumber] || BALL_OUTCOMES[7];
+    const currentOverride = db.manualOverrides ? db.manualOverrides[utc.periodId] : undefined;
+    const corrections = db.wingoCorrectionRequests || [];
+
+    const allModesLiveStrip = Object.keys(WINGO_MODES).map(mk => {
+      const mMeta = WINGO_MODES[mk];
+      const mCfg = (db.wingoModesConfig && db.wingoModesConfig[mk]) || {};
+      const mUtc = getWingoModeUtcState(mk, mCfg);
+      const isSelected = (selectedManualMode === mk);
+      const ov = db.manualOverrides ? db.manualOverrides[mUtc.periodId] : undefined;
+      return `
+        <div onclick="selectedManualMode='${mk}';renderCurrentAdminView()" style="cursor:pointer;padding:10px 12px;border-radius:10px;border:2px solid ${isSelected ? 'var(--primary-blue)' : 'var(--border-color)'};background:${isSelected ? '#EFF6FF' : '#F8FAFC'};transition:all 0.15s ease;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;">
+            <strong style="font-size:0.8rem;color:${isSelected ? 'var(--primary-blue)' : 'var(--text-primary)'};">🎰 ${mMeta.short}</strong>
+            <span style="font-family:monospace;font-weight:900;font-size:0.82rem;color:${mUtc.isLocked ? 'var(--danger)' : 'var(--success)'};" data-live-clock="${mk}">
+              ${String(Math.floor(mUtc.timeLeft / 60)).padStart(2, '0')}:${String(mUtc.timeLeft % 60).padStart(2, '0')}
+            </span>
+          </div>
+          <div style="font-family:monospace;font-size:0.75rem;font-weight:800;color:var(--text-primary);margin-top:4px;" data-live-period="${mk}">${mUtc.periodId}</div>
+          <div style="margin-top:3px;">
+            ${ov !== undefined
+              ? `<span class="badge badge-warning" style="font-size:0.62rem;">Locked: Ball #${ov}</span>`
+              : `<span class="badge badge-slate" style="font-size:0.62rem;">Auto Mode</span>`}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="page-header-row">
+        <div>
+          <h1 class="page-title-h1">🎯 D &amp; E. Wingo Result Management (Live Synced Period IDs &amp; Manual Result Entry)</h1>
+          <p class="page-subtitle">All 5 Wingo timer modes below are 100% synchronized in real time with the Customer Webapp's UTC Period IDs. Click any mode below to set or publish its winning ball (0–9).</p>
+        </div>
+      </div>
+
+      <!-- Live 5-Mode Period ID & Countdown Strip -->
+      <div class="adm-card" style="border-top:4px solid var(--primary-blue);margin-bottom:16px;">
+        <div class="adm-card-head" style="margin-bottom:10px;padding-bottom:8px;">
+          <div class="adm-card-title">⏱️ Live Synchronized Webapp Period IDs Across All 5 Wingo Modes (Click Mode to Select)</div>
+          <span class="badge badge-success">100% Real-Time Matched with Customer Webapp</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(175px, 1fr));gap:10px;">
+          ${allModesLiveStrip}
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="adm-card">
+          <div class="adm-card-head">
+            <div class="adm-card-title">🔐 D. Manual Result Entry — ${WINGO_MODES[selectedManualMode].name}</div>
+            <span class="badge ${currentOverride !== undefined ? 'badge-warning' : 'badge-blue'}" id="manResOverrideBadge">
+              ${currentOverride !== undefined ? `✔ Manual Override Locked: Ball #${currentOverride}` : 'Auto Result Active'}
+            </span>
+          </div>
+
+          <div class="grid-2" style="gap:10px;">
+            <div class="form-group">
+              <label class="form-label">1. Select Wingo Timer Mode</label>
+              <select id="manResMode" class="form-select" onchange="selectedManualMode=this.value;renderCurrentAdminView()">
+                ${Object.keys(WINGO_MODES).map(k => `<option value="${k}" ${selectedManualMode===k?'selected':''}>${WINGO_MODES[k].name}</option>`).join('')}
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">2. Live Active Webapp Period ID (Auto-Updates)</label>
+              <input type="text" id="manResPeriodId" data-live-period-input="${selectedManualMode}" class="form-input" value="${utc.periodId}" readonly style="font-family:monospace;font-weight:900;color:var(--primary-blue);background:#EFF6FF;border-color:#93C5FD;" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">3. Select Winning Ball Number (0–9)</label>
+            <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:8px;margin-top:4px;">
+              ${[0,1,2,3,4,5,6,7,8,9].map(num => {
+                const sp = BALL_OUTCOMES[num];
+                const isSel = (selectedManualNumber === num);
+                return `
+                  <button type="button" class="btn ${isSel ? 'btn-primary' : 'btn-outline'}" style="padding:10px 6px;display:flex;flex-direction:column;gap:3px;" onclick="selectedManualNumber=${num};renderCurrentAdminView()">
+                    <span class="w-ball ${sp.badgeCls}">${num}</span>
+                    <span style="font-size:0.68rem;">${sp.size} • ${sp.colors.join('/')}</span>
+                  </button>
+                `;
+              }).join('')}
+            </div>
+          </div>
+
+          <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:10px;padding:12px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <div style="font-size:0.74rem;color:#1E3A8A;font-weight:700;">
+                Selected Result Preview for Period <code id="manResPreviewPeriodCode" data-live-period="${selectedManualMode}" style="font-weight:900;color:var(--primary-blue);">${utc.periodId}</code>:
+              </div>
+              <div style="font-size:0.9rem;font-weight:900;color:var(--text-primary);margin-top:3px;">
+                Winning Ball: #${previewSpec.number} • Size: ${previewSpec.size} • Color: ${previewSpec.colors.join(' + ')} (${previewSpec.numOdds}x Number Odds)
+              </div>
+            </div>
+            <span class="w-ball ${previewSpec.badgeCls}" style="width:36px;height:36px;font-size:1rem;">${previewSpec.number}</span>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">4. Supporting Reference / Incident Ticket ID</label>
+            <input type="text" id="manResRefInput" class="form-input" placeholder="e.g., INC-2026-902 or Auth Token..." value="AUTH-WGO-2026" />
+          </div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary" style="flex:1;" id="btnAuthorizeManualResult" onclick="window.submitManualResultPrePublish('${selectedManualMode}', null, ${selectedManualNumber}, false)">
+              🔒 Authorize &amp; Lock Manual Result (#${selectedManualNumber})
+            </button>
+            <button type="button" class="btn btn-success" style="flex:1;" id="btnPublishSettleManualNow" onclick="window.submitManualResultPrePublish('${selectedManualMode}', null, ${selectedManualNumber}, true)">
+              ⚡ Publish &amp; Settle (#${selectedManualNumber}) Now
+            </button>
+            ${currentOverride !== undefined ? `
+              <button type="button" class="btn btn-danger" onclick="window.clearManualResultOverride()">
+                ✕ Clear (#${currentOverride})
+              </button>
+            ` : ''}
+          </div>
+        </div>
+
+        <div class="adm-card">
+          <div class="adm-card-head">
+            <div class="adm-card-title">🛡️ E. Automatic Engine &amp; Two-Person Result Corrections</div>
+            <span class="badge badge-success">Live Synced</span>
+          </div>
+
+          <div style="background:#F0FDF4;border:1px solid #BBF7D0;border-radius:10px;padding:12px;margin-bottom:14px;font-size:0.76rem;line-height:1.5;color:#14532D;">
+            <div><strong>✔ Live Period Synchronization:</strong> Period IDs on this page and the Customer Webapp use the exact same UTC epoch formula and update every second.</div>
+            <div style="margin-top:4px;"><strong>✔ Instant Override:</strong> Locking a manual result above immediately applies to the active Webapp period and settles all matching bets when the timer finishes (or immediately if you click "Publish &amp; Settle Now").</div>
+          </div>
+
+          <h4 style="font-size:0.84rem;font-weight:800;margin-bottom:8px;">🔄 Post-Publication Result Correction Queue</h4>
+          <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;max-height:220px;overflow-y:auto;">
+            ${corrections.length === 0 ? `<div style="padding:12px;background:#F8FAFC;border-radius:8px;color:var(--text-muted);font-size:0.75rem;text-align:center;">No pending post-publication correction requests.</div>` : corrections.map(cor => `
+              <div style="background:#F8FAFC;border:1px solid var(--border-color);border-radius:10px;padding:11px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                  <strong>${cor.reqId} • Period <code>${cor.periodId}</code> (${cor.modeKey})</strong>
+                  <span class="badge ${cor.status === 'APPROVED' ? 'badge-success' : (cor.status === 'REJECTED' ? 'badge-danger' : 'badge-warning')}">${cor.status}</span>
+                </div>
+                <div style="font-size:0.74rem;color:var(--text-secondary);margin-top:4px;">
+                  Change: <strong>Ball #${cor.previousNumber} → Ball #${cor.proposedNumber}</strong> • By: <strong>${cor.requestedBy}</strong>
+                </div>
+                ${cor.status === 'PENDING_SECOND_APPROVAL' ? `
+                  <div style="display:flex;gap:8px;margin-top:8px;">
+                    <button type="button" class="btn btn-success btn-sm" onclick="approveTwoPersonCorrection('${cor.reqId}', true)">✔ Approve &amp; Re-Settle</button>
+                    <button type="button" class="btn btn-danger btn-sm" onclick="approveTwoPersonCorrection('${cor.reqId}', false)">✕ Reject</button>
+                  </div>
+                ` : ''}
+              </div>
+            `).join('')}
+          </div>
+
+          <div style="border-top:1px dashed var(--border-color);padding-top:10px;">
+            <div style="font-size:0.76rem;font-weight:800;margin-bottom:6px;">➕ Correct a Past Settled Period Result</div>
+            <div style="display:grid;grid-template-columns:1.4fr 0.8fr 1fr;gap:8px;">
+              <select id="newCorPeriodId" class="form-select">
+                ${(db.wingoPeriods || []).length === 0
+                  ? `<option value="${utc.periodId}">${utc.periodId} (${selectedManualMode})</option>`
+                  : (db.wingoPeriods || []).slice(0, 12).map(p => `<option value="${p.periodId}">${p.periodId} (${p.modeKey} • #${p.winningNumber})</option>`).join('')}
+              </select>
+              <select id="newCorNumber" class="form-select">
+                ${[0,1,2,3,4,5,6,7,8,9].map(n => `<option value="${n}">New Ball #${n}</option>`).join('')}
+              </select>
+              <button type="button" class="btn btn-outline btn-sm" onclick="createCorrectionRequest()">Submit Request</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  };
+
+  // Hook into tickAdminClocks so:
+  // 1) [data-live-period-input] <input> elements update their .value live every second
+  // 2) Automatic period rollover settles finished periods into db.wingoPeriods & db.wingoSettlements
+  // 3) All navigation buttons to wingo-results set selectedManualMode properly
+  const _prevTickClocksV8 = window.tickAdminClocks;
+  window.tickAdminClocks = function() {
+    if (typeof _prevTickClocksV8 === 'function') _prevTickClocksV8();
+
+    let anyPeriodRolledOver = false;
+    ['30SEC', '1MIN', '2MIN', '3MIN', '5MIN'].forEach(mKey => {
+      const cfg = (db.wingoModesConfig && db.wingoModesConfig[mKey]) || {};
+      const u = getWingoModeUtcState(mKey, cfg);
+
+      // Update any input boxes with data-live-period-input
+      document.querySelectorAll(`[data-live-period-input="${mKey}"]`).forEach(inp => {
+        if (inp.value !== u.periodId) {
+          inp.value = u.periodId;
+        }
+      });
+
+      // Check if period rolled over
+      const prevPid = lastAdminWingoPeriodMap[mKey];
+      if (prevPid && prevPid !== u.periodId) {
+        lastAdminWingoPeriodMap[mKey] = u.periodId;
+        // Auto-record the finished period if not already settled in wingoPeriods
+        if (!(db.wingoPeriods || []).some(p => p && p.periodId === prevPid)) {
+          const hasBetsOrOverride = (db.manualOverrides && db.manualOverrides[prevPid] !== undefined) ||
+                                    (db.myBets || []).some(b => b && String(b.periodId) === String(prevPid));
+          if (hasBetsOrOverride || currentAdminPage.startsWith('wingo-')) {
+            window.simulateLiveWingoPeriodAdvance(mKey, prevPid);
+            anyPeriodRolledOver = true;
+          }
+        } else {
+          anyPeriodRolledOver = true;
+        }
+      } else {
+        lastAdminWingoPeriodMap[mKey] = u.periodId;
+      }
+    });
+
+    if (anyPeriodRolledOver && currentAdminPage === 'wingo-results') {
+      const ovBadge = document.getElementById('manResOverrideBadge');
+      if (ovBadge) {
+        const curUtc = getWingoModeUtcState(selectedManualMode, db.wingoModesConfig?.[selectedManualMode]);
+        const curOv = db.manualOverrides ? db.manualOverrides[curUtc.periodId] : undefined;
+        ovBadge.className = 'badge ' + (curOv !== undefined ? 'badge-warning' : 'badge-blue');
+        ovBadge.textContent = curOv !== undefined ? `✔ Manual Override Locked: Ball #${curOv}` : 'Auto Result Active';
+      }
+    }
+  };
+
+  // ===========================================================================
+  // 4. LOTTERY ADMIN UPGRADES:
+  //    - Prominent Manual Jackpot Prize Input right alongside Lottery Name
+  //    - Live Banner Preview auto-updates when Lottery Name or Jackpot changes
+  //    - Guaranteed future buyCutoffAt when launching so draw is always OPEN
+  //    - Immediate cloud & BroadcastChannel sync so draw ALWAYS shows on Webapp
+  // ===========================================================================
+  window.onLiveLotteryLaunchFormInput = function() {
+    const titleVal = (document.getElementById('lotNewTitleInput')?.value || 'WEEKLY GRAND LOTTERY DRAW').trim();
+    const jpInput = document.getElementById('lotNewJackpotMainInput');
+    const p5Input = document.getElementById('lotNewPrize5Input');
+    let jpVal = 1000000;
+    if (jpInput && document.activeElement === jpInput) {
+      jpVal = Math.max(100, Number(jpInput.value || 1000000));
+      if (p5Input) p5Input.value = jpVal;
+    } else if (p5Input && document.activeElement === p5Input) {
+      jpVal = Math.max(100, Number(p5Input.value || 1000000));
+      if (jpInput) jpInput.value = jpVal;
+    } else {
+      jpVal = Math.max(100, Number((jpInput && jpInput.value) || (p5Input && p5Input.value) || 1000000));
+    }
+
+    const p4 = Number(document.getElementById('lotNewPrize4Input')?.value || 50000);
+    const p3 = Number(document.getElementById('lotNewPrize3Input')?.value || 5000);
+    const modeVal = document.getElementById('lotNewPrizeModeSelect')?.value || lotNewPrizeMode;
+    const subTxt = modeVal === 'MULTI_TIER_5_4_3'
+      ? `5 Match: ₹${jpVal.toLocaleString('en-IN')} • 4 Match: ₹${p4.toLocaleString('en-IN')} • 3 Match: ₹${p3.toLocaleString('en-IN')}`
+      : `100% Jackpot Prize to 5/5 Match Winner!`;
+
+    // Only auto-regenerate SVG banner if user hasn't uploaded a custom raster image file
+    if (!lotNewBannerDataUrl || lotNewBannerDataUrl.startsWith('data:image/svg+xml')) {
+      lotNewBannerDataUrl = makeSvgLotteryBannerDataUri('GOLD', titleVal.toUpperCase(), subTxt, `₹${jpVal.toLocaleString('en-IN')} JACKPOT`);
+      const prevImg = document.getElementById('lotBannerLivePreviewImg');
+      if (prevImg) prevImg.src = lotNewBannerDataUrl;
+    }
+  };
+
+  window.launchNewLotteryDrawAdmin = function() {
+    if (!requirePermission('games.manage', 'Launch New Lottery Draw')) return;
+    const title = (document.getElementById('lotNewTitleInput')?.value || '').trim();
+    if (!title) {
+      showAdmToast('⚠️ Please enter a Lottery Ticket / Draw Name.');
+      document.getElementById('lotNewTitleInput')?.focus();
+      return;
+    }
+
+    const jpMainEl = document.getElementById('lotNewJackpotMainInput');
+    const p5El = document.getElementById('lotNewPrize5Input');
+    const prize5 = Math.max(100, Number((jpMainEl && jpMainEl.value) || (p5El && p5El.value) || 1000000));
+    if (p5El) p5El.value = prize5;
+    if (jpMainEl) jpMainEl.value = prize5;
+
+    const p1 = Math.max(1, Number(document.getElementById('lotNewPrice1Input')?.value || 200));
+    const p2 = Math.max(1, Number(document.getElementById('lotNewPrice2Input')?.value || 300));
+    const p3 = Math.max(1, Number(document.getElementById('lotNewPrice3Input')?.value || 500));
+    const maxT = Math.max(1, Number(document.getElementById('lotNewMaxTicketsInput')?.value || 3));
+
+    const prizeMode = document.getElementById('lotNewPrizeModeSelect')?.value || lotNewPrizeMode || 'ALL_TO_5_MATCH';
+    const splitMode = document.getElementById('lotNewSplitModeSelect')?.value || 'SPLIT_POOL';
+    const prize4 = (prizeMode === 'MULTI_TIER_5_4_3') ? Math.max(0, Number(document.getElementById('lotNewPrize4Input')?.value || 50000)) : 0;
+    const prize3 = (prizeMode === 'MULTI_TIER_5_4_3') ? Math.max(0, Number(document.getElementById('lotNewPrize3Input')?.value || 5000)) : 0;
+
+    const rulesTxt = (document.getElementById('lotNewRulesTextInput')?.value || '').trim() ||
+      'Select 5 numbers from 1 to 100. If all 5 numbers match the official draw, you win the 1st Prize! If multiple users match all 5 numbers, the 1st Prize pool is divided equally among all 1st-prize winners.';
+
+    const now = Date.now();
+    const cutStr = document.getElementById('lotNewCutoffInput')?.value;
+    const resStr = document.getElementById('lotNewResultDateInput')?.value;
+    let buyCutoffAt = cutStr ? new Date(cutStr).getTime() : (now + 24 * HOUR_MS);
+    if (!Number.isFinite(buyCutoffAt) || buyCutoffAt <= now + 30000) {
+      // Ensure newly published lottery is always OPEN and valid!
+      buyCutoffAt = now + 24 * HOUR_MS;
+    }
+    let resultDateAt = resStr ? new Date(resStr).getTime() : (buyCutoffAt + 2 * HOUR_MS);
+    if (!Number.isFinite(resultDateAt) || resultDateAt <= buyCutoffAt) {
+      resultDateAt = buyCutoffAt + 2 * HOUR_MS;
+    }
+
+    const newDrawId = 'LOTTO-' + new Date().getFullYear() + '-' + Math.floor(1000 + Math.random() * 9000);
+    const subTxt = prizeMode === 'MULTI_TIER_5_4_3'
+      ? `5 Match: ₹${prize5.toLocaleString('en-IN')} • 4 Match: ₹${prize4.toLocaleString('en-IN')} • 3 Match: ₹${prize3.toLocaleString('en-IN')}`
+      : `100% Jackpot Prize to 5/5 Match Winner!`;
+    const bannerUrl = (lotNewBannerDataUrl && !lotNewBannerDataUrl.startsWith('data:image/svg+xml'))
+      ? lotNewBannerDataUrl
+      : makeSvgLotteryBannerDataUri('GOLD', title.toUpperCase(), subTxt, `₹${prize5.toLocaleString('en-IN')} JACKPOT`);
+
+    const newDraw = {
+      drawId: newDrawId,
+      title: title,
+      scheduleLabel: `Result: ${fmtDateTime(resultDateAt)}`,
+      bannerDataUrl: bannerUrl,
+      prizeMode: prizeMode,
+      tierSplitMode: splitMode,
+      jackpotInr: prize5,
+      prize5MatchInr: prize5,
+      prize4MatchInr: prize4,
+      prize3MatchInr: prize3,
+      ticketPricesInr: [p1, p2, p3],
+      maxTicketsPerUser: maxT,
+      rulesText: rulesTxt,
+      instructionsText: rulesTxt,
+      createdAt: now,
+      updatedAt: now,
+      buyCutoffAt: buyCutoffAt,
+      resultDateAt: resultDateAt,
+      status: 'OPEN',
+      winningNumbers: [],
+      resultDeclaredAt: null,
+      totalWinnersCount: 0,
+      tierWinnersSummary: null
+    };
+
+    if (!Array.isArray(db.lotteryDraws)) db.lotteryDraws = [];
+    db.lotteryDraws.unshift(newDraw);
+    db.adminUpdatedAt = now;
+
+    appendAuditLog(
+      'LOTTERY_DRAW_LAUNCHED',
+      `lotteryDraws:${newDrawId}`,
+      'NONE',
+      `${title} (Jackpot: ₹${prize5.toLocaleString('en-IN')})`,
+      'Admin launched new lottery draw with manual Jackpot prize'
+    );
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+    showAdmToast(`🚀 Published Lottery "${title}" with Jackpot ₹${prize5.toLocaleString('en-IN')} (${newDrawId})! Live on Customer Webapp.`);
+  };
+
+  // Also upgrade saveLotteryAdminConfig (in Other Games page) so if no open draw exists, it creates one with the entered Jackpot & Ticket Prices!
+  window.saveLotteryAdminConfig = function() {
+    if (!requirePermission('games.manage', 'Update Lottery Pricing')) return;
+    const p1 = Math.max(1, Number(document.getElementById('lotPrice1')?.value || 200));
+    const p2 = Math.max(1, Number(document.getElementById('lotPrice2')?.value || 300));
+    const p3 = Math.max(1, Number(document.getElementById('lotPrice3')?.value || 500));
+    const jp = Math.max(100, Number(document.getElementById('lotJackpotInr')?.value || 1000000));
+    const customTitle = (document.getElementById('lotQuickDrawName')?.value || 'Weekly Grand Lottery Draw').trim();
+
+    if (!Array.isArray(db.lotteryDraws)) db.lotteryDraws = [];
+    const openDraws = db.lotteryDraws.filter(d => d && d.status === 'OPEN');
+    if (openDraws.length === 0) {
+      const now = Date.now();
+      const newDrawId = 'LOTTO-' + new Date().getFullYear() + '-' + Math.floor(1000 + Math.random() * 9000);
+      db.lotteryDraws.unshift({
+        drawId: newDrawId,
+        title: customTitle,
+        scheduleLabel: `Result: ${fmtDateTime(now + 26 * HOUR_MS)}`,
+        bannerDataUrl: makeSvgLotteryBannerDataUri('GOLD', customTitle.toUpperCase(), '100% Jackpot Prize to 5/5 Match Winner!', `₹${jp.toLocaleString('en-IN')} JACKPOT`),
+        prizeMode: 'ALL_TO_5_MATCH',
+        tierSplitMode: 'SPLIT_POOL',
+        jackpotInr: jp,
+        prize5MatchInr: jp,
+        prize4MatchInr: 0,
+        prize3MatchInr: 0,
+        ticketPricesInr: [p1, p2, p3],
+        maxTicketsPerUser: 3,
+        createdAt: now,
+        updatedAt: now,
+        buyCutoffAt: now + 24 * HOUR_MS,
+        resultDateAt: now + 26 * HOUR_MS,
+        status: 'OPEN',
+        winningNumbers: [],
+        resultDeclaredAt: null,
+        totalWinnersCount: 0
+      });
+    } else {
+      openDraws.forEach(d => {
+        if (customTitle) d.title = customTitle;
+        d.ticketPricesInr = [p1, p2, p3];
+        d.jackpotInr = jp;
+        d.prize5MatchInr = jp;
+        d.updatedAt = Date.now();
+      });
+    }
+    db.adminUpdatedAt = Date.now();
+    appendAuditLog('LOTTERY_CONFIG_UPDATED', 'lotteryDraws', 'Tiered Prices & Jackpot', `[₹${p1}, ₹${p2}, ₹${p3}] Jackpot ₹${jp}`, 'Updated 5/100 Lottery config');
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') window.pushAdminStateToCloudNow(true);
+    showAdmToast(`✅ Saved & Published 5/100 Lottery (Jackpot: ₹${jp.toLocaleString('en-IN')}, Tiers: ₹${p1}/₹${p2}/₹${p3})!`);
+  };
+
+  // Inject prominent side-by-side "Lottery Name" + "Jackpot Prize Amount (₹ INR)" into renderDedicatedLotteryAdminPage
+  const _origRenderLotteryPageV8 = window.renderDedicatedLotteryAdminPage;
+  window.renderDedicatedLotteryAdminPage = function() {
+    let rawHtml = _origRenderLotteryPageV8();
+    const targetSnippet = `<div class="form-group" style="grid-column:1/-1;">
+                  <label class="form-label">Lottery Ticket / Draw Name *</label>
+                  <input type="text" id="lotNewTitleInput" class="form-input" value="Weekly Grand Lottery Draw" placeholder="Enter lottery draw name..." />
+                </div>`;
+    const replacementSnippet = `<div class="form-group">
+                  <label class="form-label" style="color:var(--primary-blue);font-weight:800;">🎟️ Lottery Ticket / Draw Name *</label>
+                  <input type="text" id="lotNewTitleInput" class="form-input" style="border-color:var(--primary-blue);font-weight:800;" value="Weekly Grand Lottery Draw" placeholder="Enter lottery draw name..." oninput="window.onLiveLotteryLaunchFormInput()" />
+                </div>
+                <div class="form-group">
+                  <label class="form-label" style="color:#15803D;font-weight:900;">🏆 Jackpot Prize Amount (₹ INR — Manual Entry) *</label>
+                  <input type="number" id="lotNewJackpotMainInput" class="form-input" style="border-color:#16A36A;background:#F0FDF4;font-weight:900;color:#15803D;font-size:0.95rem;" value="1000000" min="100" step="100" placeholder="Enter Jackpot Prize in ₹ INR..." oninput="window.onLiveLotteryLaunchFormInput()" />
+                </div>`;
+    if (rawHtml.includes(targetSnippet)) {
+      rawHtml = rawHtml.replace(targetSnippet, replacementSnippet);
+    }
+    rawHtml = rawHtml.replace(
+      `id="lotNewPrize5Input" class="form-input"`,
+      `id="lotNewPrize5Input" class="form-input" oninput="window.onLiveLotteryLaunchFormInput()"`
+    );
+    return rawHtml;
+  };
+
+  // ===========================================================================
+  // 5. ENSURE LUDO, UNO & QUIZ ADMIN CONSOLES AUTO-INITIALIZE A TOURNAMENT IF
+  //    EMPTY SO EVERY ADMIN BUTTON WORKS IMMEDIATELY WITHOUT SILENT RETURN
+  // ===========================================================================
+  window.getSelectedLudoTournament = function() {
+    if (!Array.isArray(db.ludoTournaments)) db.ludoTournaments = [];
+    let found = db.ludoTournaments.find(t => t && t.tournamentId === ludoSelectedTourneyId) || db.ludoTournaments[0];
+    if (!found && currentAdminPage === 'ludo-admin') {
+      const partCnt = 40;
+      const newTr = {
+        tournamentId: 'TRN-LUDO-101',
+        title: (document.getElementById('trnTitleInput')?.value || 'Royal Ludo Champions Cup').trim(),
+        categoryType: document.getElementById('trnCategoryTypeSelect')?.value || 'ACTIVE',
+        beginAt: Date.now() + 24 * 3600 * 1000,
+        beginScheduleText: (document.getElementById('trnBeginTextInput')?.value || 'Oct 21, 2026 • 18:00 IST').trim(),
+        entryLockAt: Date.now() + 12 * 3600 * 1000,
+        entryLockText: (document.getElementById('trnLockTextInput')?.value || 'Oct 21, 2026 • 16:00 IST').trim(),
+        entryLocked: false,
+        entryFeeInr: Number(document.getElementById('trnEntryFeeInput')?.value || 250),
+        winnerPrizeInr: Number(document.getElementById('trnWinnerPrizeInput')?.value || 1000000),
+        runnerUpPrizeInr: Number(document.getElementById('trnRunnerUpPrizeInput')?.value || 350000),
+        prizePoolInr: 1350000,
+        rulesText: '1. Register before the Last Date of Entry.\n2. Groups and matches are scheduled after entry closes.\n3. Receive match notification 24 hours before your match.',
+        prizeDisbursedWinner: false,
+        prizeDisbursedRunnerUp: false,
+        championPlayer: { id: 'USR-001', name: 'Player_01' },
+        runnerUpPlayer: { id: 'USR-101', name: 'Rahul_King' },
+        maxPlayers: 100,
+        joinedPlayersCount: partCnt,
+        initialGroupsCount: 2,
+        playersPerGroup: 20,
+        currentStage: 1,
+        currentSubRound: 'R1A_GROUP_KO',
+        userJoined: true,
+        userAssignedGroup: 1,
+        status: 'OPEN',
+        lateAdminAddedPlayers: [],
+        groupsCache: { 1: buildSeedGroupData(1, 20) },
+        group1Detail: buildSeedGroupData(1, 20),
+        stageSummaries: [
+          { stageNo: 1, code: 'STAGE_1', name: 'Round 1: 2 Groups of 20 Players', playersIn: 40, groupsCount: 2, perGroup: 20, rule: 'Manual Group Division based on participant count', qualifiersOut: 2, status: 'ACTIVE' }
+        ],
+        knockoutBracket: [],
+        scheduledPlayerMatches: []
+      };
+      db.ludoTournaments.unshift(newTr);
+      ludoSelectedTourneyId = newTr.tournamentId;
+      found = newTr;
+    }
+    return found;
+  };
+
+  window.getSelectedUnoTournament = function() {
+    if (!Array.isArray(db.unoTournaments)) db.unoTournaments = [];
+    let found = db.unoTournaments.find(t => t && t.tournamentId === unoSelectedTourneyId) || db.unoTournaments[0];
+    if (!found && currentAdminPage === 'cards-admin') {
+      const newTr = {
+        tournamentId: 'UNO-TRN-101',
+        title: (document.getElementById('unoTrnTitleInput')?.value || 'Royal Classic UNO Champions Cup').trim(),
+        categoryType: document.getElementById('unoTrnCategoryTypeSelect')?.value || 'ACTIVE',
+        beginAt: Date.now() + 24 * 3600 * 1000,
+        beginScheduleText: (document.getElementById('unoTrnBeginTextInput')?.value || 'Oct 21, 2026 • 19:00 IST').trim(),
+        entryLockAt: Date.now() + 12 * 3600 * 1000,
+        entryLockText: (document.getElementById('unoTrnLockTextInput')?.value || 'Oct 21, 2026 • 17:00 IST').trim(),
+        entryLocked: false,
+        entryFeeInr: Number(document.getElementById('unoTrnEntryFeeInput')?.value || 250),
+        winnerPrizeInr: Number(document.getElementById('unoTrnWinnerPrizeInput')?.value || 1000000),
+        runnerUpPrizeInr: Number(document.getElementById('unoTrnRunnerUpPrizeInput')?.value || 350000),
+        prizePoolInr: 1350000,
+        rulesText: '1. Register before the Last Date of Entry.\n2. Groups and matches are scheduled after entry closes.\n3. Receive match notification 24 hours before your match.',
+        prizeDisbursedWinner: false,
+        prizeDisbursedRunnerUp: false,
+        championPlayer: { id: 'USR-001', name: 'Player_01' },
+        runnerUpPlayer: { id: 'USR-101', name: 'Rahul_King' },
+        maxPlayers: 100,
+        joinedPlayersCount: 40,
+        initialGroupsCount: 2,
+        playersPerGroup: 20,
+        currentStage: 1,
+        currentSubRound: 'R1A_GROUP_KO',
+        userJoined: true,
+        userAssignedGroup: 1,
+        status: 'OPEN',
+        lateAdminAddedPlayers: [],
+        groupsCache: { 1: buildSeedUnoGroupData(1, 20) },
+        group1Detail: buildSeedUnoGroupData(1, 20),
+        stageSummaries: [
+          { stageNo: 1, code: 'STAGE_1', name: 'Round 1: 2 Groups of 20 Players', playersIn: 40, groupsCount: 2, perGroup: 20, rule: 'Manual Group Division based on participant count', qualifiersOut: 2, status: 'ACTIVE' }
+        ],
+        knockoutBracket: [],
+        scheduledPlayerMatches: []
+      };
+      db.unoTournaments.unshift(newTr);
+      unoSelectedTourneyId = newTr.tournamentId;
+      found = newTr;
+    }
+    return found;
+  };
+
+  window.getSelectedQuizTournament = function() {
+    if (!Array.isArray(db.mathTournaments)) db.mathTournaments = [];
+    let found = db.mathTournaments.find(t => t && t.tournamentId === quizSelectedTourneyId) || db.mathTournaments[0];
+    if (!found && (currentAdminPage === 'quiz-admin' || currentAdminPage.startsWith('quiz-'))) {
+      const newTr = {
+        tournamentId: 'QUIZ-TRN-101',
+        title: (document.getElementById('quizTrnTitleInput')?.value || 'Grand Speed Math Olympiad Cup').trim(),
+        categoryType: document.getElementById('quizTrnCategoryTypeSelect')?.value || 'ACTIVE',
+        beginAt: Date.now() + 24 * 3600 * 1000,
+        beginScheduleText: (document.getElementById('quizTrnBeginTextInput')?.value || 'Oct 21, 2026 • 20:00 IST').trim(),
+        entryLockAt: Date.now() + 12 * 3600 * 1000,
+        entryLockText: (document.getElementById('quizTrnLockTextInput')?.value || 'Oct 21, 2026 • 18:00 IST').trim(),
+        entryLocked: false,
+        entryFeeInr: Number(document.getElementById('quizTrnEntryFeeInput')?.value || 250),
+        winnerPrizeInr: Number(document.getElementById('quizTrnWinnerPrizeInput')?.value || 1000000),
+        runnerUpPrizeInr: Number(document.getElementById('quizTrnRunnerUpPrizeInput')?.value || 350000),
+        prizePoolInr: 1350000,
+        rulesText: '1. Register before the Last Date of Entry.\n2. Groups and matches are scheduled after entry closes.\n3. Receive match notification 24 hours before your match.',
+        prizeDisbursedWinner: false,
+        prizeDisbursedRunnerUp: false,
+        championPlayer: { id: 'USR-001', name: 'Player_01' },
+        runnerUpPlayer: { id: 'USR-101', name: 'Rahul_King' },
+        maxPlayers: 100,
+        joinedPlayersCount: 40,
+        initialGroupsCount: 2,
+        playersPerGroup: 20,
+        currentStage: 1,
+        currentSubRound: 'R1A_GROUP_KO',
+        userJoined: true,
+        userAssignedGroup: 1,
+        status: 'OPEN',
+        lateAdminAddedPlayers: [],
+        groupsCache: { 1: buildSeedQuizGroupData(1, 20) },
+        group1Detail: buildSeedQuizGroupData(1, 20),
+        stageSummaries: [
+          { stageNo: 1, code: 'STAGE_1', name: 'Round 1: 2 Groups of 20 Players', playersIn: 40, groupsCount: 2, perGroup: 20, rule: 'Manual Group Division based on participant count', qualifiersOut: 2, status: 'ACTIVE' }
+        ],
+        knockoutBracket: [],
+        scheduledPlayerMatches: []
+      };
+      db.mathTournaments.unshift(newTr);
+      quizSelectedTourneyId = newTr.tournamentId;
+      found = newTr;
+    }
+    return found;
+  };
+
+  if (loggedInAdminAccount) {
+    renderSidebarTree('');
+    renderCurrentAdminView();
+  }
+})();
+</script>
+<!-- === END XYZ ADMIN V9 FULL FIXES === -->
 </body>
 </html>

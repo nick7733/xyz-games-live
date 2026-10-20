@@ -13280,7 +13280,7 @@
       </div>
 
       <p class="wd-min-note" id="wdMinNoteText">
-        Minimum withdrawal amount is ₹100.<br/>
+        Limit: 1 withdrawal request per 24 hours.<br/>
         Processing fee may apply.
       </p>
     </section>
@@ -14076,11 +14076,13 @@
           const st = Object.assign({}, existing, inc);
           const adminPreserveKeys = [
             'websiteConfig', 'paymentGatewayConfig', 'upiId', 'usdtAddress', 'currencyConfig',
-            'wingoModesConfig', 'wingoRules', 'manualOverrides', 'ludoConfig', 'unoConfig',
-            'mathConfig', 'aviatorConfig', 'promoConfig', 'quizQuestions', 'staffAdmins',
+            'firstDepositBonusConfig', 'withdrawalConfig', 'depositMinConfig',
+            'wingoModesConfig', 'wingoRules', 'manualOverrides', 'settledPeriodResults',
+            'ludoConfig', 'unoConfig', 'mathConfig', 'aviatorConfig', 'promoConfig', 'quizQuestions', 'staffAdmins',
             'superAdminConfigured', 'systemToggles', 'auditModalConfig', 'adminNotifications',
             'adminPromotions', 'lotteryDraws', 'ludoTournaments', 'unoTournaments', 'mathTournaments',
-            'ludoManualMatches', 'unoManualMatches', 'mathManualMatches', 'adminUpdatedAt'
+            'ludoManualMatches', 'unoManualMatches', 'mathManualMatches',
+            'remoteCommandsQueue', 'deletedDeviceIds', 'adminUpdatedAt'
           ];
           adminPreserveKeys.forEach(k => {
             if (!window.__isApplyingRemoteCloudState && existing[k] !== undefined) {
@@ -14093,14 +14095,52 @@
           // Always enforce device-local dark mode so no module closure can revert dark mode to light mode
           st.darkMode = window.__xyzGetDeviceDarkMode();
 
-          const uid = st.activeUserId || existing.activeUserId || 'USR-001';
-          if (typeof st.balance === 'number' && !Number.isNaN(st.balance)) {
+          const sessV8 = (function() {
+            try {
+              const r = window.sessionStorage && window.sessionStorage.getItem('XYZ_TAB_USER_AUTH_SESSION_V8');
+              return r ? JSON.parse(r) : null;
+            } catch (e) { return null; }
+          })();
+          const uid = (sessV8 && sessV8.userId) || st.activeUserId || existing.activeUserId || 'USR-001';
+          // Always preserve any newer Admin balance update from existing localStorage over stale module closure copies!
+          if (Array.isArray(existing.adminUsersList) && Array.isArray(st.adminUsersList)) {
+            existing.adminUsersList.forEach(exU => {
+              if (!exU || !exU.userId) return;
+              const incU = st.adminUsersList.find(u => u && u.userId === exU.userId);
+              if (!incU) {
+                st.adminUsersList.push(exU);
+              } else if (Number(exU.lastAdminBalanceUpdateAt || 0) > Number(incU.lastAdminBalanceUpdateAt || 0)) {
+                incU.cashBalanceInr = exU.cashBalanceInr;
+                incU.lastAdminBalanceUpdateAt = exU.lastAdminBalanceUpdateAt;
+              }
+            });
+          }
+          if (Array.isArray(existing.registeredAccounts) && Array.isArray(st.registeredAccounts)) {
+            existing.registeredAccounts.forEach(exA => {
+              if (!exA || !exA.userId) return;
+              const incA = st.registeredAccounts.find(a => a && a.userId === exA.userId);
+              if (!incA) {
+                st.registeredAccounts.push(exA);
+              } else if (Number(exA.lastAdminBalanceUpdateAt || 0) > Number(incA.lastAdminBalanceUpdateAt || 0)) {
+                incA.cashBalanceInr = exA.cashBalanceInr;
+                incA.lastAdminBalanceUpdateAt = exA.lastAdminBalanceUpdateAt;
+              }
+            });
+          }
+          const exUser = (st.adminUsersList || []).find(u => u && u.userId === uid) || (st.registeredAccounts || []).find(a => a && a.userId === uid);
+          const adminBalTs = exUser ? Number(exUser.lastAdminBalanceUpdateAt || 0) : 0;
+          const syncedAdminTs = Number(inc.lastBalanceSyncedFromAdminAt || 0);
+          if (exUser && adminBalTs > syncedAdminTs && typeof exUser.cashBalanceInr === 'number') {
+            st.balance = Math.max(0, +Number(exUser.cashBalanceInr).toFixed(2));
+            st.lastBalanceSyncedFromAdminAt = adminBalTs;
+          } else if (typeof st.balance === 'number' && !Number.isNaN(st.balance)) {
             const bal = Math.max(0, +Number(st.balance).toFixed(2));
             st.balance = bal;
             st.lastBalanceUpdatedAt = Date.now();
+            st.lastBalanceSyncedFromAdminAt = Math.max(adminBalTs, syncedAdminTs);
             if (Array.isArray(st.adminUsersList)) {
               st.adminUsersList.forEach(u => {
-                if (u && u.userId === uid) {
+                if (u && u.userId === uid && Number(u.cashBalanceInr) !== bal) {
                   u.cashBalanceInr = bal;
                   u.lastUserBalanceUpdateAt = Date.now();
                 }
@@ -14108,7 +14148,7 @@
             }
             if (Array.isArray(st.registeredAccounts)) {
               st.registeredAccounts.forEach(a => {
-                if (a && a.userId === uid) {
+                if (a && a.userId === uid && Number(a.cashBalanceInr) !== bal) {
                   a.cashBalanceInr = bal;
                   a.lastUserBalanceUpdateAt = Date.now();
                 }
@@ -14500,6 +14540,48 @@ window.addEventListener('DOMContentLoaded', renderBalance);
      */
     function getSlotUtcClock(slotKey) {
       const cfg = SLOTS[slotKey] || SLOTS['30SEC'];
+      const modeCfg = (state && state.wingoModesConfig && state.wingoModesConfig[slotKey]) ? state.wingoModesConfig[slotKey] : {};
+      const effDuration = Number(modeCfg.duration || cfg.duration);
+      const effCutoff = Number(modeCfg.cutoff !== undefined ? modeCfg.cutoff : cfg.lockSec);
+      const isEnabled = modeCfg.enabled !== false;
+      const isMaint = Boolean(modeCfg.maintenanceMode);
+      const minBetInr = Number(modeCfg.minBetInr || 10);
+      const maxBetInr = Number(modeCfg.maxBetInr || 50000);
+      const statusMessage = modeCfg.statusMessage || '';
+
+      const now = new Date();
+      const yyyy = now.getUTCFullYear();
+      const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(now.getUTCDate()).padStart(2, '0');
+      const datePrefix = `${yyyy}${mm}${dd}${cfg.code}`;
+
+      const utcSecsToday =
+        now.getUTCHours() * 3600 +
+        now.getUTCMinutes() * 60 +
+        now.getUTCSeconds();
+
+      const periodIndex = Math.floor(utcSecsToday / effDuration) + 1;
+      const timeLeft = effDuration - (utcSecsToday % effDuration);
+      const periodId = `${datePrefix}${String(periodIndex).padStart(4, '0')}`;
+
+      return {
+        slotKey,
+        periodId,
+        periodIndex,
+        datePrefix,
+        timeLeft,
+        duration: effDuration,
+        lockSec: effCutoff,
+        enabled: isEnabled,
+        maintenanceMode: isMaint,
+        minBetInr,
+        maxBetInr,
+        statusMessage,
+        isLocked: !isEnabled || isMaint || (timeLeft <= effCutoff),
+      };
+    }
+    function _legacyUnusedGetSlotUtcClock(slotKey) {
+      const cfg = SLOTS[slotKey] || SLOTS['30SEC'];
       const now = new Date();
       const yyyy = now.getUTCFullYear();
       const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
@@ -14676,10 +14758,15 @@ window.addEventListener('DOMContentLoaded', renderBalance);
     }
 
     function settleSlotPeriod(slotKey, finishedPeriodId) {
-      const overrideVal = state.manualOverrides ? state.manualOverrides[finishedPeriodId] : undefined;
+      state = loadState();
+      const overrideVal = (state.manualOverrides && state.manualOverrides[finishedPeriodId] !== undefined)
+        ? state.manualOverrides[finishedPeriodId]
+        : (state.settledPeriodResults ? state.settledPeriodResults[finishedPeriodId] : undefined);
       const winNum = (overrideVal !== undefined && overrideVal !== null)
         ? Number(overrideVal)
-        : hashPeriodWinner(finishedPeriodId, slotKey);
+        : (typeof window.computeAdminProfitWinningNumber === 'function'
+            ? window.computeAdminProfitWinningNumber(slotKey, finishedPeriodId, state)
+            : hashPeriodWinner(finishedPeriodId, slotKey));
 
       let totalWonForPlayer = 0;
       let anySettled = false;
@@ -14730,6 +14817,7 @@ window.addEventListener('DOMContentLoaded', renderBalance);
     }
 
     function switchTimeSlot(slotKey) {
+      state = loadState();
       if (!SLOTS[slotKey]) slotKey = '30SEC';
       state.activeSlot = slotKey;
       ['30SEC', '1MIN', '2MIN', '3MIN', '5MIN'].forEach(k => {
@@ -15319,6 +15407,7 @@ window.addEventListener('DOMContentLoaded', renderBalance);
     }
 
     function buyLotteryTicket() {
+      lState = loadLottoState();
       const draw = getActiveDraw();
       if (!draw || draw.status !== 'OPEN') {
         showToast('This draw is already closed or settled!');
@@ -25567,6 +25656,20 @@ window.addEventListener('DOMContentLoaded', renderBalance);
       const cfg = SLOTS_MAP[slotKey] || SLOTS_MAP['30SEC'];
       const nowMs = Date.now();
       const list = [];
+      const seenPids = new Set();
+      (st.wingoPeriods || []).forEach(p => {
+        if (p && p.modeKey === slotKey && p.resultStatus === "PUBLISHED" && p.winningNumber !== undefined) {
+          const wn = Number((st.manualOverrides && st.manualOverrides[p.periodId] !== undefined) ? st.manualOverrides[p.periodId] : p.winningNumber);
+          const sp = BALL_INFO[wn] || BALL_INFO[0];
+          list.push({
+            periodId: p.periodId,
+            winningNumber: wn,
+            bigSmall: sp.bigSmall,
+            colors: sp.colors
+          });
+          seenPids.add(String(p.periodId));
+        }
+      });
       for (let i = 1; i <= count; i++) {
         const pastDate = new Date(nowMs - i * cfg.duration * 1000);
         const yyyy = pastDate.getUTCFullYear();
@@ -25575,7 +25678,10 @@ window.addEventListener('DOMContentLoaded', renderBalance);
         const utcSecs = pastDate.getUTCHours() * 3600 + pastDate.getUTCMinutes() * 60 + pastDate.getUTCSeconds();
         const pIdx = Math.floor(utcSecs / cfg.duration) + 1;
         const pid = `${yyyy}${mm}${dd}${cfg.code}${String(pIdx).padStart(4, '0')}`;
-        const overrides = (st.manualOverrides && st.manualOverrides[pid] !== undefined) ? st.manualOverrides[pid] : null;
+        if (seenPids.has(String(pid))) continue;
+        const overrides = (st.manualOverrides && st.manualOverrides[pid] !== undefined)
+          ? st.manualOverrides[pid]
+          : (st.settledPeriodResults && st.settledPeriodResults[pid] !== undefined ? st.settledPeriodResults[pid] : null);
         const winNum = (overrides !== null) ? Number(overrides) : window.hashPeriodWinner(pid, slotKey);
         const spec = BALL_INFO[winNum] || BALL_INFO[0];
         list.push({
@@ -25584,6 +25690,7 @@ window.addEventListener('DOMContentLoaded', renderBalance);
           bigSmall: spec.bigSmall,
           colors: spec.colors
         });
+        seenPids.add(String(pid));
       }
       return list;
     }
@@ -27705,7 +27812,10 @@ function generateGenuineQrMatrix(text) {
 
   function getLocalDeviceUserSession() {
     try {
-      const raw = (window.__xyzMemStore && window.__xyzMemStore[XYZ_LOCAL_SESS_KEY]) ||
+      const TAB_KEY_V8 = "XYZ_TAB_USER_AUTH_SESSION_V8";
+      const raw = (window.sessionStorage && window.sessionStorage.getItem(TAB_KEY_V8)) ||
+                  (window.__xyzMemStore && window.__xyzMemStore[TAB_KEY_V8]) ||
+                  (window.__xyzMemStore && window.__xyzMemStore[XYZ_LOCAL_SESS_KEY]) ||
                   (window.sessionStorage && window.sessionStorage.getItem(XYZ_LOCAL_SESS_KEY)) ||
                   (window.localStorage && window.localStorage.getItem(XYZ_LOCAL_SESS_KEY));
       if (raw) {
@@ -27743,8 +27853,9 @@ function generateGenuineQrMatrix(text) {
         } else if (typeof matchedUser.cashBalanceInr === 'number' && !Number.isNaN(matchedUser.cashBalanceInr)) {
           const adminTs = Number(matchedUser.lastAdminBalanceUpdateAt || 0);
           const userTs = Number(matchedUser.lastUserBalanceUpdateAt || 0);
-          if (adminTs >= userTs || stObj.balance === undefined) {
+          if (adminTs >= userTs || stObj.balance === undefined || adminTs > Number(stObj.lastBalanceSyncedFromAdminAt || 0)) {
             stObj.balance = Math.max(0, +Number(matchedUser.cashBalanceInr).toFixed(2));
+            stObj.lastBalanceSyncedFromAdminAt = adminTs;
           }
         }
         if (matchedUser.avatarId) stObj.avatarId = matchedUser.avatarId;
@@ -27830,7 +27941,7 @@ function generateGenuineQrMatrix(text) {
     if (k === XYZ_STATE_KEY && raw) {
       try {
         const st = JSON.parse(raw);
-        applyDeviceSessionOverlay(st);
+        (window.applyDeviceSessionOverlay || applyDeviceSessionOverlay)(st);
         return JSON.stringify(st);
       } catch (e) {}
     }
@@ -27848,23 +27959,32 @@ function generateGenuineQrMatrix(text) {
         const sess = getLocalDeviceUserSession();
         const uid = (sess && sess.userId) ? sess.userId : (st.activeUserId || '');
         if (uid && typeof st.balance === 'number' && !Number.isNaN(st.balance)) {
-          const bal = Math.max(0, +Number(st.balance).toFixed(2));
-          st.balance = bal;
-          if (Array.isArray(st.adminUsersList)) {
-            st.adminUsersList.forEach(u => {
-              if (u && u.userId === uid && Number(u.cashBalanceInr) !== bal) {
-                u.cashBalanceInr = bal;
-                u.lastUserBalanceUpdateAt = Date.now();
-              }
-            });
-          }
-          if (Array.isArray(st.registeredAccounts)) {
-            st.registeredAccounts.forEach(a => {
-              if (a && a.userId === uid && Number(a.cashBalanceInr) !== bal) {
-                a.cashBalanceInr = bal;
-                a.lastUserBalanceUpdateAt = Date.now();
-              }
-            });
+          const matchedU = (st.adminUsersList || []).find(u => u && u.userId === uid) || (st.registeredAccounts || []).find(a => a && a.userId === uid);
+          const admTs = matchedU ? Number(matchedU.lastAdminBalanceUpdateAt || 0) : 0;
+          const syncedTs = Number(st.lastBalanceSyncedFromAdminAt || 0);
+          if (matchedU && admTs > syncedTs && typeof matchedU.cashBalanceInr === 'number') {
+            st.balance = Math.max(0, +Number(matchedU.cashBalanceInr).toFixed(2));
+            st.lastBalanceSyncedFromAdminAt = admTs;
+          } else {
+            const bal = Math.max(0, +Number(st.balance).toFixed(2));
+            st.balance = bal;
+            st.lastBalanceSyncedFromAdminAt = Math.max(admTs, syncedTs);
+            if (Array.isArray(st.adminUsersList)) {
+              st.adminUsersList.forEach(u => {
+                if (u && u.userId === uid && Number(u.cashBalanceInr) !== bal) {
+                  u.cashBalanceInr = bal;
+                  u.lastUserBalanceUpdateAt = Date.now();
+                }
+              });
+            }
+            if (Array.isArray(st.registeredAccounts)) {
+              st.registeredAccounts.forEach(a => {
+                if (a && a.userId === uid && Number(a.cashBalanceInr) !== bal) {
+                  a.cashBalanceInr = bal;
+                  a.lastUserBalanceUpdateAt = Date.now();
+                }
+              });
+            }
           }
         }
         stampDeviceHeartbeat(st);
@@ -27877,7 +27997,7 @@ function generateGenuineQrMatrix(text) {
         const rawSt = _origGetItem(XYZ_STATE_KEY);
         if (rawSt) {
           const stObj = JSON.parse(rawSt);
-          applyDeviceSessionOverlay(stObj);
+          (window.applyDeviceSessionOverlay || applyDeviceSessionOverlay)(stObj);
           stampDeviceHeartbeat(stObj);
           _origSetItem(XYZ_STATE_KEY, JSON.stringify(stObj));
         }
@@ -28043,7 +28163,7 @@ function generateGenuineQrMatrix(text) {
       const oldFp = lastMeaningfulFp || buildMeaningfulCustomerFingerprint(localSt);
 
       const merged = window.mergeXyzMultiDeviceState(localSt, remoteSt);
-      applyDeviceSessionOverlay(merged);
+      (window.applyDeviceSessionOverlay || applyDeviceSessionOverlay)(merged);
       stampDeviceHeartbeat(merged);
       checkAndExecuteRemoteCommands(merged);
 
@@ -29909,5 +30029,721 @@ function generateGenuineQrMatrix(text) {
 </script>
 <!-- === END XYZ CUSTOMER WEBAPP V8 FULL UPGRADES === -->
 
+<!-- === START XYZ CUSTOMER WEBAPP V9 FULL FIXES === -->
+<style>
+  /* Hide the extra bank quick-chips below the Bank Select dropdown on Withdraw page per user request */
+  #xyzQuickBankChipsBox,
+  .xyz-quick-bank-chips {
+    display: none !important;
+  }
+</style>
+<script>
+(function() {
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const XYZ_REMOTE_CMDS_KEY = 'XYZ_REMOTE_COMMANDS_V1';
+  const XYZ_TAB_SESSION_KEY = 'XYZ_TAB_USER_AUTH_SESSION_V8';
+  const XYZ_LOCAL_SESS_KEY = 'XYZ_ACTIVE_AUTH_SESSION_V1';
+
+  // Remove any injected bank chips box below bankNameSelect
+  const strayChips = document.getElementById('xyzQuickBankChipsBox');
+  if (strayChips) strayChips.remove();
+
+  function getSharedStV9() {
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return {};
+  }
+
+  function saveSharedStV9(st) {
+    try {
+      window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+    } catch (e) {}
+  }
+
+  function getActiveTabOrLocalSessionV9() {
+    try {
+      const rawV8 = (window.sessionStorage && window.sessionStorage.getItem(XYZ_TAB_SESSION_KEY)) ||
+                    (window.__xyzMemStore && window.__xyzMemStore[XYZ_TAB_SESSION_KEY]);
+      if (rawV8) {
+        const p = JSON.parse(rawV8);
+        if (p && (p.userId || p.identity)) return p;
+      }
+      const rawV1 = (window.sessionStorage && window.sessionStorage.getItem(XYZ_LOCAL_SESS_KEY)) ||
+                    (window.localStorage && window.localStorage.getItem(XYZ_LOCAL_SESS_KEY));
+      if (rawV1) {
+        const p = JSON.parse(rawV1);
+        if (p && (p.userId || p.identity)) return p;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // ===========================================================================
+  // 1. WITHDRAWAL WITHOUT FORCED 100 INR MINIMUM + ONLY BANK SELECT DROPDOWN
+  //    AND DEPOSIT WITH 100 INR MINIMUM + SEPARATE UPI & USDT BONUS % PREVIEW
+  // ===========================================================================
+  window.renderWithdrawPage = function() {
+    // Ensure bank chips are never shown below bankNameSelect
+    const chips = document.getElementById('xyzQuickBankChipsBox');
+    if (chips) chips.remove();
+
+    if (typeof window.renderWithdrawAll === 'function') {
+      try { window.renderWithdrawAll(); } catch (e) {}
+    }
+
+    const st = getSharedStV9();
+    const wc = st.withdrawalConfig || { cooldownHours: 24, minBankInr: 1, maxBankInr: 50000, minUsdt: 1, maxUsdt: 5000 };
+    const isUsdt = document.getElementById('wdTab-USDT')?.classList.contains('active');
+    const minNoteEl = document.getElementById('wdMinNoteText');
+    if (minNoteEl) {
+      if (isUsdt) {
+        const minUTxt = (wc.adminCustomSet && Number(wc.minUsdt) > 1) ? `Min ${wc.minUsdt} USDT • ` : '';
+        minNoteEl.innerHTML = `Withdrawal Limit (USDT): <strong>${minUTxt}Max ${wc.maxUsdt ?? 5000} USDT</strong>.<br/>Limit: <strong>1 withdrawal request per 24 hours</strong>.`;
+      } else {
+        const minBTxt = (wc.adminCustomSet && Number(wc.minBankInr) > 1) ? `Min ₹${Number(wc.minBankInr).toLocaleString('en-IN')} • ` : '';
+        minNoteEl.innerHTML = `Withdrawal Limit (Bank/INR): <strong>${minBTxt}Max ₹${(wc.maxBankInr ?? 50000).toLocaleString('en-IN')}</strong>.<br/>Limit: <strong>1 withdrawal request per 24 hours</strong>.`;
+      }
+    }
+  };
+  window.__syncWithdraw = window.renderWithdrawPage;
+
+  // Override submitWithdrawalRequest so any positive withdrawal amount (> 0) works unless Admin explicitly set a custom min
+  const _origSubmitWdV8 = window.submitWithdrawalRequest;
+  window.submitWithdrawalRequest = function() {
+    const st = getSharedStV9();
+    if (!st.withdrawalConfig) st.withdrawalConfig = { cooldownHours: 24, minBankInr: 1, maxBankInr: 50000, minUsdt: 1, maxUsdt: 5000 };
+    if (!st.withdrawalConfig.adminCustomSet) {
+      st.withdrawalConfig.minBankInr = 1;
+      st.withdrawalConfig.minUsdt = 1;
+      saveSharedStV9(st);
+    }
+    if (typeof _origSubmitWdV8 === 'function') {
+      _origSubmitWdV8();
+    }
+  };
+
+  // Separate UPI & USDT Deposit Bonus Preview & Deposit Minimum Limit (100 INR for UPI, 5 USDT for USDT)
+  window.getCustomerFirstDepositBonusPreview = function(st, inrAmt, explicitMethod) {
+    const s = st || getSharedStV9();
+    const uid = window.getCurrentCustomerUid ? window.getCurrentCustomerUid(s) : 'UID-10001';
+    const hasPriorConfirmed = (s.adminDeposits || []).some(d => d && d.userId === uid && d.status === 'CONFIRMED');
+    const isUsdtTab = explicitMethod ? (explicitMethod === 'USDT') : Boolean(document.getElementById('mTab-USDT')?.classList.contains('active'));
+    const fdb = s.firstDepositBonusConfig || {};
+    if (fdb.enabled === false) return { eligible: false, pct: 0, bonusInr: 0, method: isUsdtTab ? 'USDT' : 'UPI' };
+
+    const depRate = window.getDynamicUsdtRate ? window.getDynamicUsdtRate(s, 'DEPOSIT') : 100;
+    const amtInr = Number(inrAmt || 0);
+    const amtUsdt = +(amtInr / (depRate || 100)).toFixed(2);
+
+    if (isUsdtTab) {
+      if (fdb.usdtEnabled === false) return { eligible: false, pct: 0, bonusInr: 0, method: 'USDT' };
+      if (fdb.usdtApplyOn === 'FIRST_DEPOSIT' && hasPriorConfirmed) return { eligible: false, pct: 0, bonusInr: 0, method: 'USDT' };
+      const minReqUsdt = Number(s.depositMinConfig?.minUsdt || 5);
+      if (amtUsdt < minReqUsdt) return { eligible: true, pct: 0, bonusInr: 0, method: 'USDT' };
+      const tiers = Array.isArray(fdb.usdtTiers) && fdb.usdtTiers.length > 0
+        ? fdb.usdtTiers
+        : [
+            { minUsdt: 5, maxUsdt: 19, bonusPercent: 3 },
+            { minUsdt: 20, maxUsdt: 49, bonusPercent: 5 },
+            { minUsdt: 50, maxUsdt: 199, bonusPercent: 8 },
+            { minUsdt: 200, maxUsdt: 999999, bonusPercent: 12 }
+          ];
+      const sorted = [...tiers].sort((a, b) => Number(a.minUsdt || 0) - Number(b.minUsdt || 0));
+      let pct = Number(fdb.usdtDefaultBonusPercent ?? 5);
+      for (let i = 0; i < sorted.length; i++) {
+        const t = sorted[i];
+        if (amtUsdt >= Number(t.minUsdt || 0) && amtUsdt <= Number(t.maxUsdt || 999999999)) {
+          pct = Number(t.bonusPercent || 0);
+          break;
+        }
+        if (amtUsdt >= Number(t.minUsdt || 0)) pct = Number(t.bonusPercent || 0);
+      }
+      const bonusInr = +(amtInr * (pct / 100)).toFixed(2);
+      const bonusUsdt = +(amtUsdt * (pct / 100)).toFixed(2);
+      return { eligible: true, pct, bonusInr, bonusUsdt, method: 'USDT' };
+    } else {
+      if (fdb.upiEnabled === false) return { eligible: false, pct: 0, bonusInr: 0, method: 'UPI' };
+      if (fdb.upiApplyOn === 'FIRST_DEPOSIT' && hasPriorConfirmed) return { eligible: false, pct: 0, bonusInr: 0, method: 'UPI' };
+      const minReqInr = Number(s.depositMinConfig?.minUpiInr || 100);
+      if (amtInr < minReqInr) return { eligible: true, pct: 0, bonusInr: 0, method: 'UPI' };
+      const tiers = Array.isArray(fdb.upiTiers) && fdb.upiTiers.length > 0
+        ? fdb.upiTiers
+        : (Array.isArray(fdb.tiers) && fdb.tiers.length > 0
+            ? fdb.tiers
+            : [
+                { minAmountInr: 100, maxAmountInr: 499, bonusPercent: 2 },
+                { minAmountInr: 500, maxAmountInr: 999, bonusPercent: 3 },
+                { minAmountInr: 1000, maxAmountInr: 4999, bonusPercent: 5 },
+                { minAmountInr: 5000, maxAmountInr: 999999999, bonusPercent: 10 }
+              ]);
+      const sorted = [...tiers].sort((a, b) => Number(a.minAmountInr || 0) - Number(b.minAmountInr || 0));
+      let pct = Number(fdb.upiDefaultBonusPercent ?? fdb.defaultBonusPercent ?? 2);
+      for (let i = 0; i < sorted.length; i++) {
+        const t = sorted[i];
+        if (amtInr >= Number(t.minAmountInr || 0) && amtInr <= Number(t.maxAmountInr || 999999999)) {
+          pct = Number(t.bonusPercent || 0);
+          break;
+        }
+        if (amtInr >= Number(t.minAmountInr || 0)) pct = Number(t.bonusPercent || 0);
+      }
+      const bonusInr = +(amtInr * (pct / 100)).toFixed(2);
+      return { eligible: true, pct, bonusInr, method: 'UPI' };
+    }
+  };
+
+  const _origOnAmtInputV8 = window.onAmountInputChanged;
+  window.onAmountInputChanged = function() {
+    if (typeof _origOnAmtInputV8 === 'function') _origOnAmtInputV8();
+    const st = getSharedStV9();
+    const isUsdtTab = Boolean(document.getElementById('mTab-USDT')?.classList.contains('active'));
+    const minUpi = Number(st.depositMinConfig?.minUpiInr || 100);
+    const minUsdt = Number(st.depositMinConfig?.minUsdt || 5);
+    const { inrAmt, usdtAmt } = window.getEnteredAmounts ? window.getEnteredAmounts() : { inrAmt: 900, usdtAmt: 10 };
+    const fdb = window.getCustomerFirstDepositBonusPreview(st, inrAmt, isUsdtTab ? 'USDT' : 'UPI');
+    const leftHint = document.getElementById('conversionLeftHint');
+    const rightHint = document.getElementById('conversionRightHint');
+    if (leftHint) {
+      leftHint.innerHTML = isUsdtTab
+        ? `Min Deposit: <strong>${minUsdt} USDT</strong> • You Pay: <strong>${usdtAmt.toFixed(2)} USDT</strong>`
+        : `Min Deposit: <strong>₹${minUpi} INR</strong> • You Pay: <strong>₹${inrAmt.toLocaleString('en-IN')} INR</strong>`;
+    }
+    if (rightHint) {
+      if (fdb.eligible && fdb.bonusInr > 0) {
+        rightHint.innerHTML = isUsdtTab
+          ? `🎁 USDT Bonus (+${fdb.pct}%): <strong>+${fdb.bonusUsdt} USDT (+₹${fdb.bonusInr})</strong>`
+          : `🎁 UPI Bonus (+${fdb.pct}%): <strong>+₹${fdb.bonusInr}</strong> → Total: <strong>₹${(inrAmt + fdb.bonusInr).toLocaleString('en-IN')}</strong>`;
+      } else {
+        rightHint.innerHTML = isUsdtTab
+          ? `Credits: ₹${inrAmt.toLocaleString('en-IN')} INR`
+          : `Instant Wallet Credit`;
+      }
+    }
+  };
+
+  // ===========================================================================
+  // 2. MULTI-DEVICE HEARTBEAT, BROADCAST CHANNEL & REMOTE COMMAND EXECUTOR
+  // ===========================================================================
+  const customerBc = window.__xyzCreateBroadcastChannel ? window.__xyzCreateBroadcastChannel('xyz_games_live_channel') : null;
+  const executedRemoteCmdsV9 = new Set();
+
+  function executeSingleRemoteCommandV9(cmd) {
+    if (!cmd || !cmd.cmdId || executedRemoteCmdsV9.has(cmd.cmdId)) return false;
+    const now = Date.now();
+    if (now - Number(cmd.createdAt || 0) > 120000) {
+      executedRemoteCmdsV9.add(cmd.cmdId);
+      return false;
+    }
+    const dev = window.getXyzDeviceInfo ? window.getXyzDeviceInfo() : { deviceId: 'DEV-LOCAL' };
+    const sess = getActiveTabOrLocalSessionV9();
+    const st = getSharedStV9();
+    const myUid = String((sess && sess.userId) || st.activeUserId || '').toUpperCase();
+    const targetDev = String(cmd.targetDeviceId || 'ALL').trim().toUpperCase();
+    const targetUid = String(cmd.targetUid || '').trim().toUpperCase();
+
+    const matchesMe = (
+      targetDev === 'ALL' ||
+      targetDev === String(dev.deviceId || '').toUpperCase() ||
+      (targetUid && myUid && targetUid === myUid)
+    );
+    if (!matchesMe) return false;
+
+    executedRemoteCmdsV9.add(cmd.cmdId);
+
+    if (cmd.action === 'FORCE_VIEW' && cmd.viewKey) {
+      window.__xyzCurrentActiveView = cmd.viewKey;
+      if (typeof window.switchXyzView === 'function') {
+        window.switchXyzView(cmd.viewKey);
+      }
+      sendCustomerHeartbeatNow();
+      return true;
+    } else if (cmd.action === 'ALERT_MODAL') {
+      const m = document.getElementById('xyzRemoteAlertModal');
+      const t = document.getElementById('xyzRemoteAlertTitle');
+      const b = document.getElementById('xyzRemoteAlertBody');
+      if (t) t.textContent = cmd.title || '📢 Live Admin Broadcast';
+      if (b) b.textContent = cmd.message || '';
+      if (m) {
+        m.style.zIndex = '999999';
+        m.style.display = 'flex';
+      }
+      return true;
+    } else if (cmd.action === 'FORCE_LOGOUT') {
+      if (typeof window.performXyzLogoutToAuth === 'function') {
+        window.performXyzLogoutToAuth();
+      }
+      sendCustomerHeartbeatNow();
+      return true;
+    } else if (cmd.action === 'FORCE_RELOAD') {
+      if (typeof window.syncAllXyzScreens === 'function') {
+        window.syncAllXyzScreens();
+      }
+      sendCustomerHeartbeatNow();
+      return true;
+    }
+    return false;
+  }
+
+  function pollAndRunRemoteCommandsV9() {
+    try {
+      const rawCmds = window.localStorage ? window.localStorage.getItem(XYZ_REMOTE_CMDS_KEY) : null;
+      if (rawCmds) {
+        const list = JSON.parse(rawCmds);
+        if (Array.isArray(list)) {
+          list.forEach(c => executeSingleRemoteCommandV9(c));
+        }
+      }
+    } catch (e) {}
+    try {
+      const st = getSharedStV9();
+      if (st && Array.isArray(st.remoteCommandsQueue)) {
+        st.remoteCommandsQueue.forEach(c => executeSingleRemoteCommandV9(c));
+      }
+    } catch (e) {}
+  }
+
+  function sendCustomerHeartbeatNow() {
+    try {
+      const dev = window.getXyzDeviceInfo ? window.getXyzDeviceInfo() : null;
+      if (!dev || !dev.deviceId) return;
+      const sess = getActiveTabOrLocalSessionV9();
+      const st = getSharedStV9();
+      const activeViewEl = document.querySelector('.xyz-app-view.active');
+      const domViewKey = activeViewEl ? activeViewEl.id.replace('xyz-view-', '') : '';
+      const curView = domViewKey || window.__xyzCurrentActiveView || 'homepage';
+
+      const devRecord = {
+        deviceId: dev.deviceId,
+        deviceType: dev.deviceType,
+        platformName: dev.platformName,
+        timezone: dev.timezone,
+        screen: `${window.innerWidth || 0}x${window.innerHeight || 0}`,
+        userId: sess ? (sess.userId || 'UID-10001') : 'GUEST',
+        username: sess ? (sess.username || 'Player') : 'Guest (Not Logged In)',
+        userIdOrEmail: sess ? (sess.identity || '') : '',
+        balanceInr: Number(st.balance || 0),
+        currentView: curView,
+        lastSeenAt: Date.now(),
+        online: true
+      };
+
+      if (!st.connectedDevices || typeof st.connectedDevices !== 'object') {
+        st.connectedDevices = {};
+      }
+      st.connectedDevices[dev.deviceId] = devRecord;
+
+      if (window.localStorage) {
+        window.localStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+      }
+      if (customerBc) {
+        customerBc.postMessage({
+          type: 'HEARTBEAT',
+          sourceDeviceId: dev.deviceId,
+          device: devRecord
+        });
+      }
+    } catch (e) {}
+  }
+
+  if (customerBc) {
+    customerBc.onmessage = function(ev) {
+      try {
+        const data = ev.data;
+        if (!data) return;
+        const myDev = window.getXyzDeviceInfo ? window.getXyzDeviceInfo() : {};
+        if (data.sourceDeviceId && data.sourceDeviceId === myDev.deviceId) return;
+
+        if (data.state && typeof data.state === 'object') {
+          window.__isApplyingRemoteCloudState = true;
+          const curSt = getSharedStV9();
+          const merged = window.mergeXyzMultiDeviceState ? window.mergeXyzMultiDeviceState(curSt, data.state) : Object.assign({}, curSt, data.state);
+          if (window.applyDeviceSessionOverlay) window.applyDeviceSessionOverlay(merged);
+          if (window.localStorage) {
+            window.localStorage.setItem(XYZ_STATE_KEY, JSON.stringify(merged));
+          }
+          window.__isApplyingRemoteCloudState = false;
+          if (Array.isArray(merged.remoteCommandsQueue)) {
+            merged.remoteCommandsQueue.forEach(c => executeSingleRemoteCommandV9(c));
+          }
+          if (typeof window.syncAllXyzScreens === 'function') {
+            window.syncAllXyzScreens();
+          }
+        }
+        if (data.type === 'REMOTE_CMD' && data.cmd) {
+          executeSingleRemoteCommandV9(data.cmd);
+        }
+      } catch (e) {}
+    };
+  }
+
+  // Upgrade mergeXyzMultiDeviceState in Customer Webapp so it never overwrites newer localStorage admin state with older server state
+  const _origMergeCustV7 = window.mergeXyzMultiDeviceState;
+  window.mergeXyzMultiDeviceState = function(localSt, remoteSt) {
+    if (!remoteSt || typeof remoteSt !== 'object') return localSt || {};
+    if (!localSt || typeof localSt !== 'object') return remoteSt;
+    const locTs = Number(localSt.adminUpdatedAt || 0);
+    const remTs = Number(remoteSt.adminUpdatedAt || 0);
+    const preferRemoteAdmin = (remTs >= locTs || locTs === 0);
+    const preferredAdminSource = preferRemoteAdmin ? remoteSt : localSt;
+    const merged = _origMergeCustV7 ? _origMergeCustV7(localSt, remoteSt) : Object.assign({}, localSt, remoteSt);
+
+    const adminKeys = [
+      'websiteConfig', 'paymentGatewayConfig', 'upiId', 'usdtAddress', 'currencyConfig',
+      'firstDepositBonusConfig', 'withdrawalConfig', 'depositMinConfig',
+      'wingoModesConfig', 'wingoRules', 'manualOverrides', 'settledPeriodResults',
+      'ludoConfig', 'unoConfig', 'mathConfig', 'aviatorConfig', 'promoConfig', 'quizQuestions', 'staffAdmins',
+      'superAdminConfigured', 'systemToggles', 'auditModalConfig', 'adminNotifications',
+      'adminPromotions', 'lotteryDraws', 'ludoManualMatches', 'ludoTournaments',
+      'unoManualMatches', 'unoTournaments', 'mathManualMatches', 'mathTournaments',
+      'remoteCommandsQueue', 'deletedDeviceIds', 'adminUpdatedAt'
+    ];
+    adminKeys.forEach(k => {
+      if (preferredAdminSource[k] !== undefined) {
+        merged[k] = preferredAdminSource[k];
+      }
+    });
+    // Always merge manualOverrides and settledPeriodResults from both so no manual result is ever lost
+    merged.manualOverrides = Object.assign({}, localSt.manualOverrides || {}, remoteSt.manualOverrides || {});
+    merged.settledPeriodResults = Object.assign({}, localSt.settledPeriodResults || {}, remoteSt.settledPeriodResults || {});
+    return merged;
+  };
+
+  setInterval(() => {
+    pollAndRunRemoteCommandsV9();
+  }, 500);
+
+  setInterval(() => {
+    sendCustomerHeartbeatNow();
+  }, 2500);
+  setTimeout(sendCustomerHeartbeatNow, 200);
+
+  // ===========================================================================
+  // 3. WINGO CONTROLS ENFORCEMENT ON CUSTOMER WEBAPP:
+  //    - Mode Operational State (Enabled / Disabled)
+  //    - Maintenance Mode
+  //    - Entry Cutoff Before Close (Seconds)
+  //    - Min / Max Entry Amount (₹)
+  //    - Operational Status Banner Message
+  //    - Period Number & Manual Result Sync
+  // ===========================================================================
+  const WINGO_SLOTS_META = {
+    '30SEC': { key: '30SEC', label: 'WinGo 30 sec', shortName: '30Sec', duration: 30, lockSec: 5, code: '05' },
+    '1MIN':  { key: '1MIN',  label: 'WinGo 1 min',  shortName: '1Min',  duration: 60, lockSec: 5, code: '10' },
+    '2MIN':  { key: '2MIN',  label: 'WinGo 2 min',  shortName: '2Min',  duration: 120, lockSec: 8, code: '20' },
+    '3MIN':  { key: '3MIN',  label: 'WinGo 3 min',  shortName: '3Min',  duration: 180, lockSec: 10, code: '30' },
+    '5MIN':  { key: '5MIN',  label: 'WinGo 5 min',  shortName: '5Min',  duration: 300, lockSec: 30, code: '50' }
+  };
+
+  window.getSlotUtcClock = function(slotKey) {
+    const st = getSharedStV9();
+    const sKey = slotKey || st.activeSlot || '30SEC';
+    const baseCfg = WINGO_SLOTS_META[sKey] || WINGO_SLOTS_META['30SEC'];
+    const modeCfg = (st.wingoModesConfig && st.wingoModesConfig[sKey]) ? st.wingoModesConfig[sKey] : {};
+
+    const duration = Number(modeCfg.duration || baseCfg.duration);
+    const cutoff = Number(modeCfg.cutoff !== undefined ? modeCfg.cutoff : baseCfg.lockSec);
+    const enabled = modeCfg.enabled !== false;
+    const maintenanceMode = Boolean(modeCfg.maintenanceMode);
+    const minBetInr = Number(modeCfg.minBetInr || 10);
+    const maxBetInr = Number(modeCfg.maxBetInr || 50000);
+    const statusMessage = modeCfg.statusMessage || '';
+
+    const now = new Date();
+    const yyyy = now.getUTCFullYear();
+    const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(now.getUTCDate()).padStart(2, '0');
+    const datePrefix = `${yyyy}${mm}${dd}${baseCfg.code}`;
+
+    const utcSecsToday = now.getUTCHours() * 3600 + now.getUTCMinutes() * 60 + now.getUTCSeconds();
+    const periodIndex = Math.floor(utcSecsToday / duration) + 1;
+    const timeLeft = duration - (utcSecsToday % duration);
+    const periodId = `${datePrefix}${String(periodIndex).padStart(4, '0')}`;
+
+    const isCutoffLocked = timeLeft <= cutoff;
+    const isLocked = !enabled || maintenanceMode || isCutoffLocked;
+
+    return {
+      slotKey: sKey,
+      periodId,
+      periodIndex,
+      datePrefix,
+      timeLeft,
+      duration,
+      lockSec: cutoff,
+      cutoff,
+      enabled,
+      maintenanceMode,
+      minBetInr,
+      maxBetInr,
+      statusMessage,
+      isCutoffLocked,
+      isLocked
+    };
+  };
+
+  function showWingoBetFeedback(msg, isError) {
+    let box = document.getElementById('wingoBetPopupFeedback');
+    const body = document.querySelector('#xyz-view-games .bet-popup-sheet .popup-body');
+    if (!box && body) {
+      box = document.createElement('div');
+      box.id = 'wingoBetPopupFeedback';
+      box.style.cssText = 'display:none;padding:9px 12px;border-radius:10px;font-size:0.78rem;font-weight:800;line-height:1.35;';
+      body.insertBefore(box, body.firstChild);
+    }
+    if (!box) return;
+    if (!msg) {
+      box.style.display = 'none';
+      return;
+    }
+    box.style.display = 'block';
+    box.style.background = isError ? 'rgba(225,29,72,0.14)' : 'rgba(22,163,74,0.14)';
+    box.style.border = isError ? '1.5px solid #e11d48' : '1.5px solid #16a34a';
+    box.style.color = isError ? '#e11d48' : '#15803d';
+    box.textContent = msg;
+  }
+
+  const _origOpenBetPopupV8 = window.openBetPopup;
+  window.openBetPopup = function(displayTitle, bannerColor, odds, rawSelection) {
+    const st = getSharedStV9();
+    const clock = window.getSlotUtcClock(st.activeSlot || '30SEC');
+    if (!clock.enabled) {
+      return;
+    }
+    if (clock.maintenanceMode) {
+      return;
+    }
+    if (clock.isLocked) {
+      return;
+    }
+    showWingoBetFeedback('', false);
+    if (typeof _origOpenBetPopupV8 === 'function') {
+      _origOpenBetPopupV8(displayTitle, bannerColor, odds, rawSelection);
+    }
+    // Display Min / Max Entry Limits inside the Bet Popup label and default input to at least minBetInr
+    const isUsdt = st.currency === 'USDT';
+    const rate = window.getDynamicUsdtRate ? window.getDynamicUsdtRate(st, 'DISPLAY') : 90;
+    const manLbl = document.getElementById('manualInputCurrLabel');
+    if (manLbl) {
+      const minDisp = isUsdt ? `${+(clock.minBetInr / rate).toFixed(2)} USDT` : `₹${clock.minBetInr}`;
+      const maxDisp = isUsdt ? `${+(clock.maxBetInr / rate).toFixed(2)} USDT` : `₹${clock.maxBetInr.toLocaleString('en-IN')}`;
+      manLbl.textContent = `Entry Amount (Min: ${minDisp} • Max: ${maxDisp})`;
+    }
+    const inp = document.getElementById('manualBetInput');
+    if (inp) {
+      const curInr = isUsdt ? Number(inp.value || 0) * rate : Number(inp.value || 0);
+      if (curInr < clock.minBetInr) {
+        inp.value = isUsdt ? +(clock.minBetInr / rate).toFixed(2) : clock.minBetInr;
+      } else if (curInr > clock.maxBetInr) {
+        inp.value = isUsdt ? +(clock.maxBetInr / rate).toFixed(2) : clock.maxBetInr;
+      }
+      if (typeof window.updatePopupSummary === 'function') window.updatePopupSummary();
+    }
+  };
+
+  const _origPlaceConfirmedBetV8 = window.placeConfirmedBet;
+  window.placeConfirmedBet = function() {
+    const st = getSharedStV9();
+    const clock = window.getSlotUtcClock(st.activeSlot || '30SEC');
+    if (!clock.enabled) {
+      showWingoBetFeedback('⚠️ This Wingo mode is currently disabled by Admin.', true);
+      return;
+    }
+    if (clock.maintenanceMode) {
+      showWingoBetFeedback('🛠️ This Wingo mode is currently under maintenance.', true);
+      return;
+    }
+    if (clock.isLocked) {
+      if (typeof window.closeBetPopup === 'function') window.closeBetPopup();
+      return;
+    }
+    const totalWagerInr = typeof window.getTotalPopupWager === 'function' ? window.getTotalPopupWager() : 0;
+    if (!Number.isFinite(totalWagerInr) || totalWagerInr < clock.minBetInr) {
+      showWingoBetFeedback(`⚠️ Minimum entry amount for ${WINGO_SLOTS_META[clock.slotKey].label} is ₹${clock.minBetInr.toLocaleString('en-IN')}!`, true);
+      return;
+    }
+    if (totalWagerInr > clock.maxBetInr) {
+      showWingoBetFeedback(`⚠️ Maximum entry amount for ${WINGO_SLOTS_META[clock.slotKey].label} is ₹${clock.maxBetInr.toLocaleString('en-IN')}!`, true);
+      return;
+    }
+    if (totalWagerInr > Number(st.balance || 0)) {
+      showWingoBetFeedback('⚠️ Insufficient wallet balance! Please deposit funds first.', true);
+      return;
+    }
+    showWingoBetFeedback('', false);
+    if (typeof _origPlaceConfirmedBetV8 === 'function') {
+      _origPlaceConfirmedBetV8();
+    }
+  };
+
+  const _origRenderEverythingV8 = window.renderEverything;
+  window.renderEverything = function() {
+    if (typeof _origRenderEverythingV8 === 'function') {
+      _origRenderEverythingV8();
+    }
+    const st = getSharedStV9();
+    const activeSlotKey = st.activeSlot || '30SEC';
+    const clock = window.getSlotUtcClock(activeSlotKey);
+
+    // 1. Update Operational Status Banner Message (#utcLiveNotice)
+    const noticeEl = document.getElementById('utcLiveNotice');
+    if (noticeEl) {
+      const msg = clock.statusMessage || st.websiteConfig?.announcementBanner || 'Synchronized live with UTC clock time.';
+      noticeEl.textContent = `${msg} (Cutoff: ${clock.cutoff}s • Min: ₹${clock.minBetInr} – Max: ₹${clock.maxBetInr})`;
+    }
+
+    // 2. Update Countdown Digits & Lock Overlay for Disabled / Maintenance / Cutoff
+    const dM1 = document.getElementById('dM1');
+    const dM2 = document.getElementById('dM2');
+    const dS1 = document.getElementById('dS1');
+    const dS2 = document.getElementById('dS2');
+    const mins = String(Math.floor(clock.timeLeft / 60)).padStart(2, '0');
+    const secs = String(clock.timeLeft % 60).padStart(2, '0');
+    if (dM1) dM1.textContent = mins[0];
+    if (dM2) dM2.textContent = mins[1];
+    if (dS1) dS1.textContent = secs[0];
+    if (dS2) dS2.textContent = secs[1];
+    [dM1, dM2, dS1, dS2].forEach(el => { if (el) el.classList.toggle('locked-warn', clock.isLocked); });
+
+    const pidEl = document.getElementById('ticketPeriodId');
+    if (pidEl) pidEl.textContent = clock.periodId;
+
+    const overlay = document.getElementById('boardLockOverlay');
+    const ld1 = document.getElementById('lockDigit1');
+    const ld2 = document.getElementById('lockDigit2');
+    const lCap = document.getElementById('lockCaptionText');
+    if (overlay) {
+      overlay.classList.toggle('show', clock.isLocked);
+      if (clock.isLocked) {
+        if (!clock.enabled) {
+          if (ld1) ld1.textContent = '🚫';
+          if (ld2) ld2.textContent = 'OFF';
+          if (lCap) lCap.textContent = 'Mode Disabled by Admin';
+        } else if (clock.maintenanceMode) {
+          if (ld1) ld1.textContent = '🛠️';
+          if (ld2) ld2.textContent = 'MNT';
+          if (lCap) lCap.textContent = 'Under Maintenance';
+        } else {
+          const lockSecStr = String(clock.timeLeft).padStart(2, '0');
+          if (ld1) ld1.textContent = lockSecStr[0];
+          if (ld2) ld2.textContent = lockSecStr[1];
+          if (lCap) lCap.textContent = 'Betting Locked';
+        }
+        if (typeof window.closeBetPopup === 'function') window.closeBetPopup();
+      }
+    }
+  };
+  window.__syncGames = window.renderEverything;
+
+  // ===========================================================================
+  // 4. FIX LOTTERY VISIBILITY & REAL-TIME SYNC ON WEBAPP
+  // ===========================================================================
+  window.__syncLottery = window.renderLottoAll;
+
+  // Add visible inline error message on Lottery Buy button if balance is low or 5 numbers not picked
+  const _origBuyLotteryTicket = window.buyLotteryTicket;
+  window.buyLotteryTicket = function() {
+    const st = getSharedStV9();
+    const activeDraws = (st.lotteryDraws || []).filter(d => d && (d.status === 'OPEN' || d.status === 'LOCKED'));
+    const draw = window.getActiveDraw ? window.getActiveDraw() : activeDraws[0];
+    let fbBox = document.getElementById('lottoBuyInlineFeedback');
+    const buyBtn = document.getElementById('buyTicketSubmitBtn');
+    if (!fbBox && buyBtn && buyBtn.parentNode) {
+      fbBox = document.createElement('div');
+      fbBox.id = 'lottoBuyInlineFeedback';
+      fbBox.style.cssText = 'display:none;margin-bottom:10px;padding:10px 12px;border-radius:12px;font-size:0.8rem;font-weight:800;text-align:center;';
+      buyBtn.parentNode.insertBefore(fbBox, buyBtn);
+    }
+    const showLottoFb = (msg, isErr) => {
+      if (!fbBox) return;
+      if (!msg) { fbBox.style.display = 'none'; return; }
+      fbBox.style.display = 'block';
+      fbBox.style.background = isErr ? 'rgba(225,29,72,0.14)' : 'rgba(22,163,74,0.14)';
+      fbBox.style.border = isErr ? '1.5px solid #e11d48' : '1.5px solid #16a34a';
+      fbBox.style.color = isErr ? '#e11d48' : '#15803d';
+      fbBox.textContent = msg;
+    };
+
+    if (!draw || draw.status !== 'OPEN') {
+      showLottoFb('⚠️ This lottery draw is closed for ticket sales.', true);
+      return;
+    }
+    const pickedCnt = document.querySelectorAll('#numbers100Grid .num-cell.picked').length;
+    if (pickedCnt !== 5) {
+      showLottoFb('⚠️ Please select 5 numbers (from 1 to 100) or tap "⚡ Quick Pick 5 Numbers" first!', true);
+      return;
+    }
+    const myTickets = window.getUserTicketsForDraw ? window.getUserTicketsForDraw(draw.drawId) : [];
+    const maxAllowed = Number(draw.maxTicketsPerUser || 3);
+    if (myTickets.length >= maxAllowed) {
+      showLottoFb(`⚠️ Maximum limit reached (${maxAllowed}/${maxAllowed} tickets bought for this draw).`, true);
+      return;
+    }
+    const prices = draw.ticketPricesInr || [200, 300, 500];
+    const priceInr = Number(prices[myTickets.length] || prices[prices.length - 1] || 200);
+    if (priceInr > Number(st.balance || 0)) {
+      showLottoFb(`⚠️ Insufficient wallet balance (Need ₹${priceInr}, Available: ₹${Number(st.balance || 0).toFixed(2)}). Please deposit funds!`, true);
+      return;
+    }
+    showLottoFb('', false);
+    if (typeof _origBuyLotteryTicket === 'function') {
+      _origBuyLotteryTicket();
+      showLottoFb(`🎟️ Ticket #${myTickets.length + 1} purchased for ₹${priceInr}! Check the "📂 Bought" tab.`, false);
+      if (typeof window.pushCustomerStateToCloud === 'function') {
+        window.pushCustomerStateToCloud();
+      }
+    }
+  };
+
+  // ===========================================================================
+  // 5. LUDO, UNO & QUIZ 1VS1 INSTANT MATCH OPTION + INLINE BALANCE FEEDBACK
+  // ===========================================================================
+  window.triggerInstant1v1OpponentMatch = function(gameKey) {
+    const st = getSharedStV9();
+    const oppNames = {
+      UNO: { userId: 'USR-601', username: 'Vikram_UNO' },
+      LUDO: { userId: 'USR-819', username: 'Aarav_King' },
+      QUIZ: { userId: 'USR-701', username: 'Rohan_IQ' }
+    };
+    const opp = oppNames[gameKey] || { userId: 'USR-204', username: 'Player_204' };
+    const myUid = window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : 'UID-10001';
+    if (st.liveMatchmakingLobby && Array.isArray(st.liveMatchmakingLobby[gameKey])) {
+      st.liveMatchmakingLobby[gameKey].forEach(q => {
+        if (q && q.userId === myUid) {
+          q.status = 'MATCHED';
+          q.matchedWithUid = opp.userId;
+          q.matchedWithName = opp.username;
+        }
+      });
+      saveSharedStV9(st);
+    }
+  };
+
+  // Enhance the 1vs1 searching sub-text to include an "⚡ Instant Match Now" button so single-device testing doesn't have to wait 120s
+  const mutObs = new MutationObserver(() => {
+    ['UNO', 'LUDO', 'QUIZ'].forEach(gk => {
+      const subId = gk === 'UNO' ? 'mmSubText' : (gk === 'LUDO' ? 'ludoMmSub' : 'mathMmSub');
+      const subEl = document.getElementById(subId);
+      if (subEl && subEl.innerHTML.includes('Cancel Search') && !subEl.innerHTML.includes('triggerInstant1v1OpponentMatch')) {
+        const extraBtnHtml = `
+          <button type="button" onclick="window.triggerInstant1v1OpponentMatch('${gk}')" style="margin-right:8px;padding:8px 16px;border-radius:999px;background:linear-gradient(135deg,#22c55e,#15803d);border:none;color:#ffffff;font-size:0.78rem;font-weight:900;cursor:pointer;box-shadow:0 4px 12px rgba(22,163,74,0.35);">
+            ⚡ Instant Match Now
+          </button>
+        `;
+        subEl.innerHTML = subEl.innerHTML.replace(
+          '<button type="button" onclick="window.cancelActive1v1Search',
+          extraBtnHtml + '<button type="button" onclick="window.cancelActive1v1Search'
+        );
+      }
+    });
+  });
+  mutObs.observe(document.body, { childList: true, subtree: true });
+
+  window.renderWithdrawPage();
+  window.renderEverything();
+  window.renderLottoAll();
+})();
+</script>
+<!-- === END XYZ CUSTOMER WEBAPP V9 FULL FIXES === -->
 </body>
 </html>
