@@ -294,7 +294,10 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
   base.commissionLedger = mergeArrayById(cur.commissionLedger, incomingSt.commissionLedger, 'ledgerId', isAdminPush);
   base.adminLedger = mergeArrayById(cur.adminLedger, incomingSt.adminLedger, 'txCode', true);
   base.supportTickets = mergeArrayById(cur.supportTickets, incomingSt.supportTickets, 'ticketId', isAdminPush);
-  base.wingoPeriods = mergeArrayById(cur.wingoPeriods, incomingSt.wingoPeriods, 'periodId', isAdminPush);
+  const todayUtcPrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  base.wingoPeriods = mergeArrayById(cur.wingoPeriods, incomingSt.wingoPeriods, 'periodId', isAdminPush)
+    .filter(p => p && String(p.periodId || '').startsWith(todayUtcPrefix))
+    .sort((a, b) => String(b.periodId || '').localeCompare(String(a.periodId || '')));
   base.wingoSettlements = mergeArrayById(cur.wingoSettlements, incomingSt.wingoSettlements, 'settlementId', isAdminPush);
   base.ludoPlayerTournamentHistory = mergeArrayById(cur.ludoPlayerTournamentHistory, incomingSt.ludoPlayerTournamentHistory, 'matchId', true);
   base.unoPlayerTournamentHistory = mergeArrayById(cur.unoPlayerTournamentHistory, incomingSt.unoPlayerTournamentHistory, 'matchId', true);

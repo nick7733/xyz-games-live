@@ -1,11 +1,12 @@
 {
-  "name": "xyz-games-platform",
+  "name": "xyz-games-cloud-server",
   "version": "11.0.0",
-  "description": "XYZ Games — Zero-Dependency Multi-Device Real-Time Cloud Sync Server (server.js), Customer Webapp (index.html), and Super Admin Panel (admin_panel.html)",
+  "description": "XYZ Games — Zero-Dependency Multi-Device Real-Time Cloud Sync Server, Customer Webapp (index.html) & Super Admin Panel (admin_panel.html)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "serve": "node server.js"
   },
   "engines": {
     "node": ">=16.0.0"
@@ -17,7 +18,7 @@
     "uno",
     "aviator",
     "ludo",
-    "quiz",
+    "quiz-game",
     "admin-panel",
     "real-time-sync",
     "sse"

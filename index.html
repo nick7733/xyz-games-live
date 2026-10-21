@@ -14624,16 +14624,34 @@ window.addEventListener('DOMContentLoaded', renderBalance);
     }
 
     function buildPastPeriodsForSlot(slotKey, count = 12) {
+      if (typeof window.build100PastPeriodsForSlot === 'function') {
+        return window.build100PastPeriodsForSlot(slotKey, count);
+      }
       const clock = getSlotUtcClock(slotKey);
+      const cfg = SLOTS[slotKey] || SLOTS['30SEC'];
+      const durationMs = cfg.duration * 1000;
+      const nowMs = (typeof window.getAuthoritativeUtcNowMs === 'function')
+        ? window.getAuthoritativeUtcNowMs()
+        : Date.now();
+      const currentSlotStartMs = (clock && typeof clock.slotStartMs === 'number')
+        ? clock.slotStartMs
+        : (Math.floor(nowMs / durationMs) * durationMs);
       const list = [];
       for (let i = 1; i <= count; i++) {
-        const idx = Math.max(1, clock.periodIndex - i);
-        const pid = `${clock.datePrefix}${String(idx).padStart(4, '0')}`;
-        const overrides = (state.manualOverrides && state.manualOverrides[pid] !== undefined)
+        const pastDate = new Date(currentSlotStartMs - i * durationMs);
+        const yyyy = pastDate.getUTCFullYear();
+        const mm = String(pastDate.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(pastDate.getUTCDate()).padStart(2, '0');
+        const utcSecs = pastDate.getUTCHours() * 3600 + pastDate.getUTCMinutes() * 60 + pastDate.getUTCSeconds();
+        const pIdx = Math.floor(utcSecs / cfg.duration) + 1;
+        const pid = `${yyyy}${mm}${dd}${cfg.code}${String(pIdx).padStart(4, '0')}`;
+        const overrides = (state.manualOverrides && state.manualOverrides[pid] !== undefined && state.manualOverrides[pid] !== null)
           ? state.manualOverrides[pid]
-          : null;
+          : (state.settledPeriodResults && state.settledPeriodResults[pid] !== undefined && state.settledPeriodResults[pid] !== null
+              ? state.settledPeriodResults[pid]
+              : null);
         const winNum = (overrides !== null) ? Number(overrides) : hashPeriodWinner(pid, slotKey);
-        const spec = BALL_SPEC[winNum];
+        const spec = BALL_SPEC[winNum] || BALL_SPEC[0];
         list.push({
           periodId: pid,
           winningNumber: winNum,
@@ -25637,7 +25655,7 @@ window.addEventListener('DOMContentLoaded', renderBalance);
     window.__wingoHistPages = { GAME: 1, CHART: 1, MY: 1 };
     let _lastWingoSlotForPage = null;
 
-    function build100PastPeriodsForSlot(slotKey, count = 100) {
+    function build100PastPeriodsForSlot(slotKey, count = 100, explicitClock) {
       const st = getShared();
       const SLOTS_MAP = {
         '30SEC': { duration: 30, code: '05' },
@@ -25658,36 +25676,47 @@ window.addEventListener('DOMContentLoaded', renderBalance);
         8: { colors: ['RED'],           bigSmall: 'Big' },
         9: { colors: ['GREEN'],         bigSmall: 'Big' }
       };
-      const cfg = SLOTS_MAP[slotKey] || SLOTS_MAP['30SEC'];
-      const nowMs = Date.now();
-      const list = [];
-      const seenPids = new Set();
+      const sKey = SLOTS_MAP[slotKey] ? slotKey : '30SEC';
+      const cfg = SLOTS_MAP[sKey];
+      const durationMs = cfg.duration * 1000;
+      const clock = explicitClock || (typeof window.getSlotUtcClock === 'function' ? window.getSlotUtcClock(sKey) : null);
+      const nowMs = (typeof window.getAuthoritativeUtcNowMs === 'function')
+        ? window.getAuthoritativeUtcNowMs()
+        : Date.now();
+      const currentSlotStartMs = (clock && typeof clock.slotStartMs === 'number')
+        ? clock.slotStartMs
+        : (Math.floor(nowMs / durationMs) * durationMs);
+
+      // Map any published winning numbers by periodId so we never inject out-of-line or stale periods ahead of i=1..count
+      const publishedWinMap = {};
       (st.wingoPeriods || []).forEach(p => {
-        if (p && p.modeKey === slotKey && p.resultStatus === "PUBLISHED" && p.winningNumber !== undefined) {
-          const wn = Number((st.manualOverrides && st.manualOverrides[p.periodId] !== undefined) ? st.manualOverrides[p.periodId] : p.winningNumber);
-          const sp = BALL_INFO[wn] || BALL_INFO[0];
-          list.push({
-            periodId: p.periodId,
-            winningNumber: wn,
-            bigSmall: sp.bigSmall,
-            colors: sp.colors
-          });
-          seenPids.add(String(p.periodId));
+        if (p && (!p.modeKey || p.modeKey === sKey) && p.resultStatus === 'PUBLISHED' && p.winningNumber !== undefined && p.winningNumber !== null) {
+          publishedWinMap[String(p.periodId)] = Number(p.winningNumber);
         }
       });
+
+      const list = [];
       for (let i = 1; i <= count; i++) {
-        const pastDate = new Date(nowMs - i * cfg.duration * 1000);
+        const pastSlotStartMs = currentSlotStartMs - (i * durationMs);
+        const pastDate = new Date(pastSlotStartMs);
         const yyyy = pastDate.getUTCFullYear();
         const mm = String(pastDate.getUTCMonth() + 1).padStart(2, '0');
         const dd = String(pastDate.getUTCDate()).padStart(2, '0');
         const utcSecs = pastDate.getUTCHours() * 3600 + pastDate.getUTCMinutes() * 60 + pastDate.getUTCSeconds();
         const pIdx = Math.floor(utcSecs / cfg.duration) + 1;
         const pid = `${yyyy}${mm}${dd}${cfg.code}${String(pIdx).padStart(4, '0')}`;
-        if (seenPids.has(String(pid))) continue;
-        const overrides = (st.manualOverrides && st.manualOverrides[pid] !== undefined)
-          ? st.manualOverrides[pid]
-          : (st.settledPeriodResults && st.settledPeriodResults[pid] !== undefined ? st.settledPeriodResults[pid] : null);
-        const winNum = (overrides !== null) ? Number(overrides) : window.hashPeriodWinner(pid, slotKey);
+
+        let winNum;
+        if (st.manualOverrides && st.manualOverrides[pid] !== undefined && st.manualOverrides[pid] !== null) {
+          winNum = Number(st.manualOverrides[pid]);
+        } else if (st.settledPeriodResults && st.settledPeriodResults[pid] !== undefined && st.settledPeriodResults[pid] !== null) {
+          winNum = Number(st.settledPeriodResults[pid]);
+        } else if (publishedWinMap[pid] !== undefined) {
+          winNum = publishedWinMap[pid];
+        } else {
+          winNum = window.hashPeriodWinner(pid, sKey);
+        }
+        winNum = Math.abs(Number(winNum) || 0) % 10;
         const spec = BALL_INFO[winNum] || BALL_INFO[0];
         list.push({
           periodId: pid,
@@ -25695,11 +25724,11 @@ window.addEventListener('DOMContentLoaded', renderBalance);
           bigSmall: spec.bigSmall,
           colors: spec.colors
         });
-        seenPids.add(String(pid));
       }
       return list;
     }
 
+    window.build100PastPeriodsForSlot = build100PastPeriodsForSlot;
     window.buildPastPeriodsForSlot = build100PastPeriodsForSlot;
 
     window.stepWingoHistoryPage = function(tabKey, delta) {
@@ -25751,7 +25780,21 @@ window.addEventListener('DOMContentLoaded', renderBalance);
       if (lockCap) lockCap.textContent = 'Betting Locked';
 
       // 3. Render 100 Periods (10 pages of 10 rows) for Game History, Chart, and My History
-      const history100 = build100PastPeriodsForSlot(activeSlotKey, 100);
+      const liveClockNow = (typeof window.getSlotUtcClock === 'function') ? window.getSlotUtcClock(activeSlotKey) : null;
+      if (liveClockNow) {
+        const pidHeaderEl = document.getElementById('ticketPeriodId');
+        if (pidHeaderEl) pidHeaderEl.textContent = liveClockNow.periodId;
+      }
+      const history100 = build100PastPeriodsForSlot(activeSlotKey, 100, liveClockNow);
+      const last5BallsEl = document.getElementById('ticketLast5Balls');
+      if (last5BallsEl) {
+        last5BallsEl.innerHTML = history100.slice(0, 5).map(h => {
+          const bg = (h.winningNumber === 0 || h.winningNumber === 5)
+            ? '#8b5cf6'
+            : (h.winningNumber % 2 === 0 ? '#e11d48' : '#16a34a');
+          return `<span class="mini-ball" style="background:${bg};">${h.winningNumber}</span>`;
+        }).join('');
+      }
 
       // Game History (10 rows per page, 10 pages)
       const gPage = Math.max(1, Math.min(10, window.__wingoHistPages.GAME || 1));
@@ -31312,11 +31355,50 @@ function generateGenuineQrMatrix(text) {
     return Date.now() + (Number(window.__xyzTrueNtpOffsetMs) || 0);
   };
 
+  function sanitizeWingoPeriodsInStorage() {
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (!raw) return;
+      const st = JSON.parse(raw);
+      if (!st || typeof st !== 'object') return;
+      let modified = false;
+      if (Array.isArray(st.wingoPeriods) && st.wingoPeriods.length > 0) {
+        const validPastSet = new Set();
+        ['30SEC', '1MIN', '2MIN', '3MIN', '5MIN'].forEach(sKey => {
+          const base = CANONICAL_WINGO_SLOTS[sKey];
+          const durMs = base.duration * 1000;
+          const nowMs = window.getAuthoritativeUtcNowMs();
+          const curStartMs = Math.floor(nowMs / durMs) * durMs;
+          for (let i = 1; i <= 100; i++) {
+            const d = new Date(curStartMs - i * durMs);
+            const yyyy = d.getUTCFullYear();
+            const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+            const dd = String(d.getUTCDate()).padStart(2, '0');
+            const secs = d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+            const pIdx = Math.floor(secs / base.duration) + 1;
+            validPastSet.add(`${yyyy}${mm}${dd}${base.code}${String(pIdx).padStart(4, '0')}`);
+          }
+        });
+        const filtered = st.wingoPeriods.filter(p => p && p.periodId && validPastSet.has(String(p.periodId)));
+        filtered.sort((a, b) => String(b.periodId).localeCompare(String(a.periodId)));
+        if (filtered.length !== st.wingoPeriods.length) {
+          st.wingoPeriods = filtered;
+          modified = true;
+        }
+      }
+      if (modified) {
+        window.__isApplyingRemoteCloudState = true;
+        window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+        window.__isApplyingRemoteCloudState = false;
+      }
+    } catch (e) {}
+  }
+
   async function syncAuthoritativeNtpOffsetOnce() {
     try {
       if (window.location.protocol === 'file:') return;
       const t0 = Date.now();
-      const res = await fetch('/api/' + 'xyz-time', { cache: 'no-store' });
+      const _tUrl = ['', 'api', 'xyz-time'].join('/'); const res = await fetch(_tUrl, { cache: 'no-store' });
       if (!res.ok) return;
       const data = await res.json();
       const t1 = Date.now();
@@ -31324,10 +31406,24 @@ function generateGenuineQrMatrix(text) {
         const rtt = t1 - t0;
         const estimatedServerNow = data.serverNowMs + Math.round(rtt / 2);
         const diff = estimatedServerNow - t1;
-        window.__xyzTrueNtpOffsetMs = Math.abs(diff) < 1500 ? 0 : diff;
+        const newOffset = Math.abs(diff) < 1500 ? 0 : diff;
+        if (newOffset !== window.__xyzTrueNtpOffsetMs) {
+          window.__xyzTrueNtpOffsetMs = newOffset;
+          cachedFullRenderSig = '';
+          sanitizeWingoPeriodsInStorage();
+          ['30SEC', '1MIN', '2MIN', '3MIN', '5MIN'].forEach(sKey => {
+            if (typeof window.__v10GetSlotUtcClock === 'function') {
+              lastSeenSlotPeriodsV11[sKey] = window.__v10GetSlotUtcClock(sKey).periodId;
+            }
+          });
+          if (typeof window.renderEverything === 'function') {
+            window.renderEverything(true);
+          }
+        }
       }
     } catch (e) {}
   }
+  sanitizeWingoPeriodsInStorage();
   syncAuthoritativeNtpOffsetOnce();
 
   // Cached in-memory WinGo mode config & active slot so 200ms tick never parses multi-MB JSON
@@ -31372,8 +31468,10 @@ function generateGenuineQrMatrix(text) {
     const maxBetInr = Number(modeCfg.maxBetInr || 50000);
     const statusMessage = modeCfg.statusMessage || '';
 
+    const durationMs = duration * 1000;
     const nowMs = window.getAuthoritativeUtcNowMs();
-    const now = new Date(nowMs);
+    const slotStartMs = Math.floor(nowMs / durationMs) * durationMs;
+    const now = new Date(slotStartMs);
     const yyyy = now.getUTCFullYear();
     const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
     const dd = String(now.getUTCDate()).padStart(2, '0');
@@ -31381,8 +31479,17 @@ function generateGenuineQrMatrix(text) {
 
     const utcSecsToday = now.getUTCHours() * 3600 + now.getUTCMinutes() * 60 + now.getUTCSeconds();
     const periodIndex = Math.floor(utcSecsToday / duration) + 1;
-    const timeLeft = duration - (utcSecsToday % duration);
+    const elapsedSecs = Math.floor((nowMs - slotStartMs) / 1000);
+    const timeLeft = Math.max(1, duration - (elapsedSecs % duration));
     const periodId = `${datePrefix}${String(periodIndex).padStart(4, '0')}`;
+
+    const pastDate1 = new Date(slotStartMs - durationMs);
+    const p1Y = pastDate1.getUTCFullYear();
+    const p1M = String(pastDate1.getUTCMonth() + 1).padStart(2, '0');
+    const p1D = String(pastDate1.getUTCDate()).padStart(2, '0');
+    const p1Secs = pastDate1.getUTCHours() * 3600 + pastDate1.getUTCMinutes() * 60 + pastDate1.getUTCSeconds();
+    const p1Idx = Math.floor(p1Secs / duration) + 1;
+    const lastPeriodId = `${p1Y}${p1M}${p1D}${baseCfg.code}${String(p1Idx).padStart(4, '0')}`;
 
     const isCutoffLocked = timeLeft <= cutoff;
     const isLocked = !enabled || maintenanceMode || isCutoffLocked;
@@ -31390,6 +31497,8 @@ function generateGenuineQrMatrix(text) {
     return {
       slotKey: sKey,
       periodId,
+      lastPeriodId,
+      slotStartMs,
       periodIndex,
       datePrefix,
       timeLeft,
@@ -31450,7 +31559,21 @@ function generateGenuineQrMatrix(text) {
     if (slotNameEl && slotNameEl.textContent !== slotCfg.label) slotNameEl.textContent = slotCfg.label;
 
     const pidEl = document.getElementById('ticketPeriodId');
-    if (pidEl && pidEl.textContent !== clock.periodId) pidEl.textContent = clock.periodId;
+    if (pidEl && pidEl.textContent !== clock.periodId) {
+      pidEl.textContent = clock.periodId;
+    }
+    // Verify that on Page 1 of Game History, the top row periodId strictly equals clock.lastPeriodId (currentPeriod - 1)
+    const gPageNow = (window.__wingoHistPages && window.__wingoHistPages.GAME) ? window.__wingoHistPages.GAME : 1;
+    if (gPageNow === 1 && clock.lastPeriodId) {
+      const firstHistSpan = document.querySelector('#gameHistoryBody .hist-trow span:first-child');
+      if (!firstHistSpan || firstHistSpan.textContent.trim() !== clock.lastPeriodId) {
+        cachedFullRenderSig = '';
+        if (typeof window.renderEverything === 'function') {
+          window.renderEverything(true);
+          return;
+        }
+      }
+    }
 
     const mins = String(Math.floor(clock.timeLeft / 60)).padStart(2, '0');
     const secs = String(clock.timeLeft % 60).padStart(2, '0');
