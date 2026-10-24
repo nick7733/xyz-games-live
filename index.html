@@ -27699,8 +27699,8 @@ function generateGenuineQrMatrix(text) {
     enabled: true,
     provider: 'AUTO_SERVER',
     endpointUrl: '',
-    supabaseUrl: '',
-    supabaseAnonKey: '',
+    supabaseUrl: 'https://acpzrkazjoeylyamdrrq.supabase.co',
+    supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc',
     pollIntervalMs: 3000
   };
 
@@ -28062,11 +28062,54 @@ function generateGenuineQrMatrix(text) {
   let serverApiAvailable = null;
 
   function buildCloudRequestInfo(cfg, method, bodyObj) {
+    const prov = String(cfg.provider || 'AUTO_SERVER').toUpperCase();
+    const sbUrl = String(cfg.supabaseUrl || cfg.endpointUrl || 'https://acpzrkazjoeylyamdrrq.supabase.co').trim().replace(/\/+$/, '');
+    const sbKey = String(cfg.supabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc').trim();
+    const dev = window.getXyzDeviceInfo();
+
+    if (prov === 'SUPABASE' || (window.location.protocol === 'file:' && sbUrl.includes('.supabase.co')) || (serverApiAvailable === false && sbUrl.includes('.supabase.co'))) {
+      if (method === 'GET') {
+        return {
+          url: `${sbUrl}/rest/v1/kv_master_state?key=eq.MASTER_STATE&select=value_json`,
+          options: {
+            method: 'GET',
+            headers: {
+              'apikey': sbKey,
+              'Authorization': `Bearer ${sbKey}`,
+              'Accept': 'application/json'
+            }
+          },
+          parseResponse: async (res) => {
+            const rows = await res.json();
+            return (Array.isArray(rows) && rows[0] && rows[0].value_json) ? rows[0].value_json : {};
+          }
+        };
+      } else {
+        return {
+          url: `${sbUrl}/rest/v1/kv_master_state`,
+          options: {
+            method: 'POST',
+            headers: {
+              'apikey': sbKey,
+              'Authorization': `Bearer ${sbKey}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'resolution=merge-duplicates,return=minimal'
+            },
+            body: JSON.stringify({
+              key: 'MASTER_STATE',
+              value_json: bodyObj,
+              updated_at: Date.now()
+            })
+          },
+          parseResponse: async () => ({ ok: true })
+        };
+      }
+    }
+
     const url = String(cfg.endpointUrl || '').trim().replace(/\/+$/, '');
     const baseApi = url ? `${url}/api/xyz-state` : '/api/xyz-state';
     if (!url && window.location.protocol === 'file:') return null;
     if (!url && serverApiAvailable === false) return null;
-    const dev = window.getXyzDeviceInfo();
     return {
       url: baseApi,
       options: {
@@ -32154,6 +32197,71 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ CUSTOMER WEBAPP V11 COMPLETE FIXES === -->
+
+<!-- === START XYZ CUSTOMER V12 PRODUCTION SECURITY & DB AUTH === -->
+<script>
+(function() {
+  const XYZ_USER_JWT_KEY = 'XYZ_CUSTOMER_JWT_TOKEN_V12';
+
+  // Attach Authorization Bearer JWT token to all outbound /api/ fetch calls automatically
+  const _origFetchV12 = window.fetch;
+  if (typeof _origFetchV12 === 'function') {
+    window.fetch = function(input, init) {
+      try {
+        const urlStr = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        if (urlStr.includes('/api/')) {
+          init = Object.assign({}, init || {});
+          const headers = new Headers(init.headers || {});
+          const jwt = window.sessionStorage && window.sessionStorage.getItem(XYZ_USER_JWT_KEY);
+          if (jwt && !headers.has('Authorization')) {
+            headers.set('Authorization', 'Bearer ' + jwt);
+          }
+          init.headers = headers;
+        }
+      } catch (e) {}
+      return _origFetchV12.call(this, input, init);
+    };
+  }
+
+  // Enhance handleXyzUserLogin to verify against server-side scrypt+JWT endpoint (/api/auth/login) when running on live server
+  const _origLoginV11 = window.handleXyzUserLogin;
+  window.handleXyzUserLogin = async function() {
+    const idRaw = (document.getElementById('loginIdentityInput')?.value || '').trim();
+    const pwdRaw = document.getElementById('loginPasswordInput')?.value || '';
+    if (window.location.protocol !== 'file:' && idRaw && pwdRaw) {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identity: idRaw, password: pwdRaw })
+        });
+        if (res.status === 429 || res.status === 403) {
+          const errData = await res.json();
+          const el = document.getElementById('authInlineAlert');
+          if (el) {
+            el.style.display = 'block';
+            el.style.background = 'rgba(239, 68, 68, 0.14)';
+            el.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+            el.style.color = '#ef4444';
+            el.textContent = '🚫 ' + (errData.error || 'Access restricted.');
+          }
+          return;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.token && window.sessionStorage) {
+            window.sessionStorage.setItem(XYZ_USER_JWT_KEY, data.token);
+          }
+        }
+      } catch (e) {}
+    }
+    if (typeof _origLoginV11 === 'function') {
+      return await _origLoginV11();
+    }
+  };
+})();
+</script>
+<!-- === END XYZ CUSTOMER V12 PRODUCTION SECURITY & DB AUTH === -->
 
 </body>
 </html>

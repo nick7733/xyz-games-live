@@ -1,0 +1,7 @@
+node_modules/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.snap
+.xyz_jwt_secret.key
+.DS_Store

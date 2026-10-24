@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  xyz-games-app:
+    build: .
+    container_name: xyz-games-production
+    restart: always
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - SQLITE_DB_PATH=/app/data/xyz_production.sqlite
+      # Set a custom 64-char hex secret in production (or let security.js auto-generate & persist it):
+      - JWT_SECRET=${JWT_SECRET:-}
+      - ALLOWED_ORIGIN=${ALLOWED_ORIGIN:-*}
+    volumes:
+      - xyz_db_data:/app/data
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+volumes:
+  xyz_db_data:
