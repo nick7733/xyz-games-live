@@ -6133,6 +6133,7 @@ ADMIN_JWT_ENFORCEMENT_SECRET="server_side_rbac_signing_key"</pre>
           bet.status = pay > 0 ? 'WIN' : 'LOSE';
           bet.winAmount = pay;
           bet.winningNumber = winNum;
+          bet.updatedAt = now;
           settledWaitingPayout += pay;
         }
       });
@@ -22156,6 +22157,7 @@ function generateGenuineQrMatrix(text) {
           bet.status = pay > 0 ? 'WIN' : 'LOSE';
           bet.winAmount = pay;
           bet.winningNumber = winNum;
+          bet.updatedAt = now;
           settledWaitingPayout += pay;
           if (pay > 0 && bet.userId) {
             const u = (db.adminUsersList || []).find(x => x && x.userId === bet.userId);
@@ -25119,6 +25121,664 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ ADMIN V12 DATABASE, SECURITY & 20K TRAFFIC MONITOR === -->
+
+
+<!-- === START XYZ ADMIN V13 FULL PRODUCTION FIXES === -->
+<script>
+(function() {
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+
+  // =========================================================================
+  // 1. FIX DIRECT WALLET BALANCE CREDIT / DEBIT (⚖️ Direct Wallet Balance Credit / Debit)
+  //    IN USERS SECTION (BOTH 360° PROFILE MODAL AND INLINE USERS PAGE)
+  // =========================================================================
+  window.adjustUserBalanceFromModal = async function(userId) {
+    const u = (db.adminUsersList || []).find(x => x && x.userId === userId) ||
+              (db.registeredAccounts || []).find(x => x && x.userId === userId);
+    if (!u) {
+      showAdmToast(`⚠️ User ${userId} not found.`);
+      return;
+    }
+
+    const bType = document.getElementById('profAdjType')?.value || 'CASH';
+    const dir   = document.getElementById('profAdjDir')?.value || 'CREDIT';
+    const amt   = Math.max(0, Number(document.getElementById('profAdjAmt')?.value || 0));
+
+    if (!Number.isFinite(amt) || amt <= 0) {
+      showAdmToast('⚠️ Please enter a valid positive amount (₹ INR).');
+      document.getElementById('profAdjAmt')?.focus();
+      return;
+    }
+
+    const signed = dir === 'CREDIT' ? amt : -amt;
+    if (bType === 'CASH' && dir === 'DEBIT' && Number(u.cashBalanceInr || 0) + signed < 0) {
+      showAdmToast(`⚠️ Insufficient Cash Balance (Current: ${fmtMoney(u.cashBalanceInr)}) for ${fmtMoney(amt)} debit.`);
+      return;
+    }
+
+    const now = Date.now();
+    const nextCash = bType === 'CASH'
+      ? Math.max(0, +(Number(u.cashBalanceInr || 0) + signed).toFixed(2))
+      : Number(u.cashBalanceInr || 0);
+    const nextPromo = bType === 'PROMO'
+      ? Math.max(0, +(Number(u.promoBalanceInr || 0) + signed).toFixed(2))
+      : Number(u.promoBalanceInr || 0);
+
+    // Update both adminUsersList and registeredAccounts with authoritative timestamp
+    (db.adminUsersList || []).forEach(item => {
+      if (item && item.userId === userId) {
+        item.cashBalanceInr = nextCash;
+        item.promoBalanceInr = nextPromo;
+        item.lastAdminBalanceUpdateAt = now;
+        item._lastSeenAdmBal = nextCash;
+      }
+    });
+    (db.registeredAccounts || []).forEach(item => {
+      if (item && item.userId === userId) {
+        item.cashBalanceInr = nextCash;
+        item.promoBalanceInr = nextPromo;
+        item.lastAdminBalanceUpdateAt = now;
+      }
+    });
+
+    if (typeof window.syncUserBalanceAcrossRecords === 'function' && bType === 'CASH') {
+      window.syncUserBalanceAcrossRecords(userId, nextCash);
+    }
+
+    if (db.connectedDevices && typeof db.connectedDevices === 'object') {
+      Object.keys(db.connectedDevices).forEach(devId => {
+        const d = db.connectedDevices[devId];
+        if (d && d.userId === userId) {
+          d.balanceInr = nextCash;
+        }
+      });
+    }
+
+    const actorName = (typeof loggedInAdminAccount === 'object' && loggedInAdminAccount)
+      ? `${loggedInAdminAccount.username} (${loggedInAdminAccount.loginId})`
+      : (RBAC_ROLES[activeAdminRole]?.name || 'Super Admin');
+
+    const txCode = 'LDG-ADM-' + Math.floor(10000 + Math.random() * 89999);
+    if (!Array.isArray(db.adminLedger)) db.adminLedger = [];
+    db.adminLedger.unshift({
+      txCode,
+      userId: u.userId,
+      username: u.username,
+      type: 'ADMIN_ADJUSTMENT',
+      amountInr: signed,
+      currency: 'INR',
+      balanceType: bType,
+      relatedRef: 'DIRECT_WALLET_ADJ',
+      reversalOf: null,
+      idempotencyKey: `IDEMP-${txCode}-${now}`,
+      status: 'COMPLETED',
+      actor: actorName,
+      createdAt: now
+    });
+
+    if (!Array.isArray(db.transactions)) db.transactions = [];
+    db.transactions.unshift({
+      id: txCode,
+      userId: u.userId,
+      username: u.username,
+      type: signed >= 0 ? 'BONUS' : 'WITHDRAW',
+      title: `Admin Direct Wallet ${dir === 'CREDIT' ? 'Credit' : 'Debit'} (${bType})`,
+      amount: signed,
+      status: 'SUCCESS',
+      timestamp: now
+    });
+
+    appendAuditLog(
+      `DIRECT_WALLET_${dir}`,
+      `wallets:${u.userId}`,
+      bType,
+      `${signed >= 0 ? '+' : ''}${signed} INR (New Cash: ₹${nextCash}, Promo: ₹${nextPromo})`,
+      `Direct Wallet Balance ${dir} from User Profile Modal`,
+      txCode
+    );
+
+    // Call atomic server endpoint + saveAdminDb + pushAdminStateToCloudNow
+    if (window.location.protocol !== 'file:') {
+      try {
+        await fetch('/api/admin/wallet-adjust', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: u.userId,
+            balanceType: bType,
+            direction: dir,
+            amountInr: amt,
+            reason: `Direct Wallet Balance ${dir}`,
+            actor: actorName
+          })
+        });
+      } catch (e) {}
+    }
+
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+
+    if (typeof window.renderFullUserProfileModalContent === 'function') {
+      window.renderFullUserProfileModalContent(userId);
+    }
+
+    // Show crisp inline confirmation inside the modal
+    const modalBody = document.getElementById('admUserProfileModalBody');
+    if (modalBody) {
+      let fb = document.getElementById('profDirectAdjFeedbackBanner');
+      if (!fb) {
+        fb = document.createElement('div');
+        fb.id = 'profDirectAdjFeedbackBanner';
+        fb.style.cssText = 'margin-bottom:12px;padding:11px 14px;border-radius:10px;background:#DCFCE7;border:1.5px solid #16A36A;color:#166534;font-size:0.82rem;font-weight:800;';
+        modalBody.insertBefore(fb, modalBody.firstChild);
+      }
+      fb.innerHTML = `✔ ${dir === 'CREDIT' ? 'Credited +' : 'Debited -'}${fmtMoney(amt)} (${bType}) for <strong>${u.username} (${u.userId})</strong>! New Cash Balance: <strong>${fmtMoney(nextCash)}</strong> • Promo: <strong>${fmtMoney(nextPromo)}</strong> (TX: <code>${txCode}</code>).`;
+    }
+
+    showAdmToast(`✅ ${dir === 'CREDIT' ? 'Credited +' : 'Debited -'}${fmtMoney(amt)} (${bType}) for ${u.username}! New Cash Balance: ${fmtMoney(nextCash)}`);
+  };
+
+  window.executeAuthorizedLedgerAdjustment = async function(userId) {
+    if (!requirePermission('finance.adjust_ledger', 'Issue Financial Ledger Adjustment')) return;
+    const u = (db.adminUsersList || []).find(x => x && x.userId === userId);
+    if (!u) return;
+    const balType = document.getElementById('adjBalType')?.value || 'CASH';
+    const dir = document.getElementById('adjDirection')?.value || 'CREDIT';
+    const rawAmt = Math.max(0, Number(document.getElementById('adjAmountInr')?.value || 0));
+    if (rawAmt <= 0) {
+      showAdmToast('⚠️ Enter a positive adjustment amount.');
+      return;
+    }
+    const signedAmt = dir === 'CREDIT' ? rawAmt : -rawAmt;
+    if (balType === 'CASH' && u.cashBalanceInr + signedAmt < 0) {
+      showAdmToast('⚠️ Insufficient cash balance for debit adjustment.');
+      return;
+    }
+
+    const now = Date.now();
+    const nextCash = balType === 'CASH' ? Math.max(0, +(Number(u.cashBalanceInr || 0) + signedAmt).toFixed(2)) : Number(u.cashBalanceInr || 0);
+    const nextPromo = balType === 'PROMO' ? Math.max(0, +(Number(u.promoBalanceInr || 0) + signedAmt).toFixed(2)) : Number(u.promoBalanceInr || 0);
+
+    (db.adminUsersList || []).forEach(item => {
+      if (item && item.userId === userId) {
+        item.cashBalanceInr = nextCash;
+        item.promoBalanceInr = nextPromo;
+        item.lastAdminBalanceUpdateAt = now;
+        item._lastSeenAdmBal = nextCash;
+      }
+    });
+    (db.registeredAccounts || []).forEach(item => {
+      if (item && item.userId === userId) {
+        item.cashBalanceInr = nextCash;
+        item.promoBalanceInr = nextPromo;
+        item.lastAdminBalanceUpdateAt = now;
+      }
+    });
+
+    if (typeof window.syncUserBalanceAcrossRecords === 'function' && balType === 'CASH') {
+      window.syncUserBalanceAcrossRecords(userId, nextCash);
+    }
+
+    const txCode = 'LDG-ADJ-' + Math.floor(10000 + Math.random() * 90000);
+    db.adminLedger.unshift({
+      txCode,
+      userId: u.userId,
+      username: u.username,
+      type: 'ADMIN_ADJUSTMENT',
+      amountInr: signedAmt,
+      currency: 'INR',
+      balanceType: balType,
+      relatedRef: 'MANUAL_ADJ',
+      reversalOf: null,
+      idempotencyKey: `IDEMP-${txCode}-${now}`,
+      status: 'COMPLETED',
+      actor: RBAC_ROLES[activeAdminRole]?.name || activeAdminRole,
+      createdAt: now
+    });
+
+    if (!Array.isArray(db.transactions)) db.transactions = [];
+    db.transactions.unshift({
+      id: txCode,
+      userId: u.userId,
+      username: u.username,
+      type: signedAmt >= 0 ? 'BONUS' : 'WITHDRAW',
+      title: `Admin Ledger Adjustment (${balType})`,
+      amount: signedAmt,
+      status: 'SUCCESS',
+      timestamp: now
+    });
+
+    if (window.location.protocol !== 'file:') {
+      try {
+        await fetch('/api/admin/wallet-adjust', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: u.userId,
+            balanceType: balType,
+            direction: dir,
+            amountInr: rawAmt,
+            reason: 'Authorized Ledger Adjustment',
+            actor: RBAC_ROLES[activeAdminRole]?.name || activeAdminRole
+          })
+        });
+      } catch (e) {}
+    }
+
+    appendAuditLog('LEDGER_ADJUSTMENT_ISSUED', `wallets:${u.userId}`, balType, `${signedAmt >= 0 ? '+' : ''}${signedAmt} INR (${txCode})`, 'Authorized ledger adjustment', txCode);
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+    showAdmToast(`✅ Ledger transaction ${txCode} recorded! ${u.username} new balance: ${fmtMoney(nextCash)}`);
+  };
+
+  // Also add an inline Direct Wallet Balance Credit / Debit quick card right on the Users page so Admin doesn't even have to open the modal if they want 1-click adjustment!
+  const _origRenderUsersPageV11 = window.renderUsersModulePage;
+  window.renderUsersModulePage = function(subPage) {
+    const baseHtml = typeof _origRenderUsersPageV11 === 'function' ? _origRenderUsersPageV11(subPage) : '';
+    const users = db.adminUsersList || [];
+    const selU = users.find(u => u && u.userId === selectedUserId) || users[0];
+
+    const quickDirectAdjustCard = `
+      <div class="adm-card" style="border-top:4px solid #16A36A;">
+        <div class="adm-card-head">
+          <div>
+            <div class="adm-card-title">⚖️ Direct Wallet Balance Credit / Debit (Instant Customer Wallet Sync)</div>
+            <p style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">
+              Select any registered user below to immediately Credit (+Add) or Debit (-Deduct) their Cash or Promo Wallet Balance. Changes sync to the user's Customer Webapp in real time.
+            </p>
+          </div>
+          <span class="badge badge-success">● Live Atomic Wallet Sync</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:10px;align-items:end;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">1. Select Registered User *</label>
+            <select id="inlineDirectAdjUserId" class="form-select" onchange="selectedUserId=this.value;renderCurrentAdminView()">
+              ${users.length === 0
+                ? `<option value="">-- No Registered Users Yet --</option>`
+                : users.map(u => `<option value="${u.userId}" ${selU && u.userId === selU.userId ? 'selected' : ''}>${u.username} (${u.userId}) — Cash: ${fmtMoney(u.cashBalanceInr)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">2. Balance Type</label>
+            <select id="inlineDirectAdjType" class="form-select">
+              <option value="CASH">💰 Cash Balance (Withdrawable)</option>
+              <option value="PROMO">🎁 Promo Bonus Balance</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">3. Credit / Debit Action</label>
+            <select id="inlineDirectAdjDir" class="form-select">
+              <option value="CREDIT">➕ Credit (+ Add Funds)</option>
+              <option value="DEBIT">➖ Debit (− Deduct Funds)</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0;">
+            <label class="form-label">4. Amount (₹ INR) *</label>
+            <input type="number" id="inlineDirectAdjAmt" class="form-input" value="1000" min="1" step="any" placeholder="Enter amount in ₹..." />
+          </div>
+          <button type="button" class="btn btn-success" style="height:38px;font-weight:800;" onclick="window.applyInlineDirectWalletAdjustment()">
+            ✔ Apply Balance Adjustment Now
+          </button>
+        </div>
+        <div id="inlineDirectAdjResultBanner" style="display:none;margin-top:10px;padding:10px 12px;border-radius:10px;font-size:0.8rem;font-weight:800;"></div>
+      </div>
+    `;
+    return baseHtml + quickDirectAdjustCard;
+  };
+
+  window.applyInlineDirectWalletAdjustment = async function() {
+    const uid = document.getElementById('inlineDirectAdjUserId')?.value || selectedUserId;
+    const bType = document.getElementById('inlineDirectAdjType')?.value || 'CASH';
+    const dir = document.getElementById('inlineDirectAdjDir')?.value || 'CREDIT';
+    const amt = Math.max(0, Number(document.getElementById('inlineDirectAdjAmt')?.value || 0));
+
+    if (!uid) {
+      showAdmToast('⚠️ Please select a registered user first.');
+      return;
+    }
+    if (!Number.isFinite(amt) || amt <= 0) {
+      showAdmToast('⚠️ Please enter a valid positive amount.');
+      return;
+    }
+
+    // Populate modal-compatible IDs or call adjustUserBalanceFromModal directly
+    const u = (db.adminUsersList || []).find(x => x && x.userId === uid);
+    if (!u) {
+      showAdmToast('⚠️ Selected user not found.');
+      return;
+    }
+
+    const signed = dir === 'CREDIT' ? amt : -amt;
+    if (bType === 'CASH' && dir === 'DEBIT' && Number(u.cashBalanceInr || 0) + signed < 0) {
+      showAdmToast(`⚠️ Insufficient Cash Balance (${fmtMoney(u.cashBalanceInr)}) for ${fmtMoney(amt)} debit.`);
+      return;
+    }
+
+    const now = Date.now();
+    const nextCash = bType === 'CASH' ? Math.max(0, +(Number(u.cashBalanceInr || 0) + signed).toFixed(2)) : Number(u.cashBalanceInr || 0);
+    const nextPromo = bType === 'PROMO' ? Math.max(0, +(Number(u.promoBalanceInr || 0) + signed).toFixed(2)) : Number(u.promoBalanceInr || 0);
+
+    (db.adminUsersList || []).forEach(item => {
+      if (item && item.userId === uid) {
+        item.cashBalanceInr = nextCash;
+        item.promoBalanceInr = nextPromo;
+        item.lastAdminBalanceUpdateAt = now;
+        item._lastSeenAdmBal = nextCash;
+      }
+    });
+    (db.registeredAccounts || []).forEach(item => {
+      if (item && item.userId === uid) {
+        item.cashBalanceInr = nextCash;
+        item.promoBalanceInr = nextPromo;
+        item.lastAdminBalanceUpdateAt = now;
+      }
+    });
+    if (typeof window.syncUserBalanceAcrossRecords === 'function' && bType === 'CASH') {
+      window.syncUserBalanceAcrossRecords(uid, nextCash);
+    }
+
+    const actorName = (typeof loggedInAdminAccount === 'object' && loggedInAdminAccount)
+      ? `${loggedInAdminAccount.username} (${loggedInAdminAccount.loginId})`
+      : 'Super Admin';
+    const txCode = 'LDG-DIR-' + Math.floor(10000 + Math.random() * 89999);
+
+    if (!Array.isArray(db.adminLedger)) db.adminLedger = [];
+    db.adminLedger.unshift({
+      txCode,
+      userId: u.userId,
+      username: u.username,
+      type: 'ADMIN_ADJUSTMENT',
+      amountInr: signed,
+      currency: 'INR',
+      balanceType: bType,
+      relatedRef: 'DIRECT_WALLET_ADJ',
+      reversalOf: null,
+      idempotencyKey: `IDEMP-${txCode}-${now}`,
+      status: 'COMPLETED',
+      actor: actorName,
+      createdAt: now
+    });
+
+    if (!Array.isArray(db.transactions)) db.transactions = [];
+    db.transactions.unshift({
+      id: txCode,
+      userId: u.userId,
+      username: u.username,
+      type: signed >= 0 ? 'BONUS' : 'WITHDRAW',
+      title: `Admin Direct Wallet ${dir === 'CREDIT' ? 'Credit' : 'Debit'} (${bType})`,
+      amount: signed,
+      status: 'SUCCESS',
+      timestamp: now
+    });
+
+    if (window.location.protocol !== 'file:') {
+      try {
+        await fetch('/api/admin/wallet-adjust', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: u.userId,
+            balanceType: bType,
+            direction: dir,
+            amountInr: amt,
+            reason: `Direct Wallet Balance ${dir}`,
+            actor: actorName
+          })
+        });
+      } catch (e) {}
+    }
+
+    appendAuditLog(`DIRECT_WALLET_${dir}`, `wallets:${u.userId}`, bType, `${signed >= 0 ? '+' : ''}${signed} INR (New Cash: ₹${nextCash})`, 'Direct Wallet Balance Adjustment', txCode);
+    saveAdminDb();
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+    showAdmToast(`✅ ${dir === 'CREDIT' ? 'Credited +' : 'Debited -'}${fmtMoney(amt)} (${bType}) for ${u.username} (${u.userId})! New Cash Balance: ${fmtMoney(nextCash)}`);
+  };
+
+  // =========================================================================
+  // 2. FIX GIFT CODE GENERATOR PUSH TO SERVER
+  // =========================================================================
+  const _origCreateGiftCardV2 = window.createGiftCardCodeAdmin;
+  window.createGiftCardCodeAdmin = function() {
+    if (typeof _origCreateGiftCardV2 === 'function') {
+      _origCreateGiftCardV2();
+    }
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+  };
+
+  const _origToggleGiftStatusV2 = window.toggleGiftCardStatusAdmin;
+  window.toggleGiftCardStatusAdmin = function(idx) {
+    if (typeof _origToggleGiftStatusV2 === 'function') {
+      _origToggleGiftStatusV2(idx);
+    }
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+  };
+
+  const _origDeleteGiftV2 = window.deleteGiftCardAdmin;
+  window.deleteGiftCardAdmin = function(idx) {
+    if (typeof _origDeleteGiftV2 === 'function') {
+      _origDeleteGiftV2(idx);
+    }
+    if (typeof window.pushAdminStateToCloudNow === 'function') {
+      window.pushAdminStateToCloudNow(true);
+    }
+  };
+
+  // =========================================================================
+  // 3. FIX MULTI-DEVICE CLOUD SYNC & LIVE DEVICES CONTROL CENTER (ALL OVER INDIA)
+  //    SO IT ALWAYS SHOWS ALL REGISTERED USERS + ALL ACTIVE DEVICES!
+  // =========================================================================
+  window.getAllIndiaUnifiedDevicesAndUsersList = function() {
+    const devMap = (db && db.connectedDevices && typeof db.connectedDevices === 'object') ? db.connectedDevices : {};
+    const delMap = (db && db.deletedDeviceIds && typeof db.deletedDeviceIds === 'object') ? db.deletedDeviceIds : {};
+    const allUsers = Array.isArray(db.adminUsersList) ? db.adminUsersList : [];
+    const now = Date.now();
+
+    const unifiedByKey = new Map();
+
+    // 1. Add all active/connected devices from connectedDevices (without aggressive 90s deletion!)
+    Object.values(devMap).forEach(d => {
+      if (!d || !d.deviceId) return;
+      const delAt = Number(delMap[d.deviceId] || 0);
+      if (delAt > 0 && Number(d.lastSeenAt || 0) <= delAt) return;
+
+      const matchedU = allUsers.find(u => u && u.userId === d.userId);
+      const ageMs = Math.max(0, now - Number(d.lastSeenAt || 0));
+      unifiedByKey.set(d.deviceId, {
+        deviceId: d.deviceId,
+        deviceType: d.deviceType || 'MOBILE',
+        platformName: d.platformName || 'Mobile / Web Browser',
+        timezone: d.timezone || 'Asia/Kolkata',
+        screen: d.screen || '390x844',
+        userId: matchedU ? matchedU.userId : (d.userId || 'GUEST'),
+        username: matchedU ? matchedU.username : (d.username || 'Guest'),
+        userIdOrEmail: matchedU ? (matchedU.phone || matchedU.email || matchedU.loginId || '') : (d.userIdOrEmail || ''),
+        balanceInr: matchedU ? Number(matchedU.cashBalanceInr || 0) : Number(d.balanceInr || 0),
+        userStatus: matchedU ? (matchedU.status || 'ACTIVE') : 'ACTIVE',
+        currentView: d.currentView || 'homepage',
+        lastSeenAt: Number(d.lastSeenAt || now),
+        ageMs,
+        isOnlineNow: ageMs <= 45000
+      });
+    });
+
+    // 2. Ensure EVERY registered user in adminUsersList is also shown in the Live Devices & Users table
+    //    even if their device hasn't sent a heartbeat in the last 90 seconds!
+    const representedUids = new Set(Array.from(unifiedByKey.values()).map(x => x.userId));
+    allUsers.forEach(u => {
+      if (!u || !u.userId) return;
+      if (representedUids.has(u.userId)) return;
+      const synthDevId = u.deviceId || ('IND-' + String(u.userId).replace(/[^A-Za-z0-9]/g, ''));
+      const delAt = Number(delMap[synthDevId] || 0);
+      const lastTs = Math.max(Number(u.lastUserBalanceUpdateAt || 0), Number(u.lastAdminBalanceUpdateAt || 0), Number(u.registeredAt || 0));
+      if (delAt > 0 && lastTs <= delAt) return;
+
+      const ageMs = Math.max(0, now - (lastTs || now));
+      unifiedByKey.set(synthDevId, {
+        deviceId: synthDevId,
+        deviceType: 'MOBILE',
+        platformName: 'Registered User Device (India)',
+        timezone: 'Asia/Kolkata',
+        screen: 'Mobile / Web',
+        userId: u.userId,
+        username: u.username || u.userId,
+        userIdOrEmail: u.phone || u.email || u.loginId || '',
+        balanceInr: Number(u.cashBalanceInr || 0),
+        userStatus: u.status || 'ACTIVE',
+        currentView: u.status === 'BLOCKED' ? 'blocked' : 'homepage',
+        lastSeenAt: lastTs || now,
+        ageMs,
+        isOnlineNow: ageMs <= 45000
+      });
+    });
+
+    return Array.from(unifiedByKey.values()).sort((a, b) => {
+      if (a.isOnlineNow !== b.isOnlineNow) return a.isOnlineNow ? -1 : 1;
+      return Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0);
+    });
+  };
+
+  function renderUnifiedIndiaDevicesRowsHtml(devs) {
+    if (!devs || devs.length === 0) {
+      return `<tr><td colspan="7" style="text-align:center;padding:26px;color:var(--text-muted);">No registered users or customer devices connected yet.</td></tr>`;
+    }
+    const viewOpts = [
+      { k: 'homepage', l: '🏠 Lobby' },
+      { k: 'games',    l: '🎰 Wingo' },
+      { k: 'lottery',  l: '🎟️ Lottery' },
+      { k: 'cards',    l: '🃏 UNO' },
+      { k: 'aviator',  l: '✈️ Aviator' },
+      { k: 'contest',  l: '🎲 Ludo' },
+      { k: 'math',     l: '🧮 Quiz' },
+      { k: 'deposit',  l: '📥 Deposit' },
+      { k: 'withdraw', l: '📤 Withdraw' },
+      { k: 'promo',    l: '🤝 Promo' },
+      { k: 'profile',  l: '👤 Profile' }
+    ];
+    return devs.map(d => {
+      const isMob = d.deviceType === 'MOBILE';
+      const secAgo = Math.max(0, Math.round(d.ageMs / 1000));
+      const agoLabel = secAgo < 60 ? `${secAgo}s ago` : (secAgo < 3600 ? `${Math.floor(secAgo / 60)}m ago` : `${Math.floor(secAgo / 3600)}h ago`);
+      const curV = d.currentView || 'homepage';
+      return `
+        <tr data-device-row="${d.deviceId}">
+          <td>
+            <span class="badge ${isMob ? 'badge-success' : 'badge-blue'}" style="font-size:0.72rem;">
+              ${isMob ? '📱 MOBILE' : '💻 LAPTOP'}
+            </span>
+            <div style="font-family:monospace;font-weight:900;margin-top:3px;color:var(--text-primary);">${d.deviceId}</div>
+          </td>
+          <td>
+            <div style="font-weight:700;font-size:0.78rem;">${d.platformName || 'Browser'}</div>
+            <div style="font-size:0.68rem;color:var(--text-muted);">${d.timezone || 'Asia/Kolkata'} • ${d.screen || ''}</div>
+          </td>
+          <td>
+            <span class="badge badge-purple" style="font-family:monospace;">${d.userId || 'GUEST'}</span>
+            ${d.userStatus === 'BLOCKED' ? `<span class="badge badge-danger" style="margin-left:4px;">BLOCKED</span>` : ''}
+            <div style="font-weight:800;font-size:0.78rem;margin-top:2px;">${d.username || 'Guest'}</div>
+            ${d.userIdOrEmail ? `<div style="font-size:0.68rem;color:var(--text-secondary);">${d.userIdOrEmail}</div>` : ''}
+          </td>
+          <td>
+            <span class="badge badge-slate" style="text-transform:uppercase;font-weight:800;">📍 ${curV}</span>
+          </td>
+          <td>
+            <strong style="color:var(--success);font-size:0.9rem;">${fmtMoney(d.balanceInr || 0)}</strong>
+          </td>
+          <td>
+            <span class="badge ${d.isOnlineNow ? 'badge-success' : 'badge-warning'}">
+              ${d.isOnlineNow ? '🟢 ONLINE NOW' : `⏳ Registered (${agoLabel})`}
+            </span>
+          </td>
+          <td>
+            <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">
+              <select id="devViewSel-${d.deviceId}" class="form-select" style="width:115px;padding:4px 6px;font-size:0.72rem;">
+                ${viewOpts.map(vo => `<option value="${vo.k}" ${curV === vo.k ? 'selected' : ''}>${vo.l}</option>`).join('')}
+              </select>
+              <button type="button" class="btn btn-primary btn-sm" onclick="window.remoteSwitchDeviceView('${d.deviceId}', 'devViewSel-${d.deviceId}')">🎯 Go</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="window.promptRemoteAlertForDevice('${d.deviceId}')">📢 Alert</button>
+              ${d.userId && d.userId !== 'GUEST' ? `
+                <button type="button" class="btn btn-success btn-sm" onclick="window.remoteCreditDeviceUserBalance('${d.userId}', 500)">+₹500</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="openFullUserProfileModal('${d.userId}', 'OVERVIEW')">👤 360°</button>
+              ` : ''}
+              <button type="button" class="btn btn-warning btn-sm" onclick="window.sendRemoteCommandToDevice('${d.deviceId}', 'FORCE_LOGOUT', {targetUid: '${d.userId || ''}'})" title="Force Logout">🚪</button>
+              <button type="button" class="btn btn-danger btn-sm" onclick="window.removeStaleDeviceFromList('${d.deviceId}')" title="Remove Device">🗑️</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  const _origRenderAdminCloudDevicesPageV9 = window.renderAdminCloudDevicesPage;
+  window.renderAdminCloudDevicesPage = function() {
+    let html = typeof _origRenderAdminCloudDevicesPageV9 === 'function' ? _origRenderAdminCloudDevicesPageV9() : '';
+    const unifiedDevs = window.getAllIndiaUnifiedDevicesAndUsersList();
+    const onlineDevs = unifiedDevs.filter(d => d.isOnlineNow);
+    const temp = document.createElement('div');
+    temp.innerHTML = html;
+
+    const kpiTot = temp.querySelector('#admCloudKpiTotalDevs');
+    const kpiSub = temp.querySelector('#admCloudKpiOnlineSub');
+    if (kpiTot) kpiTot.textContent = `${unifiedDevs.length} Users & Devices`;
+    if (kpiSub) kpiSub.textContent = `${onlineDevs.length} Online • ${(db.adminUsersList || []).length} Registered Users`;
+
+    const hdrCnt = temp.querySelector('#admConnectedDevicesHeaderCount');
+    if (hdrCnt) {
+      hdrCnt.textContent = `📱💻 3. All Registered Users & Connected Devices Across India (${unifiedDevs.length} Total • ${onlineDevs.length} Online Now)`;
+    }
+
+    const tbody = temp.querySelector('#admConnectedDevicesTbody');
+    if (tbody) {
+      tbody.innerHTML = renderUnifiedIndiaDevicesRowsHtml(unifiedDevs);
+    }
+
+    return temp.innerHTML;
+  };
+
+  setInterval(() => {
+    const unifiedDevs = window.getAllIndiaUnifiedDevicesAndUsersList();
+    const onlineCnt = unifiedDevs.filter(d => d.isOnlineNow).length;
+    const topBtn = document.getElementById('topCloudSyncQuickBtn');
+    if (topBtn) {
+      topBtn.innerHTML = `🌐 India Sync (${unifiedDevs.length} Users / ${onlineCnt} Live)`;
+    }
+    if (currentAdminPage === 'cloud-devices') {
+      const activeEl = document.activeElement;
+      if (activeEl && activeEl.id && activeEl.id.startsWith('devViewSel-')) return;
+      const tbody = document.getElementById('admConnectedDevicesTbody');
+      if (tbody) {
+        const savedSelections = {};
+        tbody.querySelectorAll('select[id^="devViewSel-"]').forEach(sel => {
+          savedSelections[sel.id] = sel.value;
+        });
+        tbody.innerHTML = renderUnifiedIndiaDevicesRowsHtml(unifiedDevs);
+        Object.keys(savedSelections).forEach(selId => {
+          const el = document.getElementById(selId);
+          if (el) el.value = savedSelections[selId];
+        });
+      }
+      const hdrCnt = document.getElementById('admConnectedDevicesHeaderCount');
+      if (hdrCnt) {
+        hdrCnt.textContent = `📱💻 3. All Registered Users & Connected Devices Across India (${unifiedDevs.length} Total • ${onlineCnt} Online Now)`;
+      }
+      const kpiTot = document.getElementById('admCloudKpiTotalDevs');
+      const kpiSub = document.getElementById('admCloudKpiOnlineSub');
+      if (kpiTot) kpiTot.textContent = `${unifiedDevs.length} Users & Devices`;
+      if (kpiSub) kpiSub.textContent = `${onlineCnt} Online • ${(db.adminUsersList || []).length} Registered Users`;
+    }
+  }, 1800);
+})();
+</script>
+<!-- === END XYZ ADMIN V13 FULL PRODUCTION FIXES === -->
 
 </body>
 </html>

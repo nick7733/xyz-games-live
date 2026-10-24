@@ -1,11 +1,11 @@
 /**
- * XYZ Games — Enterprise Security, Cryptography & Rate-Limiting Engine (security.js v12.0)
+ * XYZ Games — Enterprise Security, Cryptography & Rate-Limiting Engine (security.js v13.0)
  * Zero external dependencies — built on pure Node.js `node:crypto`.
  *
  * Capabilities:
  * 1. Cryptographic Password Hashing (`scrypt` + 16-byte CSPRNG salt, timing-safe comparison, transparent legacy plaintext upgrade).
  * 2. Stateless HMAC-SHA256 JWT Issuance & Verification (Customer tokens + Admin RBAC tokens).
- * 3. High-Throughput Sliding-Window Rate Limiter (Global API limiter, strict Auth brute-force limiter, State-mutation limiter).
+ * 3. High-Throughput Sliding-Window Rate Limiter (Tuned for 20,000+ DAU behind Cloudflare/Render).
  * 4. Brute-Force Account Lockout & IP Reputation Tracker (Blocks credential stuffing & DDoS bursts).
  * 5. Security HTTP Headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, CORS validation).
  * 6. Deep Input Sanitization & Prototype-Pollution / XSS / SQLi Guard.
@@ -72,7 +72,6 @@ function verifyPasswordSync(plainCandidate, storedPasswordOrHash) {
     return crypto.timingSafeEqual(a, b);
   }
 
-  // Fallback for legacy unhashed passwords prior to automatic migration
   const a = Buffer.from(candidate, 'utf-8');
   const b = Buffer.from(stored, 'utf-8');
   if (a.length !== b.length) return false;
@@ -184,7 +183,7 @@ function extractAuthSession(req) {
 
 // ============================================================================
 // 3. SLIDING-WINDOW RATE LIMITER & BRUTE-FORCE ACCOUNT LOCKOUT
-//    Tuned for 20,000+ Daily Active Users (~150-300 req/sec peak bursts)
+//    Tuned for 20,000+ Daily Active Users behind Cloudflare / Render NAT
 // ============================================================================
 const ipBuckets = new Map();
 const authFailures = new Map();
@@ -200,7 +199,6 @@ const securityMetrics = {
   peakConcurrentSse: 0
 };
 
-// Cleanup stale buckets every 60 seconds to prevent memory leaks under 20k DAU
 setInterval(() => {
   const now = Date.now();
   for (const [key, b] of ipBuckets.entries()) {
@@ -212,12 +210,12 @@ setInterval(() => {
 }, 60000).unref();
 
 function getClientIp(req) {
+  const cfIp = req.headers && req.headers['cf-connecting-ip'];
+  if (cfIp && typeof cfIp === 'string') return cfIp.trim();
   const xff = req.headers && req.headers['x-forwarded-for'];
   if (xff && typeof xff === 'string') {
     return xff.split(',')[0].trim();
   }
-  const cfIp = req.headers && req.headers['cf-connecting-ip'];
-  if (cfIp && typeof cfIp === 'string') return cfIp.trim();
   const realIp = req.headers && req.headers['x-real-ip'];
   if (realIp && typeof realIp === 'string') return realIp.trim();
   return (req.socket && req.socket.remoteAddress) || '127.0.0.1';
@@ -228,11 +226,10 @@ function checkRateLimit(req, category = 'GENERAL') {
   const ip = getClientIp(req);
   const isLocal = (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1');
 
-  // High-capacity thresholds for 20,000+ daily traffic while stopping DDoS/credential stuffing
   const limits = {
-    GENERAL:     { windowMs: 60000, max: isLocal ? 6000 : 600 },   // 600 req/min per IP
-    STATE_WRITE: { windowMs: 60000, max: isLocal ? 3000 : 180 },   // 180 state writes/min per IP
-    AUTH_LOGIN:  { windowMs: 300000, max: isLocal ? 500 : 25 }     // 25 login attempts per 5 min per IP
+    GENERAL:     { windowMs: 60000, max: isLocal ? 15000 : 3000 },
+    STATE_WRITE: { windowMs: 60000, max: isLocal ? 10000 : 1200 },
+    AUTH_LOGIN:  { windowMs: 300000, max: isLocal ? 1000 : 60 }
   };
 
   const cfg = limits[category] || limits.GENERAL;
@@ -288,9 +285,8 @@ function recordAuthFailure(identifier) {
   }
   entry.count += 1;
   entry.lastAttemptAt = now;
-  // Lock account for 5 minutes after 8 consecutive failed password attempts
-  if (entry.count >= 8) {
-    entry.lockUntil = now + 5 * 60 * 1000;
+  if (entry.count >= 12) {
+    entry.lockUntil = now + 3 * 60 * 1000;
   }
   authFailures.set(key, entry);
 }
@@ -312,21 +308,19 @@ function applySecurityHeaders(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, apikey, Prefer, X-XYZ-Source, X-XYZ-Token, X-CSRF-Token');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
 
-  // Hardened HTTP Security Headers
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  if (req.headers && req.headers['x-forwarded-proto'] === 'https') { res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains'); }
 }
 
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function sanitizeObjectDeep(obj, depth = 0) {
-  if (depth > 12 || obj === null || obj === undefined) return obj;
+  if (depth > 14 || obj === null || obj === undefined) return obj;
   if (typeof obj === 'string') {
-    // Strip null bytes and dangerous script injection vectors while preserving valid data URIs
     let cleaned = obj.replace(/\0/g, '');
     if (!cleaned.startsWith('data:image/')) {
       cleaned = cleaned
@@ -350,15 +344,12 @@ function sanitizeObjectDeep(obj, depth = 0) {
   return out;
 }
 
-// Automatically hash any plaintext passwords inside `staffAdmins`, `adminUsersList`, and `registeredAccounts`
-// before persisting to disk/DB, and strip password hashes from public customer state responses!
 function hashStatePasswordsInPlace(stateObj) {
   if (!stateObj || typeof stateObj !== 'object') return stateObj;
 
   if (Array.isArray(stateObj.staffAdmins)) {
     stateObj.staffAdmins.forEach(adm => {
       if (adm && adm.password && !isPasswordHashed(adm.password)) {
-        // Keep passwordHash for cryptographic verification; keep masked/authorized password for Super Admin inspection
         adm.passwordHash = hashPasswordSync(adm.password);
       }
     });
