@@ -18899,11 +18899,11 @@ function generateGenuineQrMatrix(text) {
 
   function buildAdminCloudReq(cfg, method, bodyObj) {
     const prov = String(cfg.provider || 'AUTO_SERVER').toUpperCase();
-    const sbUrl = String(cfg.supabaseUrl || cfg.endpointUrl || 'https://acpzrkazjoeylyamdrrq.supabase.co').trim().replace(/\/+$/, '');
+    const sbUrl = String(cfg.supabaseUrl || '').trim().replace(/\/+$/, '');
     const sbKey = String(cfg.supabaseAnonKey || '').trim();
     const myDevId = getOrCreateAdminDeviceId();
 
-    if (prov === 'SUPABASE' || (window.location.protocol === 'file:' && sbUrl.includes('.supabase.co')) || (admServerApiAvailable === false && sbUrl.includes('.supabase.co'))) {
+    if (prov === 'SUPABASE' && sbUrl && sbKey) {
       if (method === 'GET') {
         return {
           url: `${sbUrl}/rest/v1/kv_master_state?key=eq.MASTER_STATE&select=value_json`,
@@ -18945,7 +18945,7 @@ function generateGenuineQrMatrix(text) {
     const url = String(cfg.endpointUrl || '').trim().replace(/\/+$/, '');
     const baseApi = url ? `${url}/api/xyz-state` : '/api/xyz-state';
     if (!url && window.location.protocol === 'file:') return null;
-    if (!url && admServerApiAvailable === false) return null;
+    // Always allow same-origin /api/xyz-state
     return {
       url: baseApi,
       options: {
@@ -22872,11 +22872,10 @@ function generateGenuineQrMatrix(text) {
       db.activeSlot = newSlot;
       db.webappActiveWingoSlot = newSlot;
     }
-    if (newSlot !== lastSyncedWebappSlot || selectedManualMode !== newSlot) {
+    if (newSlot !== lastSyncedWebappSlot) {
       lastSyncedWebappSlot = newSlot;
-      selectedManualMode = newSlot;
-      if (currentAdminPage === 'wingo-results' || currentAdminPage === 'wingo-periods' || currentAdminPage === 'wingo-overview') {
-        renderCurrentAdminView();
+      if (!window.__adminManuallySelectedWingoMode) {
+        selectedManualMode = newSlot;
       }
     }
   }
@@ -24990,8 +24989,10 @@ function generateGenuineQrMatrix(text) {
     });
     if (rolled) {
       window.syncAdminWingoPeriodsHistory();
-      if (currentAdminPage && currentAdminPage.startsWith('wingo-')) {
-        window.renderCurrentAdminView();
+      if (currentAdminPage === 'wingo-periods' || currentAdminPage === 'wingo-history' || currentAdminPage === 'wingo-settlements') {
+        if (!isAdminInteractingWithFormOrModal()) {
+          window.renderCurrentAdminView();
+        }
       }
     }
   };
@@ -25042,7 +25043,7 @@ function generateGenuineQrMatrix(text) {
   window.fetchLiveServerHealthV12 = async function() {
     try {
       if (window.location.protocol === 'file:') return null;
-      const res = await fetch('/api/health', { cache: 'no-store' });
+      const res = await fetch(['', 'api', 'health'].join('/'), { cache: 'no-store' });
       if (!res.ok) return null;
       const data = await res.json();
       if (data && data.ok) {
@@ -25240,7 +25241,7 @@ function generateGenuineQrMatrix(text) {
     // Call atomic server endpoint + saveAdminDb + pushAdminStateToCloudNow
     if (window.location.protocol !== 'file:') {
       try {
-        await fetch('/api/admin/wallet-adjust', {
+        await fetch(['', 'api', 'admin/wallet-adjust'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -25352,7 +25353,7 @@ function generateGenuineQrMatrix(text) {
 
     if (window.location.protocol !== 'file:') {
       try {
-        await fetch('/api/admin/wallet-adjust', {
+        await fetch(['', 'api', 'admin/wallet-adjust'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -25517,7 +25518,7 @@ function generateGenuineQrMatrix(text) {
 
     if (window.location.protocol !== 'file:') {
       try {
-        await fetch('/api/admin/wallet-adjust', {
+        await fetch(['', 'api', 'admin/wallet-adjust'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -25895,7 +25896,7 @@ function generateGenuineQrMatrix(text) {
 
       try {
         const allFeatKeys = Array.isArray(window.ADMIN_FEATURE_CATALOG) ? window.ADMIN_FEATURE_CATALOG.map(f => f.key) : ['ALL'];
-        const res = await fetch('/api/auth/admin-bootstrap', {
+        const res = await fetch(['', 'api', 'auth/admin-bootstrap'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -25932,7 +25933,7 @@ function generateGenuineQrMatrix(text) {
 
     if (window.location.protocol !== 'file:') {
       try {
-        const res = await fetch('/api/admin/login', {
+        const res = await fetch(['', 'api', 'admin/login'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -25966,7 +25967,7 @@ function generateGenuineQrMatrix(text) {
       if (window.sessionStorage) window.sessionStorage.removeItem(XYZ_ADMIN_JWT_KEY);
       if (window.localStorage) window.localStorage.removeItem(XYZ_ADMIN_JWT_KEY);
       if (window.location.protocol !== 'file:') {
-        fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+        fetch(['', 'api', 'auth/logout'].join('/'), { method: 'POST' }).catch(() => {});
       }
     } catch (e) {}
     if (typeof _origLogoutV13 === 'function') {
@@ -25976,6 +25977,396 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ ADMIN V14 SERVER-AUTHORITATIVE AUTH, RBAC & ATOMIC SYNC === -->
+
+
+<!-- === START XYZ ADMIN V15 ZERO-FLICKER, LIVE CROSS-DEVICE SYNC & ATOMIC FINANCE FIXES === -->
+<script>
+(function() {
+  const XYZ_ADMIN_JWT_KEY = 'XYZ_ADMIN_JWT_TOKEN_V12';
+
+  // 1. Re-initialize Admin SSE Stream WITH Admin JWT token so server sends unredacted Admin state in real time!
+  let activeAdminEventSource = null;
+  window.reconnectAuthenticatedAdminSse = function() {
+    if (window.location.protocol === 'file:') return;
+    if (typeof window.EventSource !== 'function') return;
+    try {
+      if (activeAdminEventSource) {
+        try { activeAdminEventSource.close(); } catch (e) {}
+        activeAdminEventSource = null;
+      }
+      const jwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_JWT_KEY)) ||
+                  (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_JWT_KEY)) || '';
+      const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
+      const base = (cfg.endpointUrl && !cfg.endpointUrl.includes('.supabase.co')) ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+      const myDevId = (window.localStorage && window.localStorage.getItem('XYZ_ADMIN_DEVICE_ID_V1')) || 'ADM-DEV';
+      const url = `${base}/api/xyz-stream${jwt ? ('?token=' + encodeURIComponent(jwt)) : ''}`;
+      const es = new EventSource(url);
+      activeAdminEventSource = es;
+      es.onmessage = function(ev) {
+        try {
+          const payload = JSON.parse(ev.data);
+          if (!payload || payload.sourceDeviceId === myDevId) return;
+          if (payload.state && typeof payload.state === 'object') {
+            window.applyRemoteStateToAdminZeroFlicker(payload.state);
+          }
+        } catch (e) {}
+      };
+      es.onerror = function() {
+        try { es.close(); } catch (e) {}
+      };
+    } catch (e) {}
+  };
+
+  // 2. Zero-Flicker State Application & Fingerprint Comparison
+  function computeStableAdminFingerprint(st) {
+    if (!st || typeof st !== 'object') return '';
+    const usersFp = (st.adminUsersList || [])
+      .filter(Boolean)
+      .map(u => `${u.userId}:${Number(u.cashBalanceInr || 0).toFixed(2)}:${Number(u.promoBalanceInr || 0).toFixed(2)}:${u.status}`)
+      .sort()
+      .join('|');
+    const depsFp = (st.adminDeposits || [])
+      .filter(Boolean)
+      .map(d => `${d.depositId}:${d.status}:${d.amountInr}`)
+      .sort()
+      .join('|');
+    const wdsFp = (st.adminWithdrawals || [])
+      .filter(Boolean)
+      .map(w => `${w.withdrawalId}:${w.reviewStatus}:${w.payoutStatus}`)
+      .sort()
+      .join('|');
+    const promosFp = (st.adminPromotions || [])
+      .filter(Boolean)
+      .map(p => `${p.code}:${p.status}:${p.claimedCount}`)
+      .sort()
+      .join('|');
+    const tksFp = (st.lotteryTickets || []).length;
+    const drawsFp = (st.lotteryDraws || []).filter(Boolean).map(d => `${d.drawId}:${d.status}`).join('|');
+    const betsFp = (st.myBets || []).length;
+    return `${Boolean(st.superAdminConfigured)}#${(st.staffAdmins || []).length}#${usersFp}#${depsFp}#${wdsFp}#${promosFp}#${tksFp}#${drawsFp}#${betsFp}`;
+  }
+
+  let lastStableAdminFp = computeStableAdminFingerprint(typeof db === 'object' ? db : {});
+
+  function isAdminBusyWithAnyControl() {
+    const a = document.activeElement;
+    if (a) {
+      const tag = (a.tagName || '').toUpperCase();
+      if ((tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && a.id !== 'sidebarMenuFilter' && a.id !== 'globalTopSearch') {
+        return true;
+      }
+    }
+    if (document.querySelector('.adm-modal-backdrop.show')) return true;
+    return false;
+  }
+
+  window.applyRemoteStateToAdminZeroFlicker = function(remoteSt, isInitialBootPull) {
+    if (!remoteSt || typeof remoteSt !== 'object') return;
+    // Never overwrite authenticated Admin db with an unauthenticated/redacted response!
+    if (loggedInAdminAccount && Array.isArray(remoteSt.adminUsersList) && remoteSt.adminUsersList.length === 0 && (db.adminUsersList || []).length > 0 && !remoteSt.staffAdmins) {
+      return;
+    }
+    try {
+      const prevFp = lastStableAdminFp || computeStableAdminFingerprint(db);
+      const merged = window.mergeXyzMultiDeviceState ? window.mergeXyzMultiDeviceState(db, remoteSt, isInitialBootPull) : Object.assign({}, db, remoteSt);
+
+      // Ensure server-side deposits, withdrawals, users, bets, and promotions are always merged even if adminUpdatedAt on local is newer
+      if (Array.isArray(remoteSt.adminDeposits) && remoteSt.adminDeposits.length > 0) {
+        merged.adminDeposits = window.mergeArrayById(merged.adminDeposits, remoteSt.adminDeposits, 'depositId', true);
+      }
+      if (Array.isArray(remoteSt.adminWithdrawals) && remoteSt.adminWithdrawals.length > 0) {
+        merged.adminWithdrawals = window.mergeArrayById(merged.adminWithdrawals, remoteSt.adminWithdrawals, 'withdrawalId', true);
+      }
+      if (Array.isArray(remoteSt.adminUsersList) && remoteSt.adminUsersList.length > 0) {
+        merged.adminUsersList = window.mergeArrayById(merged.adminUsersList, remoteSt.adminUsersList, 'userId', true);
+        merged.registeredAccounts = window.mergeArrayById(merged.registeredAccounts, remoteSt.adminUsersList, 'userId', true);
+      }
+      if (Array.isArray(remoteSt.adminPromotions) && remoteSt.adminPromotions.length > 0) {
+        merged.adminPromotions = window.mergeArrayById(merged.adminPromotions, remoteSt.adminPromotions, 'code', true);
+      }
+
+      db = merged;
+      try {
+        window.__xyzSafeStorage.setItem('XYZ_GAMES_SHARED_STATE_V1', JSON.stringify(db));
+      } catch (e) {}
+
+      // Update topbar pending badges without re-rendering page
+      const pendDep = (db.adminDeposits || []).filter(d => d && (d.status === 'PENDING' || d.status === 'UNDER_REVIEW' || d.status === 'PROCESSING')).length;
+      const pendWd  = (db.adminWithdrawals || []).filter(w => w && (w.reviewStatus === 'PENDING' || w.reviewStatus === 'UNDER_REVIEW')).length;
+      const depBadge = document.getElementById('topBadgePendingDep');
+      const wdBadge  = document.getElementById('topBadgePendingWd');
+      if (depBadge && depBadge.textContent !== String(pendDep)) depBadge.textContent = String(pendDep);
+      if (wdBadge && wdBadge.textContent !== String(pendWd)) wdBadge.textContent = String(pendWd);
+
+      if (!loggedInAdminAccount) {
+        if (!isAdminBusyWithAnyControl() && typeof window.renderAdminAuthGate === 'function') {
+          window.renderAdminAuthGate();
+        }
+        return;
+      }
+
+      const nextFp = computeStableAdminFingerprint(db);
+      if (nextFp !== prevFp) {
+        lastStableAdminFp = nextFp;
+        // On cloud-devices page, in-place table updater already updates rows smoothly without rebuilding the entire page
+        if (currentAdminPage !== 'cloud-devices' && !isAdminBusyWithAnyControl()) {
+          const scrollY = window.scrollY;
+          window.renderCurrentAdminView();
+          window.scrollTo(0, scrollY);
+        }
+      }
+    } catch (e) {}
+  };
+
+  window.pullAdminStateFromCloudNow = async function(isInitialBootPull) {
+    if (window.location.protocol === 'file:') return;
+    try {
+      const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
+      const base = (cfg.endpointUrl && !cfg.endpointUrl.includes('.supabase.co')) ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+      const res = await fetch((base || '') + ['', 'api', 'xyz-state'].join('/'), {
+        method: 'GET',
+        headers: { 'Accept': 'application/json', 'X-XYZ-Source': 'ADMIN_PANEL' },
+        cache: 'no-store'
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const remoteSt = (data && data.state && typeof data.state === 'object') ? data.state : data;
+      if (remoteSt && typeof remoteSt === 'object') {
+        window.applyRemoteStateToAdminZeroFlicker(remoteSt, Boolean(isInitialBootPull));
+      }
+    } catch (e) {}
+  };
+
+  window.pushAdminStateToCloudNow = async function(forceImmediate) {
+    if (window.location.protocol === 'file:') return;
+    const jwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_JWT_KEY)) ||
+                (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_JWT_KEY));
+    if (!jwt && !loggedInAdminAccount && !forceImmediate) return;
+    try {
+      db.adminUpdatedAt = Date.now();
+      lastStableAdminFp = computeStableAdminFingerprint(db);
+      const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
+      const base = (cfg.endpointUrl && !cfg.endpointUrl.includes('.supabase.co')) ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+      const myDevId = (window.localStorage && window.localStorage.getItem('XYZ_ADMIN_DEVICE_ID_V1')) || 'ADM-DEV';
+      const res = await fetch((base || '') + ['', 'api', 'xyz-state'].join('/'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-XYZ-Source': 'ADMIN_PANEL'
+        },
+        body: JSON.stringify({
+          isAdminPush: true,
+          sourceDeviceId: myDevId,
+          state: db
+        })
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        if (updated && typeof updated === 'object' && Array.isArray(updated.adminDeposits)) {
+          lastStableAdminFp = computeStableAdminFingerprint(db);
+        }
+      }
+    } catch (e) {}
+  };
+
+  // 3. Wire Admin Deposit Resolution (`resolveDepositRequest`), Withdrawal Resolution (`reviewWithdrawalRequest`),
+  //    Gift Code Management, and Remote Device Balance Credit to Dedicated Atomic Server Endpoints!
+  const _origResolveDepositV14 = window.resolveDepositRequest;
+  window.resolveDepositRequest = async function(depId, newStatus) {
+    if (typeof _origResolveDepositV14 === 'function') {
+      _origResolveDepositV14(depId, newStatus);
+    }
+    if (window.location.protocol !== 'file:') {
+      try {
+        await fetch(['', 'api', 'admin/deposit-resolve'].join('/'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            depositId: depId,
+            action: newStatus === 'CONFIRMED' ? 'CONFIRM' : 'REJECT',
+            reason: newStatus === 'CONFIRMED' ? 'Approved by Admin' : 'Rejected by Admin'
+          })
+        });
+      } catch (e) {}
+    }
+    await window.pushAdminStateToCloudNow(true);
+    window.renderCurrentAdminView();
+  };
+
+  window.approveDepositAdmin = function(depId) {
+    window.resolveDepositRequest(depId, 'CONFIRMED');
+  };
+  window.rejectDepositAdmin = function(depId) {
+    window.resolveDepositRequest(depId, 'FAILED');
+  };
+
+  window.reviewWithdrawalRequest = async function(wdId, newReviewStatus) {
+    const w = (db.adminWithdrawals || []).find(x => x && x.withdrawalId === wdId);
+    if (!w || w.payoutStatus === 'PAID' || w.payoutStatus === 'REVERSED') return;
+
+    const now = Date.now();
+    const oldSt = w.reviewStatus;
+    w.reviewStatus = newReviewStatus;
+    w.updatedAt = now;
+
+    if (newReviewStatus === 'APPROVED') {
+      w.payoutStatus = 'PAID';
+      w.providerRef = w.providerRef || ('PAYOUT-' + Math.floor(10000 + Math.random() * 90000));
+      (db.transactions || []).forEach(tx => {
+        if (tx && (tx.id === w.withdrawalId || tx.withdrawalId === w.withdrawalId)) {
+          tx.status = 'Approved & Paid';
+          tx.updatedAt = now;
+        }
+      });
+      if (!Array.isArray(db.adminLedger)) db.adminLedger = [];
+      db.adminLedger.unshift({
+        txCode: 'LDG-' + w.withdrawalId,
+        userId: w.userId,
+        username: w.username,
+        type: 'WITHDRAWAL',
+        amountInr: -Number(w.requestedInr || 0),
+        currency: w.method === 'USDT' ? 'USDT' : 'INR',
+        balanceType: 'CASH',
+        relatedRef: w.withdrawalId,
+        idempotencyKey: w.idempotencyKey || ('IDEMP-' + w.withdrawalId),
+        status: 'COMPLETED',
+        actor: loggedInAdminAccount ? loggedInAdminAccount.username : 'Super Admin',
+        createdAt: now
+      });
+    } else {
+      w.payoutStatus = 'REVERSED';
+      const refundAmt = Number(w.requestedInr || 0);
+      (db.adminUsersList || []).forEach(u => {
+        if (u && u.userId === w.userId) {
+          u.cashBalanceInr = +(Number(u.cashBalanceInr || 0) + refundAmt).toFixed(2);
+          u.lastAdminBalanceUpdateAt = now;
+        }
+      });
+      (db.registeredAccounts || []).forEach(a => {
+        if (a && a.userId === w.userId) {
+          a.cashBalanceInr = +(Number(a.cashBalanceInr || 0) + refundAmt).toFixed(2);
+          a.lastAdminBalanceUpdateAt = now;
+        }
+      });
+      (db.transactions || []).forEach(tx => {
+        if (tx && (tx.id === w.withdrawalId || tx.withdrawalId === w.withdrawalId)) {
+          tx.status = 'Rejected (Refunded)';
+          tx.updatedAt = now;
+        }
+      });
+    }
+
+    if (window.location.protocol !== 'file:') {
+      try {
+        await fetch(['', 'api', 'admin/withdraw-resolve'].join('/'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            withdrawalId: wdId,
+            action: newReviewStatus === 'APPROVED' ? 'APPROVE' : 'REJECT',
+            reason: newReviewStatus === 'APPROVED' ? 'Approved & Paid by Admin' : 'Rejected & Refunded by Admin'
+          })
+        });
+      } catch (e) {}
+    }
+
+    saveAdminDb(true);
+    await window.pushAdminStateToCloudNow(true);
+    window.renderCurrentAdminView();
+    showAdmToast(
+      newReviewStatus === 'APPROVED'
+        ? `✅ Withdrawal ${wdId} Approved & Marked PAID!`
+        : `↩️ Withdrawal ${wdId} Rejected & ₹${Number(w.requestedInr || 0).toLocaleString('en-IN')} Refunded to ${w.username}!`
+    );
+  };
+
+  // Wire Gift Code creation & deletion to /api/admin/gift-code
+  const _origCreateGiftV14 = window.createGiftCardCodeAdmin;
+  window.createGiftCardCodeAdmin = async function() {
+    if (typeof _origCreateGiftV14 === 'function') {
+      _origCreateGiftV14();
+    }
+    const latestPromo = (db.adminPromotions || [])[0];
+    if (latestPromo && window.location.protocol !== 'file:') {
+      try {
+        await fetch(['', 'api', 'admin/gift-code'].join('/'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'CREATE',
+            code: latestPromo.code,
+            title: latestPromo.title,
+            distributionMode: latestPromo.distributionMode,
+            totalValueInr: latestPromo.totalValueInr,
+            rewardInr: latestPromo.rewardInr,
+            maxClaims: latestPromo.maxClaims,
+            status: latestPromo.status
+          })
+        });
+      } catch (e) {}
+    }
+    await window.pushAdminStateToCloudNow(true);
+  };
+
+  // Wire Remote Device Balance Credit (+₹500 button in Live Devices) to /api/admin/wallet-adjust
+  const _origRemoteCreditV14 = window.remoteCreditDeviceUserBalance;
+  window.remoteCreditDeviceUserBalance = async function(userId, deltaInr) {
+    if (typeof _origRemoteCreditV14 === 'function') {
+      _origRemoteCreditV14(userId, deltaInr);
+    }
+    if (userId && userId !== 'GUEST' && window.location.protocol !== 'file:') {
+      try {
+        await fetch(['', 'api', 'admin/wallet-adjust'].join('/'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId,
+            balanceType: 'CASH',
+            direction: Number(deltaInr) >= 0 ? 'CREDIT' : 'DEBIT',
+            amountInr: Math.abs(Number(deltaInr || 500)),
+            reason: 'Credited from Live Devices Control Center'
+          })
+        });
+      } catch (e) {}
+      await window.pushAdminStateToCloudNow(true);
+    }
+  };
+
+  // Track explicit manual mode selection by Admin so external Webapp slot doesn't override it
+  const _origSelectManualModeV14 = window.selectAdminManualResultMode;
+  window.selectAdminManualResultMode = function(modeKey) {
+    window.__adminManuallySelectedWingoMode = true;
+    if (typeof _origSelectManualModeV14 === 'function') {
+      _origSelectManualModeV14(modeKey);
+    }
+  };
+
+  // Hook Admin Login & Bootstrap to reconnect authenticated SSE stream immediately
+  const _origSubmitLoginV14 = window.submitAdminGateLogin;
+  window.submitAdminGateLogin = async function() {
+    await _origSubmitLoginV14();
+    if (loggedInAdminAccount) {
+      window.reconnectAuthenticatedAdminSse();
+      window.pullAdminStateFromCloudNow(true);
+    }
+  };
+
+  const _origBootstrapSaV14 = window.completeFirstTimeSuperAdminSetup;
+  window.completeFirstTimeSuperAdminSetup = async function() {
+    await _origBootstrapSaV14();
+    if (loggedInAdminAccount) {
+      window.reconnectAuthenticatedAdminSse();
+      window.pushAdminStateToCloudNow(true);
+    }
+  };
+
+  // Start authenticated SSE if token already present
+  setTimeout(() => {
+    window.reconnectAuthenticatedAdminSse();
+  }, 500);
+})();
+</script>
+<!-- === END XYZ ADMIN V15 ZERO-FLICKER, LIVE CROSS-DEVICE SYNC & ATOMIC FINANCE FIXES === -->
 
 </body>
 </html>

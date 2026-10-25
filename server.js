@@ -667,43 +667,49 @@ function mergeServerState(currentSt, incomingSt, isAdminPush, authSession = null
   base.registeredAccounts = authoritativeUsers.map(u => Object.assign({}, u));
 
   // Anti-Tamper Guard for Deposits & Withdrawals on non-admin push
+  const effectiveCustomerUid = (!isAdminPush && authSession && authSession.type === 'CUSTOMER')
+    ? String(authSession.sub)
+    : (!isAdminPush && incomingSt && incomingSt.activeUserId && incomingSt.activeUserId !== 'GUEST' ? String(incomingSt.activeUserId) : null);
+
   let incDeposits = Array.isArray(incomingSt.adminDeposits) ? incomingSt.adminDeposits : [];
   if (!isAdminPush) {
-    if (!authSession || authSession.type !== 'CUSTOMER') {
-      incDeposits = [];
-    } else {
-      const existingDepMap = new Map((cur.adminDeposits || []).map(d => [d.depositId, d]));
-      incDeposits = incDeposits
-        .filter(incD => incD && incD.depositId && incD.userId === authSession.sub)
-        .map(incD => {
-          const exD = existingDepMap.get(incD.depositId);
-          if (exD) return exD;
-          return Object.assign({}, incD, { status: 'PENDING', webhookVerified: false });
-        });
-    }
+    const existingDepMap = new Map((cur.adminDeposits || []).map(d => [d.depositId, d]));
+    incDeposits = incDeposits
+      .filter(incD => {
+        if (!incD || !incD.depositId || !incD.userId) return false;
+        if (authSession && authSession.type === 'CUSTOMER') return incD.userId === authSession.sub;
+        if (effectiveCustomerUid) return incD.userId === effectiveCustomerUid;
+        return false;
+      })
+      .map(incD => {
+        const exD = existingDepMap.get(incD.depositId);
+        if (exD) return exD;
+        return Object.assign({}, incD, { status: 'PENDING', webhookVerified: false });
+      });
   }
 
   let incWithdrawals = Array.isArray(incomingSt.adminWithdrawals) ? incomingSt.adminWithdrawals : [];
   if (!isAdminPush) {
-    if (!authSession || authSession.type !== 'CUSTOMER') {
-      incWithdrawals = [];
-    } else {
-      const existingWdMap = new Map((cur.adminWithdrawals || []).map(w => [w.withdrawalId, w]));
-      incWithdrawals = incWithdrawals
-        .filter(incW => incW && incW.withdrawalId && incW.userId === authSession.sub)
-        .map(incW => {
-          const exW = existingWdMap.get(incW.withdrawalId);
-          if (exW) return exW;
-          return Object.assign({}, incW, { reviewStatus: 'PENDING', payoutStatus: 'QUEUED' });
-        });
-    }
+    const existingWdMap = new Map((cur.adminWithdrawals || []).map(w => [w.withdrawalId, w]));
+    incWithdrawals = incWithdrawals
+      .filter(incW => {
+        if (!incW || !incW.withdrawalId || !incW.userId) return false;
+        if (authSession && authSession.type === 'CUSTOMER') return incW.userId === authSession.sub;
+        if (effectiveCustomerUid) return incW.userId === effectiveCustomerUid;
+        return false;
+      })
+      .map(incW => {
+        const exW = existingWdMap.get(incW.withdrawalId);
+        if (exW) return exW;
+        return Object.assign({}, incW, { reviewStatus: 'PENDING', payoutStatus: 'QUEUED' });
+      });
   }
 
   base.adminDeposits = mergeArrayById(cur.adminDeposits, incDeposits, 'depositId', isAdminPush);
   base.adminWithdrawals = mergeArrayById(cur.adminWithdrawals, incWithdrawals, 'withdrawalId', isAdminPush);
 
-  if (isAdminPush || (authSession && authSession.type === 'CUSTOMER')) {
-    const uidFilter = isAdminPush ? null : authSession.sub;
+  if (isAdminPush || effectiveCustomerUid) {
+    const uidFilter = isAdminPush ? null : effectiveCustomerUid;
     const filterOwn = (arr) => {
       if (!Array.isArray(arr)) return [];
       if (!uidFilter) return arr;
@@ -2164,8 +2170,11 @@ const server = http.createServer(async (req, res) => {
       const data = await readJsonBody(req);
       const userId = authSess.type === 'CUSTOMER' ? authSess.sub : String(data.userId || authSess.sub);
       const amountInr = Number(data.amountInr || data.amount || 0);
+      const usdtAmount = Number(data.usdtAmount || (amountInr / Number(data.appliedRate || 100)));
+      const appliedRate = Number(data.appliedRate || 100);
       const method = String(data.method || 'UPI').toUpperCase();
-      const utr = String(data.utr || data.providerRef || '').trim();
+      const utr = String(data.utr || data.utrNumber || data.providerRef || '').replace(/^(UTR:|TXID:)\s*/i, '').trim();
+      const paidToId = String(data.paidToId || (method === 'USDT' ? (masterState.usdtAddress || '') : (masterState.upiId || ''))).trim();
 
       if (!userId || !Number.isFinite(amountInr) || amountInr <= 0 || !utr || utr.length < 6) {
         sendJsonResponse(req, res, 400, { ok: false, error: 'Valid positive deposit amount and UTR/reference (min 6 chars) are required.' });
@@ -2174,7 +2183,7 @@ const server = http.createServer(async (req, res) => {
 
       // Prevent duplicate UTR submission
       const dupUtr = (masterState.adminDeposits || []).find(
-        d => d && String(d.utr || '').toLowerCase() === utr.toLowerCase() && d.status !== 'FAILED' && d.status !== 'REJECTED'
+        d => d && String(d.utr || d.utrNumber || '').toLowerCase() === utr.toLowerCase() && d.status !== 'FAILED' && d.status !== 'REJECTED'
       );
       if (dupUtr) {
         sendJsonResponse(req, res, 409, { ok: false, error: `UTR/Reference "${utr}" has already been submitted (${dupUtr.depositId}).` });
@@ -2183,18 +2192,27 @@ const server = http.createServer(async (req, res) => {
 
       const now = Date.now();
       const userObj = findCanonicalUserInState(masterState, userId);
-      const depId = String(data.depositId || ('DEP-' + now + '-' + Math.floor(100 + Math.random() * 899)));
+      const txId = String(data.txId || Math.floor(12346 + Math.random() * 87000));
+      const depId = String(data.depositId || ('DEP-' + txId));
       const depRecord = {
         depositId: depId,
+        txId,
         userId,
-        username: (userObj && userObj.username) || authSess.username || 'Player',
+        username: (userObj && userObj.username) || data.username || authSess.username || 'Player',
         amountInr,
+        usdtAmount,
+        appliedRate,
         method,
+        gatewayMode: 'MANUAL',
+        paidToId,
         utr,
+        utrNumber: utr,
+        providerRef: method === 'UPI' ? `UTR: ${utr}` : `TXID: ${utr}`,
         status: 'PENDING',
         webhookVerified: false,
         createdAt: now,
-        updatedAt: now
+        updatedAt: now,
+        idempotencyKey: `IDEMP-${depId}`
       };
 
       masterState.adminDeposits.unshift(depRecord);
@@ -2358,6 +2376,8 @@ const server = http.createServer(async (req, res) => {
         updatedAt: now
       }));
 
+      const appliedRate = Number(data.appliedRate || 90);
+      const usdtAmount = Number(data.usdtAmount || +(amountInr / appliedRate).toFixed(2));
       const wdRec = {
         withdrawalId: wdId,
         userId: targetUser.userId,
@@ -2365,10 +2385,14 @@ const server = http.createServer(async (req, res) => {
         requestedInr: amountInr,
         feeInr,
         netPayoutInr,
+        usdtAmount,
+        appliedRate,
         method,
         destination,
+        destinationMasked: String(data.destinationMasked || destination),
         reviewStatus: 'PENDING',
         payoutStatus: 'QUEUED',
+        reason: 'Awaiting Manual Admin Approval',
         idempotencyKey,
         createdAt: now,
         updatedAt: now
@@ -2645,21 +2669,40 @@ const server = http.createServer(async (req, res) => {
     try {
       const data = await readJsonBody(req);
       const dev = data.device || data;
+      let matchedUser = null;
+      const now = Date.now();
       if (dev && dev.deviceId) {
         if (!masterState.connectedDevices) masterState.connectedDevices = {};
         const delAt = Number((masterState.deletedDeviceIds && masterState.deletedDeviceIds[dev.deviceId]) || 0);
-        const now = Date.now();
         if (now > delAt) {
-          const matchedUser = findCanonicalUserInState(masterState, dev.userId);
+          matchedUser = (dev.userId && dev.userId !== 'GUEST') ? findCanonicalUserInState(masterState, dev.userId) : null;
           masterState.connectedDevices[dev.deviceId] = Object.assign({}, masterState.connectedDevices[dev.deviceId] || {}, dev, {
-            balanceInr: matchedUser ? Number(matchedUser.cashBalanceInr || 0) : 0,
+            userId: matchedUser ? matchedUser.userId : (dev.userId || 'GUEST'),
+            username: matchedUser ? matchedUser.username : (dev.username || 'Guest (Not Logged In)'),
+            balanceInr: matchedUser ? Number(matchedUser.cashBalanceInr || 0) : Number(dev.balanceInr || 0),
             lastSeenAt: now,
             online: true
           });
-          scheduleSaveStateToDb(300);
+          scheduleSaveStateToDb(400);
         }
       }
-      sendJsonResponse(req, res, 200, { ok: true, ts: Date.now() });
+      const devIdUpper = dev && dev.deviceId ? String(dev.deviceId).toUpperCase() : '';
+      const uidUpper = dev && dev.userId ? String(dev.userId).toUpperCase() : '';
+      const activeCmds = (masterState.remoteCommandsQueue || []).filter(cmd => {
+        if (!cmd || (now - Number(cmd.createdAt || 0) > 120000)) return false;
+        const tDev = String(cmd.targetDeviceId || 'ALL').trim().toUpperCase();
+        const tUid = String(cmd.targetUid || '').trim().toUpperCase();
+        return tDev === 'ALL' || (devIdUpper && tDev === devIdUpper) || (uidUpper && tUid && tUid === uidUpper);
+      });
+      sendJsonResponse(req, res, 200, {
+        ok: true,
+        ts: now,
+        userBalanceInr: matchedUser ? Number(matchedUser.cashBalanceInr || 0) : undefined,
+        userPromoInr: matchedUser ? Number(matchedUser.promoBalanceInr || 0) : undefined,
+        userStatus: matchedUser ? matchedUser.status : undefined,
+        forceLogoutAt: matchedUser ? Math.max(Number(matchedUser.forceLogoutAt || 0), Number((masterState.forceLogoutMap && masterState.forceLogoutMap[matchedUser.userId]) || 0)) : 0,
+        remoteCommandsQueue: activeCmds
+      });
     } catch (e) {
       sendJsonResponse(req, res, 400, { ok: false, error: e.message });
     }
@@ -2670,7 +2713,10 @@ const server = http.createServer(async (req, res) => {
   // 1. Real-Time SSE Stream Endpoint (`GET /api/xyz-stream`)
   // --------------------------------------------------------------------------
   if (pathname === '/api/xyz-stream' && req.method === 'GET') {
-    const authSession = extractAuthSession(req);
+    let authSession = extractAuthSession(req);
+    if (!authSession && parsedUrl.query && parsedUrl.query.token) {
+      authSession = verifyJwt(String(parsedUrl.query.token));
+    }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',

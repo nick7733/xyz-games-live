@@ -28072,11 +28072,11 @@ function generateGenuineQrMatrix(text) {
 
   function buildCloudRequestInfo(cfg, method, bodyObj) {
     const prov = String(cfg.provider || 'AUTO_SERVER').toUpperCase();
-    const sbUrl = String(cfg.supabaseUrl || cfg.endpointUrl || 'https://acpzrkazjoeylyamdrrq.supabase.co').trim().replace(/\/+$/, '');
+    const sbUrl = String(cfg.supabaseUrl || '').trim().replace(/\/+$/, '');
     const sbKey = String(cfg.supabaseAnonKey || '').trim();
     const dev = window.getXyzDeviceInfo();
 
-    if (prov === 'SUPABASE' || (window.location.protocol === 'file:' && sbUrl.includes('.supabase.co')) || (serverApiAvailable === false && sbUrl.includes('.supabase.co'))) {
+    if (prov === 'SUPABASE' && sbUrl && sbKey) {
       if (method === 'GET') {
         return {
           url: `${sbUrl}/rest/v1/kv_master_state?key=eq.MASTER_STATE&select=value_json`,
@@ -28118,7 +28118,7 @@ function generateGenuineQrMatrix(text) {
     const url = String(cfg.endpointUrl || '').trim().replace(/\/+$/, '');
     const baseApi = url ? `${url}/api/xyz-state` : '/api/xyz-state';
     if (!url && window.location.protocol === 'file:') return null;
-    if (!url && serverApiAvailable === false) return null;
+    // Always allow same-origin /api/xyz-state
     return {
       url: baseApi,
       options: {
@@ -32239,7 +32239,7 @@ function generateGenuineQrMatrix(text) {
     const pwdRaw = document.getElementById('loginPasswordInput')?.value || '';
     if (window.location.protocol !== 'file:' && idRaw && pwdRaw) {
       try {
-        const res = await fetch('/api/auth/login', {
+        const res = await fetch(['', 'api', 'auth/login'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ identity: idRaw, password: pwdRaw })
@@ -32403,7 +32403,7 @@ function generateGenuineQrMatrix(text) {
     // 2. Try atomic server-side endpoint first when running on HTTP/HTTPS server
     if (window.location.protocol !== 'file:') {
       try {
-        const res = await fetch('/api/gift-code/redeem', {
+        const res = await fetch(['', 'api', 'gift-code/redeem'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -32660,7 +32660,7 @@ function generateGenuineQrMatrix(text) {
       }
 
       if (dev && dev.deviceId && window.location.protocol !== 'file:') {
-        fetch('/api/device/heartbeat', {
+        fetch(['', 'api', 'device/heartbeat'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -32824,7 +32824,7 @@ function generateGenuineQrMatrix(text) {
       }
 
       try {
-        const res = await fetch('/api/auth/register', {
+        const res = await fetch(['', 'api', 'auth/register'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ identity: idRaw, password: pwdRaw, inviteCode: invRaw })
@@ -32859,7 +32859,7 @@ function generateGenuineQrMatrix(text) {
 
     if (window.location.protocol !== 'file:') {
       try {
-        const res = await fetch('/api/auth/login', {
+        const res = await fetch(['', 'api', 'auth/login'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ identity: idRaw, password: pwdRaw })
@@ -32882,6 +32882,380 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ CUSTOMER V14 SERVER-AUTHORITATIVE AUTH & ATOMIC SYNC === -->
+
+
+<!-- === START XYZ CUSTOMER V15 CROSS-DEVICE REMOTE CONTROL & ATOMIC DEPOSIT/WITHDRAW SYNC === -->
+<script>
+(function() {
+  const XYZ_USER_JWT_KEY = 'XYZ_CUSTOMER_JWT_TOKEN_V12';
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const XYZ_TAB_SESSION_KEY = 'XYZ_TAB_USER_AUTH_SESSION_V8';
+  const XYZ_LOCAL_SESS_KEY = 'XYZ_ACTIVE_AUTH_SESSION_V1';
+
+  function getActiveCustomerSessV15() {
+    try {
+      const r1 = window.sessionStorage && window.sessionStorage.getItem(XYZ_TAB_SESSION_KEY);
+      if (r1) {
+        const p1 = JSON.parse(r1);
+        if (p1 && (p1.userId || p1.identity)) return p1;
+      }
+      const r2 = (window.sessionStorage && window.sessionStorage.getItem(XYZ_LOCAL_SESS_KEY)) ||
+                 (window.localStorage && window.localStorage.getItem(XYZ_LOCAL_SESS_KEY));
+      if (r2) {
+        const p2 = JSON.parse(r2);
+        if (p2 && (p2.userId || p2.identity)) return p2;
+      }
+    } catch (e) {}
+    return window.__xyzTabSessionMem || null;
+  }
+
+  // 1. Reconnect Customer SSE Stream with JWT token so server pushes scoped customer state + remote commands in real time
+  let activeCustomerEs = null;
+  window.reconnectAuthenticatedCustomerSse = function() {
+    if (window.location.protocol === 'file:') return;
+    if (typeof window.EventSource !== 'function') return;
+    try {
+      if (activeCustomerEs) {
+        try { activeCustomerEs.close(); } catch (e) {}
+        activeCustomerEs = null;
+      }
+      const jwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_USER_JWT_KEY)) ||
+                  (window.localStorage && window.localStorage.getItem(XYZ_USER_JWT_KEY)) || '';
+      const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
+      const base = (cfg.endpointUrl && !cfg.endpointUrl.includes('.supabase.co')) ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+      const dev = window.getXyzDeviceInfo ? window.getXyzDeviceInfo() : { deviceId: 'DEV' };
+      const url = `${base}/api/xyz-stream${jwt ? ('?token=' + encodeURIComponent(jwt)) : ''}`;
+      const es = new EventSource(url);
+      activeCustomerEs = es;
+      es.onmessage = function(ev) {
+        try {
+          const payload = JSON.parse(ev.data);
+          if (!payload || payload.sourceDeviceId === dev.deviceId) return;
+          if (payload.state && typeof payload.state === 'object') {
+            window.applyRemoteStateToCustomerV15(payload.state);
+          }
+        } catch (e) {}
+      };
+      es.onerror = function() {
+        try { es.close(); } catch (e) {}
+      };
+    } catch (e) {}
+  };
+
+  const v15ExecutedCmdIds = new Set();
+
+  function runRemoteCommandsFromListV15(cmdList) {
+    if (!Array.isArray(cmdList) || cmdList.length === 0) return;
+    const dev = window.getXyzDeviceInfo ? window.getXyzDeviceInfo() : { deviceId: '' };
+    const sess = getActiveCustomerSessV15();
+    const myDevId = String(dev.deviceId || '').trim().toUpperCase();
+    const myUid = String((sess && sess.userId) || '').trim().toUpperCase();
+    const now = Date.now();
+
+    cmdList.forEach(cmd => {
+      if (!cmd || !cmd.cmdId || v15ExecutedCmdIds.has(cmd.cmdId)) return;
+      if (now - Number(cmd.createdAt || 0) > 120000) {
+        v15ExecutedCmdIds.add(cmd.cmdId);
+        return;
+      }
+      const tDev = String(cmd.targetDeviceId || 'ALL').trim().toUpperCase();
+      const tUid = String(cmd.targetUid || '').trim().toUpperCase();
+      const matchesMe = (
+        tDev === 'ALL' ||
+        (myDevId && tDev === myDevId) ||
+        (myUid && tUid && tUid === myUid) ||
+        (myUid && tDev === ('IND-' + myUid.replace(/[^A-Z0-9]/g, '')))
+      );
+      if (!matchesMe) return;
+
+      v15ExecutedCmdIds.add(cmd.cmdId);
+      if (cmd.action === 'FORCE_VIEW' && cmd.viewKey) {
+        window.__xyzCurrentActiveView = cmd.viewKey;
+        if (typeof window.switchXyzView === 'function') {
+          window.switchXyzView(cmd.viewKey);
+        }
+      } else if (cmd.action === 'ALERT_MODAL') {
+        const m = document.getElementById('xyzRemoteAlertModal');
+        const t = document.getElementById('xyzRemoteAlertTitle');
+        const b = document.getElementById('xyzRemoteAlertBody');
+        if (t) t.textContent = cmd.title || '📢 Live Admin Broadcast';
+        if (b) b.textContent = cmd.message || '';
+        if (m) {
+          m.style.zIndex = '999999';
+          m.style.display = 'flex';
+        }
+      } else if (cmd.action === 'FORCE_LOGOUT') {
+        if (typeof window.forceLogoutCustomerImmediate === 'function') {
+          window.forceLogoutCustomerImmediate(cmd.reason === 'USER_BLOCKED' ? 'BLOCKED' : 'LOGOUT');
+        } else if (typeof window.performXyzLogoutToAuth === 'function') {
+          window.performXyzLogoutToAuth();
+        }
+      } else if (cmd.action === 'FORCE_RELOAD') {
+        if (typeof window.syncAllXyzScreens === 'function') {
+          window.syncAllXyzScreens();
+        }
+      }
+    });
+  }
+
+  window.applyRemoteStateToCustomerV15 = function(remoteSt) {
+    if (!remoteSt || typeof remoteSt !== 'object') return;
+    try {
+      window.__isApplyingRemoteCloudState = true;
+      let localSt = {};
+      try {
+        const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+        if (raw) localSt = JSON.parse(raw) || {};
+      } catch (e) {}
+
+      const merged = window.mergeXyzMultiDeviceState ? window.mergeXyzMultiDeviceState(localSt, remoteSt) : Object.assign({}, localSt, remoteSt);
+      if (Array.isArray(remoteSt.remoteCommandsQueue)) {
+        merged.remoteCommandsQueue = remoteSt.remoteCommandsQueue;
+      }
+      if (typeof window.applyDeviceSessionOverlay === 'function') {
+        window.applyDeviceSessionOverlay(merged);
+      }
+      window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(merged));
+
+      runRemoteCommandsFromListV15(merged.remoteCommandsQueue);
+      if (typeof window.checkCurrentUserForceLogoutOrBlock === 'function') {
+        window.checkCurrentUserForceLogoutOrBlock(merged);
+      }
+      if (typeof window.renderBalance === 'function') window.renderBalance();
+      if (typeof window.updateProfileNotificationBadges === 'function') window.updateProfileNotificationBadges();
+
+      const activeEl = document.activeElement;
+      const isTyping = activeEl && ['INPUT', 'TEXTAREA', 'SELECT'].includes((activeEl.tagName || '').toUpperCase());
+      const openModal = document.querySelector('.bet-popup-backdrop.show, .drawer-backdrop.show, .modal-backdrop.show');
+      if (!isTyping && !openModal) {
+        const curView = window.__xyzCurrentActiveView || 'homepage';
+        if (curView === 'deposit' && typeof window.renderDepositHistoryList === 'function') window.renderDepositHistoryList();
+        if (curView === 'withdraw' && typeof window.renderWithdrawPage === 'function') window.renderWithdrawPage();
+        if (curView === 'lottery' && typeof window.renderLottoAll === 'function') window.renderLottoAll();
+        if (curView === 'games' && typeof window.renderEverything === 'function') window.renderEverything(false);
+        if (curView === 'profile' && typeof window.renderProfilePage === 'function') window.renderProfilePage();
+      }
+    } catch (e) {
+    } finally {
+      window.__isApplyingRemoteCloudState = false;
+    }
+  };
+
+  window.pullCustomerStateFromCloud = async function() {
+    if (window.location.protocol === 'file:') return;
+    try {
+      const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
+      const base = (cfg.endpointUrl && !cfg.endpointUrl.includes('.supabase.co')) ? cfg.endpointUrl.replace(/\/+$/, '') : '';
+      const res = await fetch((base || '') + ['', 'api', 'xyz-state'].join('/'), {
+        method: 'GET',
+        headers: { 'Accept': 'application/json', 'X-XYZ-Source': 'CUSTOMER_WEBAPP' },
+        cache: 'no-store'
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      const remoteSt = (data && data.state && typeof data.state === 'object') ? data.state : data;
+      if (remoteSt && typeof remoteSt === 'object') {
+        window.applyRemoteStateToCustomerV15(remoteSt);
+      }
+    } catch (e) {}
+  };
+
+  // 2. Wire Customer Deposit Submission (`handleProceedToPayment`) to `POST /api/deposit/submit`
+  //    so deposits from ANY mobile device immediately appear in the Admin Panel!
+  const _origProceedPaymentV14 = window.handleProceedToPayment;
+  window.handleProceedToPayment = async function() {
+    let beforeIds = new Set();
+    try {
+      const stPre = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+      beforeIds = new Set((stPre.adminDeposits || []).map(d => d && d.depositId));
+    } catch (e) {}
+
+    if (typeof _origProceedPaymentV14 === 'function') {
+      await _origProceedPaymentV14();
+    }
+
+    if (window.location.protocol !== 'file:') {
+      try {
+        const stPost = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+        const newDep = (stPost.adminDeposits || []).find(d => d && d.depositId && !beforeIds.has(d.depositId));
+        if (newDep) {
+          await fetch(['', 'api', 'deposit/submit'].join('/'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              depositId: newDep.depositId,
+              txId: newDep.txId,
+              userId: newDep.userId,
+              username: newDep.username,
+              amountInr: newDep.amountInr,
+              usdtAmount: newDep.usdtAmount,
+              appliedRate: newDep.appliedRate,
+              method: newDep.method,
+              paidToId: newDep.paidToId,
+              utr: newDep.utrNumber || newDep.utr,
+              utrNumber: newDep.utrNumber || newDep.utr,
+              providerRef: newDep.providerRef
+            })
+          });
+        }
+      } catch (e) {}
+    }
+    if (typeof window.pushCustomerStateToCloud === 'function') {
+      try { await window.pushCustomerStateToCloud(); } catch (e) {}
+    }
+  };
+
+  // 3. Wire Customer Withdrawal Submission (`submitWithdrawalRequest`) to `POST /api/withdraw/submit`
+  //    so withdrawals from ANY mobile device immediately appear in the Admin Panel!
+  const _origSubmitWdV14 = window.submitWithdrawalRequest;
+  window.submitWithdrawalRequest = async function() {
+    let beforeWdIds = new Set();
+    try {
+      const stPre = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+      beforeWdIds = new Set((stPre.adminWithdrawals || []).map(w => w && w.withdrawalId));
+    } catch (e) {}
+
+    if (typeof _origSubmitWdV14 === 'function') {
+      await _origSubmitWdV14();
+    }
+
+    if (window.location.protocol !== 'file:') {
+      try {
+        const stPost = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+        const newWd = (stPost.adminWithdrawals || []).find(w => w && w.withdrawalId && !beforeWdIds.has(w.withdrawalId));
+        if (newWd) {
+          await fetch(['', 'api', 'withdraw/submit'].join('/'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              withdrawalId: newWd.withdrawalId,
+              userId: newWd.userId,
+              username: newWd.username,
+              amountInr: newWd.requestedInr,
+              usdtAmount: newWd.usdtAmount,
+              appliedRate: newWd.appliedRate,
+              method: newWd.method,
+              destination: newWd.destinationMasked,
+              destinationMasked: newWd.destinationMasked,
+              idempotencyKey: newWd.idempotencyKey || ('IDEMP-' + newWd.withdrawalId)
+            })
+          });
+        }
+      } catch (e) {}
+    }
+    if (typeof window.pushCustomerStateToCloud === 'function') {
+      try { await window.pushCustomerStateToCloud(); } catch (e) {}
+    }
+  };
+
+  // 4. Enhanced Cross-Device Heartbeat Poll that also receives Remote Commands & Balance Updates from Server!
+  async function pollDeviceHeartbeatAndCommandsV15() {
+    if (window.location.protocol === 'file:') return;
+    try {
+      const dev = window.getXyzDeviceInfo ? window.getXyzDeviceInfo() : null;
+      if (!dev || !dev.deviceId) return;
+      const sess = getActiveCustomerSessV15();
+      const st = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+      const activeViewEl = document.querySelector('.xyz-app-view.active');
+      const domViewKey = activeViewEl ? activeViewEl.id.replace('xyz-view-', '') : '';
+      const curView = domViewKey || window.__xyzCurrentActiveView || 'homepage';
+
+      const uid = (sess && sess.userId) || (st.isLoggedIn ? st.activeUserId : 'GUEST') || 'GUEST';
+      const uname = (sess && sess.username) || (st.isLoggedIn ? st.username : 'Guest (Not Logged In)') || 'Guest';
+      const uIdent = (sess && sess.identity) || st.userIdOrEmail || '';
+
+      const res = await fetch(['', 'api', 'device/heartbeat'].join('/'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          device: {
+            deviceId: dev.deviceId,
+            deviceType: dev.deviceType,
+            platformName: dev.platformName,
+            timezone: dev.timezone,
+            screen: `${window.innerWidth || 0}x${window.innerHeight || 0}`,
+            userId: uid,
+            username: uname,
+            userIdOrEmail: uIdent,
+            balanceInr: Number(st.balance || 0),
+            currentView: curView,
+            lastSeenAt: Date.now(),
+            online: true
+          }
+        })
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data || !data.ok) return;
+
+      if (Array.isArray(data.remoteCommandsQueue) && data.remoteCommandsQueue.length > 0) {
+        runRemoteCommandsFromListV15(data.remoteCommandsQueue);
+      }
+
+      if (uid && uid !== 'GUEST') {
+        if (data.userStatus === 'BLOCKED' || data.userStatus === 'SUSPENDED') {
+          if (typeof window.forceLogoutCustomerImmediate === 'function') {
+            window.forceLogoutCustomerImmediate('BLOCKED');
+          }
+          return;
+        }
+        const loggedInAt = Number((sess && sess.loggedInAt) || 0);
+        if (data.forceLogoutAt && Number(data.forceLogoutAt) >= loggedInAt && loggedInAt > 0) {
+          if (typeof window.forceLogoutCustomerImmediate === 'function') {
+            window.forceLogoutCustomerImmediate('LOGOUT');
+          }
+          return;
+        }
+        if (typeof data.userBalanceInr === 'number' && !Number.isNaN(data.userBalanceInr)) {
+          const srvBal = Math.max(0, +Number(data.userBalanceInr).toFixed(2));
+          if (Math.abs(Number(st.balance || 0) - srvBal) > 0.005) {
+            st.balance = srvBal;
+            (st.adminUsersList || []).forEach(u => {
+              if (u && u.userId === uid) {
+                u.cashBalanceInr = srvBal;
+                u.lastAdminBalanceUpdateAt = Date.now();
+              }
+            });
+            (st.registeredAccounts || []).forEach(a => {
+              if (a && a.userId === uid) {
+                a.cashBalanceInr = srvBal;
+                a.lastAdminBalanceUpdateAt = Date.now();
+              }
+            });
+            window.__isApplyingRemoteCloudState = true;
+            window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+            window.__isApplyingRemoteCloudState = false;
+            if (typeof window.renderBalance === 'function') window.renderBalance();
+            if (typeof window.renderProfilePage === 'function' && curView === 'profile') window.renderProfilePage();
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Reconnect SSE upon Customer Login or Registration
+  const _origLoginV14 = window.handleXyzUserLogin;
+  window.handleXyzUserLogin = async function() {
+    await _origLoginV14();
+    window.reconnectAuthenticatedCustomerSse();
+    pollDeviceHeartbeatAndCommandsV15();
+  };
+
+  const _origRegV14 = window.handleXyzUserRegister;
+  window.handleXyzUserRegister = async function() {
+    await _origRegV14();
+    window.reconnectAuthenticatedCustomerSse();
+    pollDeviceHeartbeatAndCommandsV15();
+  };
+
+  setInterval(pollDeviceHeartbeatAndCommandsV15, 2000);
+  setTimeout(() => {
+    window.reconnectAuthenticatedCustomerSse();
+    pollDeviceHeartbeatAndCommandsV15();
+  }, 500);
+})();
+</script>
+<!-- === END XYZ CUSTOMER V15 CROSS-DEVICE REMOTE CONTROL & ATOMIC DEPOSIT/WITHDRAW SYNC === -->
 
 </body>
 </html>

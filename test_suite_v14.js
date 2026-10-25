@@ -444,6 +444,86 @@ async function runAllTests() {
       `Checked=${reconcileRes.json.checkedUsersCount} users, Discrepancies=${reconcileRes.json.discrepancyCount}`
     );
 
+    // 13B. Cross-Device Mobile Customer Deposit -> Admin Panel Visibility & Approval -> Mobile Balance Sync
+    const mobDepRes = await httpRequest('POST', '/api/deposit/submit', {
+      depositId: 'DEP-MOB-9001',
+      txId: '9001',
+      userId: user1Id,
+      username: 'MobilePlayer1',
+      amountInr: 2000,
+      usdtAmount: 20,
+      appliedRate: 100,
+      method: 'UPI',
+      paidToId: 'merchant@upi',
+      utr: '412398765432',
+      utrNumber: '412398765432',
+      providerRef: 'UTR: 412398765432'
+    }, { 'Authorization': `Bearer ${user1Token}` });
+
+    const admCheckDep = await httpRequest('GET', '/api/xyz-state', null, {
+      'Authorization': `Bearer ${adminToken}`
+    });
+    const foundDepInAdmin = (admCheckDep.json.adminDeposits || []).find(d => d && d.depositId === 'DEP-MOB-9001');
+
+    const admApproveDep = await httpRequest('POST', '/api/admin/deposit-resolve', {
+      depositId: 'DEP-MOB-9001',
+      action: 'CONFIRM',
+      reason: 'Verified 12-digit UTR from mobile'
+    }, { 'Authorization': `Bearer ${adminToken}` });
+
+    const mobHeartbeatCheck = await httpRequest('POST', '/api/device/heartbeat', {
+      device: {
+        deviceId: 'DEV-MOBILE-INDIA-01',
+        deviceType: 'MOBILE',
+        platformName: 'Android Mobile',
+        userId: user1Id,
+        username: 'MobilePlayer1',
+        currentView: 'homepage'
+      }
+    }, { 'Authorization': `Bearer ${user1Token}` });
+
+    record(
+      '25. Cross-Device Mobile Deposit -> Admin Panel Live Queue -> Admin Approval -> Mobile Balance Sync',
+      mobDepRes.status === 201 &&
+      Boolean(foundDepInAdmin) &&
+      foundDepInAdmin.utrNumber === '412398765432' &&
+      admApproveDep.status === 200 &&
+      mobHeartbeatCheck.json.userBalanceInr === 2250,
+      `Deposit=DEP-MOB-9001 visible in Admin, Approved, Mobile Balance synced to ₹${mobHeartbeatCheck.json.userBalanceInr}`
+    );
+
+    // 13C. Cross-Device Admin Remote Command (Switch View / Alert) -> Separate Mobile Device Execution
+    const cmdIdTest = 'CMD-MOB-TEST-' + Date.now();
+    await httpRequest('POST', '/api/xyz-state', {
+      isAdminPush: true,
+      sourceDeviceId: 'ADM-LAPTOP-01',
+      state: {
+        remoteCommandsQueue: [{
+          cmdId: cmdIdTest,
+          targetDeviceId: 'DEV-MOBILE-INDIA-01',
+          action: 'FORCE_VIEW',
+          viewKey: 'games',
+          createdAt: Date.now()
+        }]
+      }
+    }, { 'Authorization': `Bearer ${adminToken}`, 'X-XYZ-Source': 'ADMIN_PANEL' });
+
+    const mobPollCmds = await httpRequest('POST', '/api/device/heartbeat', {
+      device: {
+        deviceId: 'DEV-MOBILE-INDIA-01',
+        deviceType: 'MOBILE',
+        userId: user1Id,
+        currentView: 'homepage'
+      }
+    });
+    const receivedRemoteCmd = (mobPollCmds.json.remoteCommandsQueue || []).some(c => c && c.cmdId === cmdIdTest && c.viewKey === 'games');
+
+    record(
+      '26. Cross-Device Admin Panel Remote Control -> Separate Mobile Device Receives Command Instantly',
+      receivedRemoteCmd === true,
+      `Mobile device DEV-MOBILE-INDIA-01 received remote command ${cmdIdTest} (FORCE_VIEW -> games)`
+    );
+
     // 14. High-Concurrency Load Benchmark (500 requests across endpoints)
     const benchStart = Date.now();
     const benchLatencies = [];
@@ -469,7 +549,7 @@ async function runAllTests() {
     const rps = Math.round(totalBenchReqs / benchElapsedSec);
 
     record(
-      '25. High-Concurrency Load Benchmark (500 Concurrent Requests)',
+      '27. High-Concurrency Load Benchmark (500 Concurrent Requests)',
       Number(p95) < 250 && rps > 100,
       `Throughput=${rps} req/sec | p50=${p50}ms | p95=${p95}ms | p99=${p99}ms`
     );

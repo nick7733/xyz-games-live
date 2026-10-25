@@ -633,7 +633,8 @@ function redactStateForClient(masterState, authSession) {
     depositMinConfig: masterState.depositMinConfig || {},
     wingoModesConfig: masterState.wingoModesConfig || {},
     wingoRules: masterState.wingoRules || {},
-    settledPeriodResults: masterState.settledPeriodResults || {},
+    settledPeriodResults: Object.assign({}, masterState.settledPeriodResults || {}, masterState.manualOverrides || {}),
+    manualOverrides: Object.assign({}, masterState.settledPeriodResults || {}, masterState.manualOverrides || {}),
     wingoPeriods: (masterState.wingoPeriods || []).slice(0, 100).map(p => {
       const cp = Object.assign({}, p);
       return cp;
@@ -730,8 +731,11 @@ function redactStateForClient(masterState, authSession) {
       : [],
     remoteCommandsQueue: (masterState.remoteCommandsQueue || []).filter(cmd => {
       if (!cmd) return false;
-      if (cmd.targetDeviceId === 'ALL' && !cmd.targetUid) return true;
-      if (callerUid && String(cmd.targetUid || '').toUpperCase() === callerUid.toUpperCase()) return true;
+      const tDev = String(cmd.targetDeviceId || 'ALL').trim().toUpperCase();
+      const tUid = String(cmd.targetUid || '').trim().toUpperCase();
+      if (tDev === 'ALL' && !tUid) return true;
+      if (callerUid && tUid === callerUid.toUpperCase()) return true;
+      if (tDev && tDev !== 'ALL') return true;
       return false;
     })
   };
