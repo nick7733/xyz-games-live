@@ -33,7 +33,7 @@ const path = require('node:path');
 const https = require('node:https');
 
 const DATA_DIR = process.env.XYZ_DATA_DIR || __dirname;
-const DB_FILE = process.env.SQLITE_DB_PATH || path.join(DATA_DIR, 'xyz_production.sqlite');
+const DB_FILE = process.env.SQLITE_DB_PATH || process.env.XYZ_SQLITE_PATH || path.join(DATA_DIR, 'xyz_production.sqlite');
 const JSON_BACKUP_FILE = path.join(DATA_DIR, 'xyz_cloud_state.json');
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim().replace(/\/+$/, '');
@@ -78,9 +78,15 @@ except Exception:
             pass
     conn = open_wal_connection(work_db_path)
 
-def snapshot_to_target():
+_last_snap_ts = 0.0
+def snapshot_to_target(force=False):
+    global _last_snap_ts
     if not using_tmp_wal:
         return
+    now_s = time.time()
+    if not force and (now_s - _last_snap_ts) < 2.5:
+        return
+    _last_snap_ts = now_s
     try:
         snap_tmp = work_db_path + ".snap"
         if os.path.exists(snap_tmp):

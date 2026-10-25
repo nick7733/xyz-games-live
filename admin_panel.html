@@ -1609,6 +1609,15 @@
     let db = loadAdminDb();
 
     function saveAdminDb(quiet) {
+      if (typeof window.saveAdminDb === 'function' && window.saveAdminDb !== saveAdminDb && !window.__insideLocalSaveAdminDb) {
+        try {
+          window.__insideLocalSaveAdminDb = true;
+          return window.saveAdminDb(quiet);
+        } finally {
+          window.__insideLocalSaveAdminDb = false;
+        }
+      }
+      db.adminUpdatedAt = Date.now();
       const primaryUser = (db.adminUsersList || []).find(u => u.isPrimaryWebappUser || u.userId === 'USR-001');
       if (primaryUser) {
         db.balance = Number(primaryUser.cashBalanceInr || 0);
@@ -20803,7 +20812,15 @@ function generateGenuineQrMatrix(text) {
     }
 
     if (subPage === 'finance-deposits' || !subPage) {
-      const deps = (db.adminDeposits || []).filter(d => depStatusFilter === 'ALL' || d.status === depStatusFilter);
+      const deps = (db.adminDeposits || []).filter(d => {
+        if (!d) return false;
+        if (depStatusFilter === 'ALL') return true;
+        const stUp = String(d.status || 'PENDING').toUpperCase();
+        if (depStatusFilter === 'PENDING') return ['PENDING', 'PROCESSING', 'UNDER_REVIEW'].includes(stUp);
+        if (depStatusFilter === 'CONFIRMED') return ['CONFIRMED', 'APPROVED', 'COMPLETED', 'SUCCESS'].includes(stUp);
+        if (depStatusFilter === 'FAILED') return ['FAILED', 'REJECTED'].includes(stUp);
+        return stUp === depStatusFilter;
+      });
       return `
         <div class="page-header-row">
           <div>
@@ -20811,6 +20828,7 @@ function generateGenuineQrMatrix(text) {
             <p class="page-subtitle">UPI deposits are displayed strictly in INR (₹) and USDT deposits are displayed in USDT (₮) only when the transaction was made via USDT.</p>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-outline" onclick="window.pullAdminStateFromCloudNow(true);renderCurrentAdminView();showAdmToast('↻ Refreshed latest deposit requests from server!')">↻ Refresh Deposits</button>
             ${window.hasAdminFeature('PAYMENT_GATEWAY') ? `
               <button type="button" class="btn btn-primary" onclick="navigateAdminPage('finance-gateway')">💳 Manage UPI &amp; USDT Gateway</button>
             ` : ''}
@@ -23452,15 +23470,38 @@ function generateGenuineQrMatrix(text) {
     if (b.length === 0) return a;
     const map = new Map();
     const order = [];
+    const isResolved = (st) => {
+      const s = String(st || "").toUpperCase();
+      return ["CONFIRMED", "APPROVED", "COMPLETED", "SUCCESS", "FAILED", "REJECTED", "PAID", "REVERSED", "EXHAUSTED"].includes(s);
+    };
+    const getTs = (it) => Math.max(
+      Number(it.updatedAt || 0),
+      Number(it.confirmedAt || 0),
+      Number(it.lastAdminBalanceUpdateAt || 0),
+      Number(it.lastUserBalanceUpdateAt || 0),
+      Number(it.timestamp || 0),
+      Number(it.createdAt || 0)
+    );
     [...b, ...a].forEach(item => {
       if (!item || typeof item !== "object") return;
-      const k = String(item[idField] || item.id || item.matchId || item.ticketId || item.roundId || "");
+      const k = String(item[idField] || item.depositId || item.withdrawalId || item.id || item.matchId || item.ticketId || item.roundId || item.userId || item.code || "");
       if (!k) return;
       if (!map.has(k)) {
         map.set(k, Object.assign({}, item));
         order.push(k);
       } else {
-        map.set(k, Object.assign({}, item, map.get(k)));
+        const ex = map.get(k);
+        const exRes = isResolved(ex.status || ex.reviewStatus || ex.payoutStatus);
+        const itRes = isResolved(item.status || item.reviewStatus || item.payoutStatus);
+        if (itRes && !exRes) {
+          map.set(k, Object.assign({}, ex, item));
+        } else if (exRes && !itRes) {
+          map.set(k, Object.assign({}, item, ex));
+        } else if (getTs(item) > getTs(ex)) {
+          map.set(k, Object.assign({}, ex, item));
+        } else {
+          map.set(k, Object.assign({}, item, ex));
+        }
       }
     });
     return order.map(k => map.get(k));
@@ -25981,8 +26022,6 @@ function generateGenuineQrMatrix(text) {
   const XYZ_ADMIN_SESSION_V5 = 'XYZ_ACTIVE_ADMIN_SESSION_V5';
 
   // 1. Automatic Post-Deploy Admin JWT Session Sync (`/api/auth/session-sync`)
-  //    Ensures that if an Admin is already logged in via localStorage when Render redeploys or rotates JWT_SECRET,
-  //    the browser automatically obtains a valid server JWT and syncs state without failing with 401!
   let isSyncingAdminJwt = false;
   window.ensureValidAdminJwtSessionV16 = async function(forceRefresh) {
     if (window.location.protocol === 'file:') return true;
@@ -26011,7 +26050,7 @@ function generateGenuineQrMatrix(text) {
           const checkRes = await fetch(['', 'api', 'auth/session'].join('/'), { cache: 'no-store' });
           if (checkRes.ok) {
             const checkData = await checkRes.json();
-            if (checkData && checkData.authenticated && checkData.session && checkData.session.type === 'ADMIN') {
+            if (checkData && checkData.authenticated && checkData.session && checkData.session.isAdmin) {
               return true;
             }
           }
@@ -26022,16 +26061,19 @@ function generateGenuineQrMatrix(text) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-XYZ-Session-Sync': 'V16'
+          'X-XYZ-Session-Sync': 'V17'
         },
         body: JSON.stringify({
           type: 'ADMIN',
-          loginId: admAcc.loginId,
-          username: admAcc.username || 'Super Admin',
-          roleKey: admAcc.roleKey || 'SUPER_ADMIN',
-          isMasterSuperAdmin: Boolean(admAcc.isMasterSuperAdmin !== undefined ? admAcc.isMasterSuperAdmin : true),
-          sessionId: window.__currentAdminSessionId || admAcc.sessionId || ('ASESS-' + Date.now()),
-          localState: typeof db === 'object' ? db : null
+          adminAccount: {
+            adminId: admAcc.adminId || 'ADM-SUPER-01',
+            loginId: admAcc.loginId,
+            username: admAcc.username || admAcc.loginId,
+            roleKey: admAcc.roleKey || 'SUPER_ADMIN',
+            isMasterSuperAdmin: Boolean(admAcc.isMasterSuperAdmin || admAcc.roleKey === 'SUPER_ADMIN'),
+            fullControl: Boolean(admAcc.fullControl || admAcc.roleKey === 'SUPER_ADMIN'),
+            allowedFeatures: admAcc.allowedFeatures || ['ALL']
+          }
         })
       });
       if (!res.ok) return false;
@@ -26041,9 +26083,6 @@ function generateGenuineQrMatrix(text) {
           if (window.sessionStorage) window.sessionStorage.setItem(XYZ_ADMIN_JWT_KEY, data.token);
           if (window.localStorage) window.localStorage.setItem(XYZ_ADMIN_JWT_KEY, data.token);
         } catch (e) {}
-        if (data.admin) {
-          loggedInAdminAccount = Object.assign({}, admAcc, data.admin);
-        }
         if (data.state && typeof data.state === 'object') {
           window.applyRemoteStateToAdminZeroFlicker(data.state, true);
         }
@@ -26114,7 +26153,6 @@ function generateGenuineQrMatrix(text) {
   };
 
   // 3. Page-Scoped Zero-Flicker State Application
-  //    Only re-renders the current page if data actually visible on `currentAdminPage` changed!
   function computePageScopedFingerprint(st, pageId) {
     if (!st || typeof st !== 'object') return '';
     const p = String(pageId || 'dashboard');
@@ -26125,7 +26163,7 @@ function generateGenuineQrMatrix(text) {
       .join('|');
     const depsFp = (st.adminDeposits || [])
       .filter(Boolean)
-      .map(d => `${d.depositId}:${d.status}:${d.amountInr}:${d.utr || d.utrNumber || ''}`)
+      .map(d => `${d.depositId}:${d.status}:${d.amountInr}:${d.utr || d.utrNumber || ''}:${d.firstDepositBonusInr || 0}`)
       .sort()
       .join('|');
     const wdsFp = (st.adminWithdrawals || [])
@@ -26181,7 +26219,7 @@ function generateGenuineQrMatrix(text) {
   window.applyRemoteStateToAdminZeroFlicker = function(remoteSt, isInitialBootPull) {
     if (!remoteSt || typeof remoteSt !== 'object') return;
     // Never overwrite authenticated Admin db with an unauthenticated/redacted response!
-    if (loggedInAdminAccount && Array.isArray(remoteSt.adminUsersList) && remoteSt.adminUsersList.length === 0 && (db.adminUsersList || []).length > 0 && !remoteSt.staffAdmins) {
+    if (loggedInAdminAccount && (remoteSt.__authRole === 'ANON' || remoteSt.__authRole === 'CUSTOMER' || !Array.isArray(remoteSt.staffAdmins))) {
       window.ensureValidAdminJwtSessionV16(true);
       return;
     }
@@ -26298,7 +26336,24 @@ function generateGenuineQrMatrix(text) {
     } catch (e) {}
   };
 
-  // 4. Cross-Device Remote Command Dispatch (Works for both DEV-... and IND-USR... rows across Mobile & Laptop!)
+  // Ensure all Payment Gateway mutations immediately push to Cloud Server
+  [
+    'addGatewayUpiIdAdmin', 'saveEditedGatewayUpiAdmin', 'removeGatewayUpiAdmin',
+    'addGatewayUsdtAddressAdmin', 'saveEditedGatewayUsdtAdmin', 'removeGatewayUsdtAdmin',
+    'switchGatewayModeAdmin', 'setExistingUpiQrModeAdmin', 'clearExistingUpiManualQrAdmin',
+    'setExistingUsdtQrModeAdmin', 'clearExistingUsdtManualQrAdmin'
+  ].forEach(fnName => {
+    const origFn = window[fnName];
+    if (typeof origFn === 'function') {
+      window[fnName] = function() {
+        const ret = origFn.apply(this, arguments);
+        window.pushAdminStateToCloudNow(true);
+        return ret;
+      };
+    }
+  });
+
+  // 4. Cross-Device Remote Command Dispatch
   window.sendRemoteCommandToDevice = async function(targetDevId, actionType, payloadObj) {
     if (!Array.isArray(db.remoteCommandsQueue)) db.remoteCommandsQueue = [];
     const rawTarget = String(targetDevId || 'ALL').trim();
@@ -26355,34 +26410,66 @@ function generateGenuineQrMatrix(text) {
     });
   };
 
-  // 5. Wire Admin Deposit Resolution, Withdrawal Resolution, Gift Code Management & Remote Device Credit
+  // 5. Authoritative Admin Deposit Resolution (`window.resolveDepositRequest`)
+  //    Uses `/api/admin/deposit-resolve` as single source of truth so deposits NEVER double-credit or revert!
   const _origResolveDepositV14 = window.resolveDepositRequest;
   window.resolveDepositRequest = async function(depId, newStatus) {
+    if (!requirePermission('finance.approve_deposit', 'Approve or Reject Deposit')) return;
     const dPre = (db.adminDeposits || []).find(x => x && x.depositId === depId);
+    if (!dPre || dPre.status === 'CONFIRMED' || dPre.status === 'FAILED') return;
+
+    let bonusPct = 0;
     let bonusInr = 0;
-    if (dPre && newStatus === 'CONFIRMED' && typeof window.getDepositBonusPctByMethodAndAmount === 'function') {
+    if (newStatus === 'CONFIRMED' && typeof window.getDepositBonusPctByMethodAndAmount === 'function') {
       const hadPrior = (db.adminDeposits || []).some(
         x => x && x.depositId !== depId && x.userId === dPre.userId && x.status === 'CONFIRMED'
       );
-      const pct = window.getDepositBonusPctByMethodAndAmount(dPre.method || 'UPI', dPre.amountInr, dPre.usdtAmount, hadPrior);
-      bonusInr = +(Number(dPre.amountInr || 0) * (pct / 100)).toFixed(2);
+      bonusPct = window.getDepositBonusPctByMethodAndAmount(dPre.method || 'UPI', dPre.amountInr, dPre.usdtAmount, hadPrior);
+      bonusInr = +(Number(dPre.amountInr || 0) * (bonusPct / 100)).toFixed(2);
     }
 
     if (window.location.protocol !== 'file:') {
       try {
-        await fetch(['', 'api', 'admin/deposit-resolve'].join('/'), {
+        await window.ensureValidAdminJwtSessionV16(false);
+        const res = await fetch(['', 'api', 'admin/deposit-resolve'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             depositId: depId,
             action: newStatus === 'CONFIRMED' ? 'CONFIRM' : 'REJECT',
+            bonusPct,
             bonusInr,
             reason: newStatus === 'CONFIRMED' ? 'Approved by Admin' : 'Rejected by Admin'
           })
         });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data && data.ok) {
+          if (data.state && typeof data.state === 'object') {
+            window.applyRemoteStateToAdminZeroFlicker(data.state, true);
+          } else if (data.deposit) {
+            Object.assign(dPre, data.deposit);
+          }
+          const activePage = currentAdminPage || 'dashboard';
+          lastPageFpMap[activePage] = computePageScopedFingerprint(db, activePage);
+          window.renderCurrentAdminView();
+          const amt = Number(dPre.amountInr || 0);
+          const totalCredited = +(amt + bonusInr).toFixed(2);
+          showAdmToast(
+            newStatus === 'CONFIRMED'
+              ? (bonusInr > 0
+                  ? `✅ Deposit ${depId} Approved! Credited ₹${amt} + ₹${bonusInr} (${bonusPct}% Deposit Bonus) = ₹${totalCredited} to ${dPre.username || dPre.userId}!`
+                  : `✅ Deposit ${depId} Approved! Credited ₹${amt} to ${dPre.username || dPre.userId}!`)
+              : `✕ Deposit ${depId} Rejected.`
+          );
+          return;
+        } else if (data && data.error) {
+          showAdmToast(`⚠️ ${data.error}`);
+          return;
+        }
       } catch (e) {}
     }
 
+    // Fallback for offline file:// mode
     if (typeof _origResolveDepositV14 === 'function') {
       _origResolveDepositV14(depId, newStatus);
     }
@@ -26396,6 +26483,9 @@ function generateGenuineQrMatrix(text) {
   window.rejectDepositAdmin = function(depId) {
     window.resolveDepositRequest(depId, 'FAILED');
   };
+  window.rejectDepositRequestAdmin = function(depId) {
+    window.resolveDepositRequest(depId, 'FAILED');
+  };
 
   window.reviewWithdrawalRequest = async function(wdId, newReviewStatus) {
     const w = (db.adminWithdrawals || []).find(x => x && x.withdrawalId === wdId);
@@ -26403,6 +26493,7 @@ function generateGenuineQrMatrix(text) {
 
     if (window.location.protocol !== 'file:') {
       try {
+        await window.ensureValidAdminJwtSessionV16(false);
         await fetch(['', 'api', 'admin/withdraw-resolve'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -26484,6 +26575,7 @@ function generateGenuineQrMatrix(text) {
     const latestPromo = (db.adminPromotions || [])[0];
     if (latestPromo && window.location.protocol !== 'file:') {
       try {
+        await window.ensureValidAdminJwtSessionV16(false);
         await fetch(['', 'api', 'admin/gift-code'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -26510,6 +26602,7 @@ function generateGenuineQrMatrix(text) {
     }
     if (userId && userId !== 'GUEST' && window.location.protocol !== 'file:') {
       try {
+        await window.ensureValidAdminJwtSessionV16(false);
         await fetch(['', 'api', 'admin/wallet-adjust'].join('/'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

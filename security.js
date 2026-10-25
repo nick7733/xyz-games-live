@@ -610,8 +610,24 @@ function redactStateForClient(masterState, authSession) {
     return copy;
   };
 
+  const FAKE_BOT_UIDS = new Set(["USR-601", "USR-712", "USR-834", "USR-819", "USR-512", "USR-904", "USR-701", "USR-615", "USR-409", "USR-204"]);
+  const sanitizeLobby = (lobby) => {
+    const src = (lobby && typeof lobby === "object") ? lobby : {};
+    const out = { UNO: [], LUDO: [], QUIZ: [] };
+    ["UNO", "LUDO", "QUIZ"].forEach(gk => {
+      out[gk] = (Array.isArray(src[gk]) ? src[gk] : []).filter(q =>
+        q && q.userId && !FAKE_BOT_UIDS.has(String(q.userId)) && (!q.matchedWithUid || !FAKE_BOT_UIDS.has(String(q.matchedWithUid))) &&
+        (Date.now() - Number(q.joinedAt || 0) < 130000)
+      );
+    });
+    return out;
+  };
+
   if (isAdmin) {
     const adminCopy = Object.assign({}, masterState);
+    adminCopy.__authRole = "ADMIN";
+    adminCopy.__authenticatedUid = String(authSession.sub || "SUPER_ADMIN");
+    adminCopy.liveMatchmakingLobby = sanitizeLobby(masterState.liveMatchmakingLobby);
     adminCopy.staffAdmins = (masterState.staffAdmins || []).map(a => {
       const c = Object.assign({}, a);
       delete c.password;
@@ -626,6 +642,8 @@ function redactStateForClient(masterState, authSession) {
   // Customer or Unauthenticated Visitor View:
   // Always include adminUpdatedAt & public game/website config so mobile devices immediately accept Admin updates!
   const publicAndSelfState = {
+    __authRole: callerUid ? "CUSTOMER" : "ANON",
+    __authenticatedUid: callerUid || null,
     adminUpdatedAt: Number(masterState.adminUpdatedAt || Date.now()),
     systemToggles: masterState.systemToggles || {},
     auditModalConfig: masterState.auditModalConfig || {},
@@ -656,7 +674,7 @@ function redactStateForClient(masterState, authSession) {
     ludoManualMatches: masterState.ludoManualMatches || [],
     unoManualMatches: masterState.unoManualMatches || [],
     mathManualMatches: masterState.mathManualMatches || [],
-    liveMatchmakingLobby: masterState.liveMatchmakingLobby || { UNO: [], LUDO: [], QUIZ: [] },
+    liveMatchmakingLobby: sanitizeLobby(masterState.liveMatchmakingLobby),
     paymentGatewayConfig: masterState.paymentGatewayConfig
       ? {
           mode: masterState.paymentGatewayConfig.mode || 'MANUAL',

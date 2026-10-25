@@ -30798,46 +30798,8 @@ function generateGenuineQrMatrix(text) {
   // ===========================================================================
   // 5. LUDO, UNO & QUIZ 1VS1 INSTANT MATCH OPTION + INLINE BALANCE FEEDBACK
   // ===========================================================================
-  window.triggerInstant1v1OpponentMatch = function(gameKey) {
-    const st = getSharedStV9();
-    const oppNames = {
-      UNO: { userId: 'USR-601', username: 'Vikram_UNO' },
-      LUDO: { userId: 'USR-819', username: 'Aarav_King' },
-      QUIZ: { userId: 'USR-701', username: 'Rohan_IQ' }
-    };
-    const opp = oppNames[gameKey] || { userId: 'USR-204', username: 'Player_204' };
-    const myUid = window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : 'UID-10001';
-    if (st.liveMatchmakingLobby && Array.isArray(st.liveMatchmakingLobby[gameKey])) {
-      st.liveMatchmakingLobby[gameKey].forEach(q => {
-        if (q && q.userId === myUid) {
-          q.status = 'MATCHED';
-          q.matchedWithUid = opp.userId;
-          q.matchedWithName = opp.username;
-        }
-      });
-      saveSharedStV9(st);
-    }
-  };
-
-  // Enhance the 1vs1 searching sub-text to include an "⚡ Instant Match Now" button so single-device testing doesn't have to wait 120s
-  const mutObs = new MutationObserver(() => {
-    ['UNO', 'LUDO', 'QUIZ'].forEach(gk => {
-      const subId = gk === 'UNO' ? 'mmSubText' : (gk === 'LUDO' ? 'ludoMmSub' : 'mathMmSub');
-      const subEl = document.getElementById(subId);
-      if (subEl && subEl.innerHTML.includes('Cancel Search') && !subEl.innerHTML.includes('triggerInstant1v1OpponentMatch')) {
-        const extraBtnHtml = `
-          <button type="button" onclick="window.triggerInstant1v1OpponentMatch('${gk}')" style="margin-right:8px;padding:8px 16px;border-radius:999px;background:linear-gradient(135deg,#22c55e,#15803d);border:none;color:#ffffff;font-size:0.78rem;font-weight:900;cursor:pointer;box-shadow:0 4px 12px rgba(22,163,74,0.35);">
-            ⚡ Instant Match Now
-          </button>
-        `;
-        subEl.innerHTML = subEl.innerHTML.replace(
-          '<button type="button" onclick="window.cancelActive1v1Search',
-          extraBtnHtml + '<button type="button" onclick="window.cancelActive1v1Search'
-        );
-      }
-    });
-  });
-  mutObs.observe(document.body, { childList: true, subtree: true });
+  // Real-Player-Only 1vs1 Matchmaking: Fake bot instant-match disabled per production requirement
+  window.triggerInstant1v1OpponentMatch = function() {};
 
   window.renderWithdrawPage();
   window.renderEverything();
@@ -32540,78 +32502,9 @@ function generateGenuineQrMatrix(text) {
   // 3. ENHANCED 1VS1 MATCHMAKING FOR UNO, LUDO & QUIZ GAME (FAST AUTO-MATCH
   //    SO PLAYERS CAN PLAY IMMEDIATELY WITHOUT WAITING 120 SECONDS!)
   // =========================================================================
-  window.fastMatch1v1OnlinePlayerNow = function(gameKey) {
-    const st = loadSharedStateV13();
-    const myUid = window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : 'UID-10001';
-    const oppPool = {
-      UNO:  [
-        { userId: 'USR-601', username: 'Vikram_UNO' },
-        { userId: 'USR-712', username: 'Aarav_Cards' },
-        { userId: 'USR-834', username: 'Rohan_Star' }
-      ],
-      LUDO: [
-        { userId: 'USR-819', username: 'Aarav_King' },
-        { userId: 'USR-512', username: 'Kabir_Royal' },
-        { userId: 'USR-904', username: 'Dev_Master' }
-      ],
-      QUIZ: [
-        { userId: 'USR-701', username: 'Rohan_IQ' },
-        { userId: 'USR-615', username: 'Neha_Speed' },
-        { userId: 'USR-409', username: 'Vikram_Calc' }
-      ]
-    };
-    const pool = oppPool[gameKey] || oppPool.UNO;
-    const chosen = pool[Math.floor(Math.random() * pool.length)];
-
-    if (!st.liveMatchmakingLobby || typeof st.liveMatchmakingLobby !== 'object') {
-      st.liveMatchmakingLobby = { UNO: [], LUDO: [], QUIZ: [] };
-    }
-    if (!Array.isArray(st.liveMatchmakingLobby[gameKey])) {
-      st.liveMatchmakingLobby[gameKey] = [];
-    }
-    let foundMyEntry = false;
-    st.liveMatchmakingLobby[gameKey].forEach(q => {
-      if (q && q.userId === myUid) {
-        q.status = 'MATCHED';
-        q.matchedWithUid = chosen.userId;
-        q.matchedWithName = chosen.username;
-        foundMyEntry = true;
-      }
-    });
-    if (!foundMyEntry) {
-      st.liveMatchmakingLobby[gameKey].push({
-        queueId: `MM-${gameKey}-${myUid}-${Date.now()}`,
-        gameKey,
-        userId: myUid,
-        username: st.username || 'Player',
-        status: 'MATCHED',
-        matchedWithUid: chosen.userId,
-        matchedWithName: chosen.username,
-        joinedAt: Date.now()
-      });
-    }
-    saveSharedStateV13(st, true);
-  };
-
-  window.triggerInstant1v1OpponentMatch = window.fastMatch1v1OnlinePlayerNow;
-
-  // Automatically match 1vs1 games within 3 seconds if no second human tab is currently searching, so UNO, Ludo, and Quiz 1vs1 never hang!
-  setInterval(() => {
-    ['UNO', 'LUDO', 'QUIZ'].forEach(gk => {
-      const mmViewId = gk === 'UNO' ? 'matchmakingView' : (gk === 'LUDO' ? 'ludoMatchmakingView' : 'mathMatchmakingView');
-      const mmEl = document.getElementById(mmViewId);
-      if (mmEl && mmEl.classList.contains('show')) {
-        if (!mmEl.__matchStartTs) {
-          mmEl.__matchStartTs = Date.now();
-        } else if (Date.now() - mmEl.__matchStartTs >= 2500) {
-          mmEl.__matchStartTs = Date.now() + 60000;
-          window.fastMatch1v1OnlinePlayerNow(gk);
-        }
-      } else if (mmEl) {
-        mmEl.__matchStartTs = 0;
-      }
-    });
-  }, 600);
+  // Real-Player-Only 1vs1 Matchmaking: Never auto-match with fake bots
+  window.fastMatch1v1OnlinePlayerNow = function() {};
+  window.triggerInstant1v1OpponentMatch = function() {};
 
   // =========================================================================
   // 4. CONTINUOUS DEVICE HEARTBEAT & REAL-TIME BALANCE WATCHER
@@ -32890,6 +32783,23 @@ function generateGenuineQrMatrix(text) {
   const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
   const XYZ_TAB_SESSION_KEY = 'XYZ_TAB_USER_AUTH_SESSION_V8';
   const XYZ_LOCAL_SESS_KEY = 'XYZ_ACTIVE_AUTH_SESSION_V1';
+  const FAKE_BOT_UIDS = new Set(['USR-601', 'USR-712', 'USR-834', 'USR-819', 'USR-512', 'USR-904', 'USR-701', 'USR-615', 'USR-409', 'USR-204']);
+
+  // Unique per-tab session identifier so two real tabs/devices can match in 1vs1 while one tab never matches itself
+  const TAB_MM_SESSION_KEY = 'XYZ_TAB_MM_SESSION_ID_V17';
+  let myTabMmSessionId = '';
+  try {
+    if (window.sessionStorage) {
+      myTabMmSessionId = window.sessionStorage.getItem(TAB_MM_SESSION_KEY) || '';
+      if (!myTabMmSessionId) {
+        myTabMmSessionId = 'SESS-' + Date.now() + '-' + Math.floor(10000 + Math.random() * 89999);
+        window.sessionStorage.setItem(TAB_MM_SESSION_KEY, myTabMmSessionId);
+      }
+    }
+  } catch (e) {}
+  if (!myTabMmSessionId) {
+    myTabMmSessionId = 'SESS-' + Date.now() + '-' + Math.floor(10000 + Math.random() * 89999);
+  }
 
   function getActiveCustomerSessV15() {
     try {
@@ -32907,6 +32817,143 @@ function generateGenuineQrMatrix(text) {
     } catch (e) {}
     return window.__xyzTabSessionMem || null;
   }
+
+  // 0. Auto-stamp `lastUserBalanceUpdateAt` whenever Customer locally updates `st.balance`
+  //    so heartbeats never overwrite a local game bet, entry fee deduction, or refund!
+  if (window.__xyzSafeStorage && !window.__xyzSafeStorage.__v17BalanceStamped) {
+    const _origSetItemV17 = window.__xyzSafeStorage.setItem.bind(window.__xyzSafeStorage);
+    const _origGetItemV17 = window.__xyzSafeStorage.getItem.bind(window.__xyzSafeStorage);
+    window.__xyzSafeStorage.__v17BalanceStamped = true;
+    window.__xyzSafeStorage.setItem = function(key, val) {
+      if (key === XYZ_STATE_KEY && !window.__isApplyingRemoteCloudState && typeof val === 'string') {
+        try {
+          const prevRaw = _origGetItemV17(XYZ_STATE_KEY);
+          const prevObj = prevRaw ? JSON.parse(prevRaw) : null;
+          const nextObj = JSON.parse(val);
+          if (nextObj && typeof nextObj === 'object') {
+            const sess = getActiveCustomerSessV15();
+            const uid = (sess && sess.userId) || nextObj.activeUserId || '';
+            const prevBal = (prevObj && typeof prevObj.balance === 'number') ? prevObj.balance : null;
+            if (prevBal !== null && typeof nextObj.balance === 'number' && Math.abs(nextObj.balance - prevBal) > 0.005) {
+              const now = Date.now();
+              nextObj.lastUserBalanceUpdateAt = now;
+              if (uid && uid !== 'GUEST') {
+                (nextObj.adminUsersList || []).forEach(u => {
+                  if (u && u.userId === uid) {
+                    u.cashBalanceInr = nextObj.balance;
+                    u.lastUserBalanceUpdateAt = now;
+                  }
+                });
+                (nextObj.registeredAccounts || []).forEach(a => {
+                  if (a && a.userId === uid) {
+                    a.cashBalanceInr = nextObj.balance;
+                    a.lastUserBalanceUpdateAt = now;
+                  }
+                });
+              }
+              val = JSON.stringify(nextObj);
+            }
+          }
+        } catch (e) {}
+      }
+      return _origSetItemV17(key, val);
+    };
+  }
+
+  // Helper to merge arrays by ID while preferring resolved statuses (CONFIRMED/FAILED/Completed/Rejected) & newer timestamps
+  function mergeRecordsAuthoritativelyV17(localArr, remoteArr, idField) {
+    const a = Array.isArray(localArr) ? localArr : [];
+    const b = Array.isArray(remoteArr) ? remoteArr : [];
+    if (a.length === 0) return b;
+    if (b.length === 0) return a;
+    const map = new Map();
+    const order = [];
+    const isResolvedStatus = (st) => {
+      const s = String(st || '').toUpperCase();
+      return ['CONFIRMED', 'APPROVED', 'COMPLETED', 'SUCCESS', 'FAILED', 'REJECTED', 'PAID', 'REVERSED', 'MATCHED'].includes(s);
+    };
+    const getTs = (it) => Math.max(
+      Number(it.updatedAt || 0),
+      Number(it.confirmedAt || 0),
+      Number(it.matchedAt || 0),
+      Number(it.lastAdminBalanceUpdateAt || 0),
+      Number(it.lastUserBalanceUpdateAt || 0),
+      Number(it.timestamp || 0),
+      Number(it.createdAt || 0),
+      Number(it.joinedAt || 0)
+    );
+    [...b, ...a].forEach(item => {
+      if (!item || typeof item !== 'object') return;
+      const k = String(item[idField] || item.depositId || item.withdrawalId || item.id || item.queueId || item.userId || item.code || '');
+      if (!k) return;
+      if (!map.has(k)) {
+        map.set(k, Object.assign({}, item));
+        order.push(k);
+      } else {
+        const ex = map.get(k);
+        const exRes = isResolvedStatus(ex.status || ex.reviewStatus || ex.payoutStatus);
+        const itRes = isResolvedStatus(item.status || item.reviewStatus || item.payoutStatus);
+        if (itRes && !exRes) {
+          map.set(k, Object.assign({}, ex, item));
+        } else if (exRes && !itRes) {
+          map.set(k, Object.assign({}, item, ex));
+        } else if (getTs(item) > getTs(ex)) {
+          map.set(k, Object.assign({}, ex, item));
+        } else {
+          map.set(k, Object.assign({}, item, ex));
+        }
+      }
+    });
+    return order.map(k => map.get(k));
+  }
+
+  // Upgrade mergeXyzMultiDeviceState to properly merge liveMatchmakingLobby, adminDeposits, and transactions
+  const _origMergeCustV16 = window.mergeXyzMultiDeviceState;
+  window.mergeXyzMultiDeviceState = function(localSt, remoteSt) {
+    const merged = _origMergeCustV16 ? _origMergeCustV16(localSt, remoteSt) : Object.assign({}, localSt || {}, remoteSt || {});
+    const isAnonRemote = Boolean(remoteSt && remoteSt.__authRole === 'ANON');
+
+    if (isAnonRemote) {
+      // Never let an unauthenticated/anonymous state wipe out customer's local deposits, withdrawals, or transactions!
+      merged.adminDeposits = Array.isArray(localSt && localSt.adminDeposits) ? localSt.adminDeposits : [];
+      merged.adminWithdrawals = Array.isArray(localSt && localSt.adminWithdrawals) ? localSt.adminWithdrawals : [];
+      merged.transactions = Array.isArray(localSt && localSt.transactions) ? localSt.transactions : [];
+    } else {
+      merged.adminDeposits = mergeRecordsAuthoritativelyV17(localSt && localSt.adminDeposits, remoteSt && remoteSt.adminDeposits, 'depositId');
+      merged.adminWithdrawals = mergeRecordsAuthoritativelyV17(localSt && localSt.adminWithdrawals, remoteSt && remoteSt.adminWithdrawals, 'withdrawalId');
+      merged.transactions = mergeRecordsAuthoritativelyV17(localSt && localSt.transactions, remoteSt && remoteSt.transactions, 'id');
+    }
+
+    // Sync transaction status with adminDeposits status so Deposit History always reflects Confirmed/Rejected
+    const depStatusMap = new Map();
+    (merged.adminDeposits || []).forEach(d => {
+      if (d && d.depositId) depStatusMap.set(d.depositId, d);
+      if (d && d.txId) depStatusMap.set(String(d.txId), d);
+    });
+    (merged.transactions || []).forEach(tx => {
+      if (!tx) return;
+      const matchedDep = depStatusMap.get(tx.depositId) || depStatusMap.get(String(tx.id));
+      if (matchedDep) {
+        if (matchedDep.status === 'CONFIRMED' || matchedDep.status === 'APPROVED') tx.status = 'Completed';
+        else if (matchedDep.status === 'FAILED' || matchedDep.status === 'REJECTED') tx.status = 'Rejected';
+      }
+    });
+
+    // Merge liveMatchmakingLobby cleanly and strip any fake bot UIDs
+    const remLobby = (remoteSt && remoteSt.liveMatchmakingLobby && typeof remoteSt.liveMatchmakingLobby === 'object') ? remoteSt.liveMatchmakingLobby : {};
+    const locLobby = (localSt && localSt.liveMatchmakingLobby && typeof localSt.liveMatchmakingLobby === 'object') ? localSt.liveMatchmakingLobby : {};
+    merged.liveMatchmakingLobby = { UNO: [], LUDO: [], QUIZ: [] };
+    ['UNO', 'LUDO', 'QUIZ'].forEach(gk => {
+      const combined = mergeRecordsAuthoritativelyV17(locLobby[gk], remLobby[gk], 'queueId');
+      merged.liveMatchmakingLobby[gk] = combined.filter(q =>
+        q && q.userId && !FAKE_BOT_UIDS.has(String(q.userId)) &&
+        (!q.matchedWithUid || !FAKE_BOT_UIDS.has(String(q.matchedWithUid))) &&
+        (Date.now() - Number(q.joinedAt || 0) < 120000)
+      );
+    });
+
+    return merged;
+  };
 
   // 1. Automatic Post-Deploy Customer JWT Session Sync (`/api/auth/session-sync`)
   let isSyncingCustomerJwt = false;
@@ -32943,12 +32990,13 @@ function generateGenuineQrMatrix(text) {
 
       const userRec = (st.adminUsersList || []).find(u => u && u.userId === uid) ||
                       (st.registeredAccounts || []).find(a => a && a.userId === uid) || null;
+      const myPendingDeps = (st.adminDeposits || []).filter(d => d && (!d.userId || d.userId === uid));
 
       const res = await fetch(['', 'api', 'auth/session-sync'].join('/'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-XYZ-Session-Sync': 'V16'
+          'X-XYZ-Session-Sync': 'V17'
         },
         body: JSON.stringify({
           type: 'CUSTOMER',
@@ -32956,7 +33004,8 @@ function generateGenuineQrMatrix(text) {
           username: uname,
           identity: ident,
           cashBalanceInr: Number(st.balance || (userRec && userRec.cashBalanceInr) || 0),
-          userRecord: userRec
+          userRecord: userRec,
+          pendingDeposits: myPendingDeps
         })
       });
       if (!res.ok) return false;
@@ -33002,7 +33051,7 @@ function generateGenuineQrMatrix(text) {
     };
   }
 
-  // 2. Reconnect Customer SSE Stream with JWT token so server pushes scoped customer state + remote commands in real time
+  // 2. Reconnect Customer SSE Stream with JWT token
   let activeCustomerEs = null;
   window.reconnectAuthenticatedCustomerSse = function() {
     if (window.location.protocol === 'file:') return;
@@ -33095,14 +33144,21 @@ function generateGenuineQrMatrix(text) {
 
   window.applyRemoteStateToCustomerV15 = function(remoteSt) {
     if (!remoteSt || typeof remoteSt !== 'object') return;
+    const sess = getActiveCustomerSessV15();
+    let localSt = {};
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) localSt = JSON.parse(raw) || {};
+    } catch (e) {}
+
+    const myUid = (sess && sess.userId) || (localSt.isLoggedIn && localSt.activeUserId !== 'GUEST' ? localSt.activeUserId : '');
+    // If customer is logged in but server returned ANON state (e.g. after Render redeploy), heal JWT immediately!
+    if (myUid && myUid !== 'GUEST' && remoteSt.__authRole === 'ANON') {
+      window.ensureValidCustomerJwtSessionV16(true);
+    }
+
     try {
       window.__isApplyingRemoteCloudState = true;
-      let localSt = {};
-      try {
-        const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
-        if (raw) localSt = JSON.parse(raw) || {};
-      } catch (e) {}
-
       const merged = window.mergeXyzMultiDeviceState ? window.mergeXyzMultiDeviceState(localSt, remoteSt) : Object.assign({}, localSt, remoteSt);
       if (Array.isArray(remoteSt.remoteCommandsQueue)) {
         merged.remoteCommandsQueue = remoteSt.remoteCommandsQueue;
@@ -33121,14 +33177,33 @@ function generateGenuineQrMatrix(text) {
       try { if (typeof window.renderBalance === 'function') window.renderBalance(); } catch (e) {}
       try { if (typeof window.updateProfileNotificationBadges === 'function') window.updateProfileNotificationBadges(); } catch (e) {}
 
+      // Always keep Deposit History & Deposit Balance Hero up to date even if user is on Deposit screen
+      const curView = window.__xyzCurrentActiveView || 'homepage';
+      if (curView === 'deposit') {
+        if (typeof window.renderDepositHistoryList === 'function') window.renderDepositHistoryList();
+        const heroPrim = document.getElementById('heroWalletPrimary');
+        const heroSec = document.getElementById('heroWalletSecondary');
+        const rate = Number((merged.currencyConfig && merged.currencyConfig.depositUsdtToInrRate) || 100);
+        const balInr = Number(merged.balance || 0);
+        const balUsdt = +(balInr / rate).toFixed(2);
+        if (heroPrim && heroSec) {
+          if (merged.currency === 'USDT') {
+            heroPrim.textContent = `${balUsdt.toFixed(2)} USDT`;
+            heroSec.textContent = `≈ ₹${balInr.toLocaleString('en-IN', { minimumFractionDigits: 2 })} INR`;
+          } else {
+            heroPrim.textContent = `₹${balInr.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`;
+            heroSec.textContent = `≈ ${balUsdt.toFixed(2)} USDT`;
+          }
+        }
+      }
+
       const activeEl = document.activeElement;
       const isTyping = activeEl && ['INPUT', 'TEXTAREA', 'SELECT'].includes((activeEl.tagName || '').toUpperCase());
       const openModal = document.querySelector('.bet-popup-backdrop.show, .drawer-backdrop.show, .modal-backdrop.show');
       if (!isTyping && !openModal) {
-        const curView = window.__xyzCurrentActiveView || 'homepage';
         if (curView === 'deposit') {
           if (typeof window.pickRandomGatewayCredentialsForDeposit === 'function') window.pickRandomGatewayCredentialsForDeposit(false);
-          if (typeof window.renderDepositHistoryList === 'function') window.renderDepositHistoryList();
+          if (typeof window.onAmountInputChanged === 'function') window.onAmountInputChanged();
         }
         else if (curView === 'withdraw' && typeof window.renderWithdrawPage === 'function') window.renderWithdrawPage();
         else if (curView === 'lottery' && typeof window.renderLottoAll === 'function') window.renderLottoAll();
@@ -33164,58 +33239,382 @@ function generateGenuineQrMatrix(text) {
     } catch (e) {}
   };
 
-  // 3. Wire Customer Deposit Submission (`handleProceedToPayment`) to `POST /api/deposit/submit`
-  //    so deposits from ANY mobile device immediately appear in the Admin Panel!
-  const _origProceedPaymentV14 = window.handleProceedToPayment;
-  window.handleProceedToPayment = async function() {
-    let beforeIds = new Set();
-    try {
-      const stPre = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
-      beforeIds = new Set((stPre.adminDeposits || []).map(d => d && d.depositId));
-    } catch (e) {}
-
-    if (typeof _origProceedPaymentV14 === 'function') {
-      await _origProceedPaymentV14();
-    }
-
-    if (window.location.protocol !== 'file:') {
-      try {
-        await window.ensureValidCustomerJwtSessionV16(false);
-        const sess = getActiveCustomerSessV15();
-        const stPost = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
-        const newDep = (stPost.adminDeposits || []).find(d => d && d.depositId && !beforeIds.has(d.depositId));
-        if (newDep) {
-          const effectiveUid = (sess && sess.userId) || ( newDep.userId && newDep.userId !== 'GUEST' ? newDep.userId : 'UID-10001');
-          const effectiveUname = (sess && sess.username) || newDep.username || stPost.username || 'Player';
-          newDep.userId = effectiveUid;
-          newDep.username = effectiveUname;
-          await fetch(['', 'api', 'deposit/submit'].join('/'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              depositId: newDep.depositId,
-              txId: newDep.txId,
-              userId: effectiveUid,
-              username: effectiveUname,
-              amountInr: newDep.amountInr,
-              usdtAmount: newDep.usdtAmount,
-              appliedRate: newDep.appliedRate,
-              method: newDep.method,
-              paidToId: newDep.paidToId,
-              utr: newDep.utrNumber || newDep.utr,
-              utrNumber: newDep.utrNumber || newDep.utr,
-              providerRef: newDep.providerRef
-            })
-          });
-        }
-      } catch (e) {}
-    }
-    if (typeof window.pushCustomerStateToCloud === 'function') {
-      try { await window.pushCustomerStateToCloud(); } catch (e) {}
+  // ===========================================================================
+  // 3. COMPLETE CUSTOMER DEPOSIT REPAIR (CURRENCY TOGGLE, QR SYNC, SUBMIT & HISTORY)
+  // ===========================================================================
+  window.switchDisplayCurrency = function(curr) {
+    const targetMethod = (String(curr || '').toUpperCase() === 'USDT') ? 'USDT' : 'UPI';
+    if (typeof window.selectPaymentMethod === 'function') {
+      window.selectPaymentMethod(targetMethod);
     }
   };
 
+  let activeDepositHistoryFilterV17 = 'ALL';
+  window.setDepositHistoryFilter = function(filterKey) {
+    activeDepositHistoryFilterV17 = filterKey || 'ALL';
+    ['ALL', '24H', '7D', '1M', '1Y', '5Y'].forEach(k => {
+      const btn = document.getElementById(`df-${k}`);
+      if (btn) btn.classList.toggle('active', k === activeDepositHistoryFilterV17);
+    });
+    window.renderDepositHistoryList();
+  };
+
+  window.renderDepositHistoryList = function() {
+    const listEl = document.getElementById('depositHistoryList');
+    if (!listEl) return;
+
+    let st = {};
+    try {
+      st = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+    } catch (e) {}
+
+    const sess = getActiveCustomerSessV15();
+    const myUid = (sess && sess.userId) || (window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : st.activeUserId) || 'UID-10001';
+    const now = Date.now();
+    const DAY_MS = 86400 * 1000;
+    const windowMap = {
+      '24H': 1 * DAY_MS,
+      '7D':  7 * DAY_MS,
+      '1M':  30 * DAY_MS,
+      '1Y':  365 * DAY_MS,
+      '5Y':  5 * 365 * DAY_MS
+    };
+    const cutoff = activeDepositHistoryFilterV17 === 'ALL' ? 0 : (now - (windowMap[activeDepositHistoryFilterV17] || 0));
+    const rate = Number((st.currencyConfig && st.currencyConfig.depositUsdtToInrRate) || 100);
+
+    // Combine canonical deposits from st.adminDeposits and deposit/bonus records from st.transactions without duplicates
+    const combinedMap = new Map();
+
+    (st.adminDeposits || []).forEach(d => {
+      if (!d || !d.depositId) return;
+      if (d.userId && d.userId !== myUid && d.userId !== 'USR-001') return;
+      const ts = Number(d.createdAt || d.updatedAt || now);
+      if (ts < cutoff) return;
+      const stUpper = String(d.status || 'PENDING').toUpperCase();
+      let statusLabel = 'Processing';
+      let badgeColor = '#d97706';
+      let badgeBg = 'rgba(245, 158, 11, 0.14)';
+      if (stUpper === 'CONFIRMED' || stUpper === 'APPROVED' || stUpper === 'COMPLETED' || stUpper === 'SUCCESS') {
+        statusLabel = 'Approved & Credited';
+        badgeColor = '#15803d';
+        badgeBg = 'rgba(22, 163, 74, 0.14)';
+      } else if (stUpper === 'FAILED' || stUpper === 'REJECTED') {
+        statusLabel = 'Rejected';
+        badgeColor = '#e11d48';
+        badgeBg = 'rgba(225, 29, 72, 0.14)';
+      }
+      const utrClean = d.utrNumber || d.utr || String(d.providerRef || '').replace(/^(UTR:|TXID:)\s*/i, '') || '—';
+      combinedMap.set(d.depositId, {
+        key: d.depositId,
+        txId: d.txId || d.depositId,
+        method: String(d.method || 'UPI').toUpperCase(),
+        amountInr: Math.abs(Number(d.amountInr || 0)),
+        usdtAmount: Number(d.usdtAmount || (Math.abs(Number(d.amountInr || 0)) / rate)),
+        bonusInr: Number(d.firstDepositBonusInr || 0),
+        bonusPct: Number(d.firstDepositBonusPct || 0),
+        paidToId: d.paidToId || '',
+        utr: utrClean,
+        statusLabel,
+        badgeColor,
+        badgeBg,
+        timestamp: ts
+      });
+    });
+
+    (st.transactions || []).forEach(tx => {
+      if (!tx) return;
+      const isDepOrBonus = !tx.type || tx.type === 'DEPOSIT' || tx.type === 'GIFT_CODE' || tx.type === 'BONUS';
+      if (!isDepOrBonus) return;
+      if (tx.userId && tx.userId !== myUid && tx.userId !== 'USR-001') return;
+      const ts = Number(tx.timestamp || now);
+      if (ts < cutoff) return;
+      const depKey = tx.depositId || (String(tx.id || '').startsWith('DEP-') ? String(tx.id) : null);
+      if (depKey && combinedMap.has(depKey)) return;
+      // Also check if tx.id matches any existing deposit's txId
+      for (const existingVal of combinedMap.values()) {
+        if (String(existingVal.txId) === String(tx.id)) return;
+      }
+      const stRaw = String(tx.status || 'Completed').toUpperCase();
+      let statusLabel = 'Completed';
+      let badgeColor = '#15803d';
+      let badgeBg = 'rgba(22, 163, 74, 0.14)';
+      if (stRaw.includes('PEND') || stRaw.includes('PROCESS')) {
+        statusLabel = 'Processing';
+        badgeColor = '#d97706';
+        badgeBg = 'rgba(245, 158, 11, 0.14)';
+      } else if (stRaw.includes('FAIL') || stRaw.includes('REJECT')) {
+        statusLabel = 'Rejected';
+        badgeColor = '#e11d48';
+        badgeBg = 'rgba(225, 29, 72, 0.14)';
+      }
+      const inrVal = Math.abs(Number(tx.amount || 0));
+      combinedMap.set(String(tx.id || ('TX-' + ts)), {
+        key: String(tx.id || ('TX-' + ts)),
+        txId: tx.id,
+        titleOverride: tx.title,
+        method: tx.method || (tx.type === 'GIFT_CODE' ? 'GIFT' : (tx.type === 'BONUS' ? 'BONUS' : 'UPI')),
+        amountInr: inrVal,
+        usdtAmount: tx.usdtEquivalent !== undefined ? Number(tx.usdtEquivalent) : +(inrVal / rate).toFixed(2),
+        bonusInr: 0,
+        bonusPct: 0,
+        paidToId: tx.paidToId || '',
+        utr: tx.utrNumber || tx.refId || '',
+        statusLabel,
+        badgeColor,
+        badgeBg,
+        timestamp: ts
+      });
+    });
+
+    const records = Array.from(combinedMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+    if (records.length === 0) {
+      listEl.innerHTML = `<p style="color:var(--text-olive);text-align:center;padding:18px 0;font-size:0.9rem;">No deposit records in this time filter.</p>`;
+      return;
+    }
+
+    listEl.innerHTML = records.map(item => {
+      const dateTxt = new Date(item.timestamp).toLocaleString('en-IN', {
+        month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+      const isUsdt = item.method === 'USDT';
+      const amtPrimary = isUsdt
+        ? `${item.usdtAmount.toFixed(2)} USDT (₹${item.amountInr.toLocaleString('en-IN')})`
+        : `₹${item.amountInr.toLocaleString('en-IN', { minimumFractionDigits: 2 })} (${item.usdtAmount.toFixed(2)} USDT)`;
+      const heading = item.titleOverride || `Deposit ${item.key} (${item.method})`;
+      const subDetails = item.utr
+        ? `<div style="font-size:0.74rem;color:var(--text-olive);margin-top:3px;">${isUsdt ? 'TXID' : 'UTR'}: <code>${item.utr}</code>${item.paidToId ? ` • Paid to: <code>${item.paidToId}</code>` : ''}</div>`
+        : '';
+      const bonusBadge = (item.bonusInr > 0 && item.statusLabel === 'Approved & Credited')
+        ? `<div style="font-size:0.73rem;color:#6d28d9;font-weight:800;margin-top:2px;">🎁 +₹${item.bonusInr} (${item.bonusPct}% Deposit Bonus Credited)</div>`
+        : '';
+
+      return `
+        <div class="history-item" style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+          <div class="hist-left" style="flex:1;min-width:0;">
+            <span class="hist-tx-id" style="font-weight:800;display:block;">${heading}</span>
+            <span class="hist-amount" style="font-weight:900;color:var(--green-btn);display:block;margin-top:2px;">+${amtPrimary}</span>
+            ${subDetails}
+            ${bonusBadge}
+          </div>
+          <div style="text-align:right;flex-shrink:0;">
+            <span style="display:inline-block;padding:3px 9px;border-radius:999px;font-size:0.7rem;font-weight:800;color:${item.badgeColor};background:${item.badgeBg};margin-bottom:4px;">
+              ${item.statusLabel}
+            </span>
+            <span class="hist-date" style="display:block;font-size:0.72rem;">${dateTxt}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  };
+
+  let isSubmittingDepositV17 = false;
+  window.handleProceedToPayment = async function() {
+    if (isSubmittingDepositV17) return;
+    if (typeof window.enforceDepositMinimumGate === 'function' && !window.enforceDepositMinimumGate()) {
+      document.getElementById('depositAmountInput')?.focus();
+      return;
+    }
+
+    let st = {};
+    try {
+      st = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+    } catch (e) {}
+
+    const isUsdtTab = Boolean(document.getElementById('mTab-USDT')?.classList.contains('active'));
+    const method = isUsdtTab ? 'USDT' : 'UPI';
+    const minUpiInr = Number((st.depositMinConfig && st.depositMinConfig.minUpiInr) || 100);
+    const minUsdt   = Number((st.depositMinConfig && st.depositMinConfig.minUsdt) || 5);
+    const { inrAmt, usdtAmt, rate } = window.getEnteredAmounts ? window.getEnteredAmounts() : { inrAmt: 500, usdtAmt: 5, rate: 100 };
+    const ban = document.getElementById('depProcessingStatusBanner');
+    const submitBtn = document.getElementById('proceedPaymentBtn');
+
+    const showDepBanner = (htmlContent, isError) => {
+      if (!ban) return;
+      ban.style.display = 'block';
+      ban.style.background = isError ? 'rgba(225, 29, 72, 0.12)' : 'rgba(22, 163, 74, 0.12)';
+      ban.style.borderColor = isError ? '#e11d48' : '#16a34a';
+      ban.innerHTML = htmlContent;
+    };
+
+    if (method === 'UPI') {
+      if (!Number.isFinite(inrAmt) || inrAmt < minUpiInr) {
+        showDepBanner(`<strong style="color:#e11d48;">⚠️ Minimum deposit amount via UPI is ₹${minUpiInr} INR.</strong>`, true);
+        document.getElementById('depositAmountInput')?.focus();
+        return;
+      }
+    } else {
+      if (!Number.isFinite(usdtAmt) || usdtAmt < minUsdt) {
+        showDepBanner(`<strong style="color:#e11d48;">⚠️ Minimum deposit amount via USDT is ${minUsdt} USDT.</strong>`, true);
+        document.getElementById('depositAmountInput')?.focus();
+        return;
+      }
+    }
+
+    const gw = st.paymentGatewayConfig || {};
+    const gwMode = String(method === 'UPI' ? (gw.upiMode || gw.mode || 'MANUAL') : (gw.usdtMode || gw.mode || 'MANUAL')).toUpperCase();
+    const paidIntoId = (method === 'UPI')
+      ? (document.getElementById('merchantUpiIdDisplay')?.textContent || window.__currentRandomUpiId || st.upiId || 'xyzgames.pay@icici')
+      : (document.getElementById('merchantUsdtAddrDisplay')?.textContent || window.__currentRandomUsdtAddress || st.usdtAddress || 'TX9Q8kLmN2pRs7VwXyZ4aBcDeFgHiJkLmN');
+
+    let utrOrTxid = '';
+    if (method === 'UPI') {
+      utrOrTxid = (document.getElementById('upiUtrInput')?.value || '').trim();
+      if (!utrOrTxid && gwMode === 'AUTOMATIC') {
+        utrOrTxid = String(Math.floor(400000000000 + Math.random() * 599999999999));
+      }
+      if (!/^\d{12}$/.test(utrOrTxid)) {
+        showDepBanner(`<strong style="color:#e11d48;">⚠️ Invalid UTR Number! Please enter your 12-digit numeric UPI UTR number (0–9 only).</strong>`, true);
+        document.getElementById('upiUtrInput')?.focus();
+        return;
+      }
+    } else {
+      utrOrTxid = (document.getElementById('usdtTxidInput')?.value || '').trim().replace(/^TXID:\s*/i, '');
+      if (!utrOrTxid && gwMode === 'AUTOMATIC') {
+        utrOrTxid = '0x' + Array.from({ length: 24 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+      }
+      if (!utrOrTxid || utrOrTxid.length < 6 || !/^[A-Za-z0-9_-]{6,80}$/.test(utrOrTxid)) {
+        showDepBanner(`<strong style="color:#e11d48;">⚠️ Invalid USDT Transaction ID (TXID)! Please paste your blockchain TXID / reference hash (minimum 6 alphanumeric characters).</strong>`, true);
+        document.getElementById('usdtTxidInput')?.focus();
+        return;
+      }
+    }
+
+    // Check duplicate UTR locally first
+    const localDup = (st.adminDeposits || []).find(
+      d => d && String(d.utr || d.utrNumber || '').toLowerCase() === utrOrTxid.toLowerCase() && d.status !== 'FAILED' && d.status !== 'REJECTED'
+    );
+    if (localDup) {
+      showDepBanner(`<strong style="color:#e11d48;">⚠️ This ${method === 'UPI' ? 'UTR' : 'TXID'} (<code>${utrOrTxid}</code>) has already been submitted (${localDup.depositId}).</strong>`, true);
+      return;
+    }
+
+    const sess = getActiveCustomerSessV15();
+    const customerUid = (sess && sess.userId) || (window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : st.activeUserId) || 'UID-10001';
+    const customerName = (sess && sess.username) || st.username || 'Player';
+    const fdb = window.getCustomerFirstDepositBonusPreview
+      ? window.getCustomerFirstDepositBonusPreview(st, inrAmt, method)
+      : { eligible: false, pct: 0, bonusInr: 0 };
+
+    const txNum = String(Math.floor(12346 + Math.random() * 87000));
+    const depId = 'DEP-' + txNum;
+    const now = Date.now();
+    const dateFormatted = new Date(now).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    let depRecord = {
+      depositId: depId,
+      txId: txNum,
+      userId: customerUid,
+      username: customerName,
+      amountInr: +Number(inrAmt).toFixed(2),
+      usdtAmount: +Number(usdtAmt).toFixed(2),
+      appliedRate: rate || 100,
+      method,
+      gatewayMode: gwMode,
+      paidToId: paidIntoId,
+      utr: utrOrTxid,
+      utrNumber: utrOrTxid,
+      providerRef: method === 'UPI' ? `UTR: ${utrOrTxid}` : `TXID: ${utrOrTxid}`,
+      firstDepositBonusPct: fdb.pct || 0,
+      firstDepositBonusInr: fdb.bonusInr || 0,
+      webhookVerified: false,
+      status: 'PENDING',
+      createdAt: now,
+      confirmedAt: null,
+      updatedAt: now,
+      idempotencyKey: `IDEMP-${depId}`
+    };
+
+    try {
+      isSubmittingDepositV17 = true;
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting...';
+      }
+
+      if (window.location.protocol !== 'file:') {
+        await window.ensureValidCustomerJwtSessionV16(false);
+        const res = await fetch(['', 'api', 'deposit/submit'].join('/'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(depRecord)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          showDepBanner(`<strong style="color:#e11d48;">⚠️ ${data.error || 'Failed to submit deposit request. Please check your UTR/TXID and try again.'}</strong>`, true);
+          return;
+        }
+        if (data.deposit && typeof data.deposit === 'object') {
+          depRecord = data.deposit;
+        }
+      }
+
+      // Refresh state and store canonical deposit & transaction without duplicates
+      try {
+        st = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+      } catch (e) {}
+
+      if (!Array.isArray(st.adminDeposits)) st.adminDeposits = [];
+      st.adminDeposits = st.adminDeposits.filter(d => d && d.depositId !== depRecord.depositId);
+      st.adminDeposits.unshift(depRecord);
+
+      if (!Array.isArray(st.transactions)) st.transactions = [];
+      st.transactions = st.transactions.filter(
+        t => t && t.id !== depRecord.depositId && t.depositId !== depRecord.depositId && String(t.id) !== String(depRecord.txId)
+      );
+      st.transactions.unshift({
+        id: depRecord.depositId,
+        depositId: depRecord.depositId,
+        txId: depRecord.txId,
+        userId: customerUid,
+        username: customerName,
+        type: 'DEPOSIT',
+        method,
+        paidToId: paidIntoId,
+        utrNumber: utrOrTxid,
+        refId: depRecord.providerRef,
+        title: `Deposit #${depRecord.txId} (${method})`,
+        amount: depRecord.amountInr,
+        usdtEquivalent: depRecord.usdtAmount,
+        status: 'Processing',
+        dateStr: dateFormatted,
+        timestamp: now,
+        updatedAt: now
+      });
+
+      window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+
+      if (document.getElementById('upiUtrInput')) document.getElementById('upiUtrInput').value = '';
+      if (document.getElementById('usdtTxidInput')) document.getElementById('usdtTxidInput').value = '';
+
+      const amtDisp = method === 'USDT' ? `${depRecord.usdtAmount.toFixed(2)} USDT (₹${depRecord.amountInr.toLocaleString('en-IN')})` : `₹${depRecord.amountInr.toLocaleString('en-IN')}`;
+      const bonusNote = (fdb.eligible && fdb.bonusInr > 0)
+        ? `<br/><span style="color:#6d28d9;font-weight:800;">🎁 Deposit Bonus (+${fdb.pct}%): +₹${fdb.bonusInr} will be credited upon Admin approval!</span>`
+        : '';
+      showDepBanner(`
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <strong style="color:#15803d;font-size:0.88rem;">✔ Deposit Request Submitted (${depRecord.depositId})</strong>
+          <span style="background:#dcfce7;color:#166534;font-size:0.68rem;font-weight:900;padding:2px 8px;border-radius:999px;">PROCESSING</span>
+        </div>
+        <div style="font-size:0.76rem;opacity:0.92;">
+          Amount: <strong>${amtDisp}</strong> • ${method === 'UPI' ? 'UTR' : 'TXID'}: <code>${utrOrTxid}</code>${bonusNote}
+        </div>
+      `, false);
+
+      window.renderDepositHistoryList();
+    } catch (e) {
+      showDepBanner(`<strong style="color:#e11d48;">⚠️ Network error while submitting deposit. Please try again.</strong>`, true);
+    } finally {
+      isSubmittingDepositV17 = false;
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit';
+      }
+    }
+  };
+
+  // ===========================================================================
   // 4. Wire Customer Withdrawal Submission (`submitWithdrawalRequest`) to `POST /api/withdraw/submit`
+  // ===========================================================================
   const _origSubmitWdV14 = window.submitWithdrawalRequest;
   window.submitWithdrawalRequest = async function() {
     let beforeWdIds = new Set();
@@ -33261,7 +33660,554 @@ function generateGenuineQrMatrix(text) {
     }
   };
 
-  // 5. Unified Cross-Device Heartbeat Poll that receives Remote Commands & Balance Updates from Server!
+  // ===========================================================================
+  // 5. REAL-PLAYER-ONLY 1VS1 MATCHMAKING ENGINE FOR UNO, LUDO & QUIZ
+  //    - Strictly matches ONLY with a real available online player!
+  //    - Never invents or matches with fake bots!
+  //    - Uses server-authoritative `/api/matchmaking/join`, `/poll`, `/cancel`
+  //      plus liveMatchmakingLobby sync across tabs/devices.
+  // ===========================================================================
+  let activeReal1v1SearchTimer = null;
+  let activeReal1v1State = null;
+
+  function loadStV17() {
+    try {
+      return JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveStV17(st) {
+    try {
+      window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+    } catch (e) {}
+  }
+
+  window.cancelActive1v1Search = async function(gameKey, refundFeeInr) {
+    if (activeReal1v1SearchTimer) {
+      clearInterval(activeReal1v1SearchTimer);
+      activeReal1v1SearchTimer = null;
+    }
+    const prevSearch = activeReal1v1State;
+    activeReal1v1State = null;
+
+    const st = loadStV17();
+    const sess = getActiveCustomerSessV15();
+    const myUid = (sess && sess.userId) || (window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : st.activeUserId) || 'UID-10001';
+    const qId = (prevSearch && prevSearch.queueId) || '';
+
+    if (st.liveMatchmakingLobby && Array.isArray(st.liveMatchmakingLobby[gameKey])) {
+      st.liveMatchmakingLobby[gameKey] = st.liveMatchmakingLobby[gameKey].filter(
+        q => q && q.queueId !== qId && !(q.userId === myUid && (!q.sessionKey || q.sessionKey === myTabMmSessionId))
+      );
+    }
+
+    const refundAmt = Number(refundFeeInr || 0);
+    if (refundAmt > 0) {
+      const now = Date.now();
+      st.balance = +(Number(st.balance || 0) + refundAmt).toFixed(2);
+      st.lastUserBalanceUpdateAt = now;
+      (st.adminUsersList || []).forEach(u => {
+        if (u && u.userId === myUid) {
+          u.cashBalanceInr = st.balance;
+          u.lastUserBalanceUpdateAt = now;
+        }
+      });
+      (st.registeredAccounts || []).forEach(a => {
+        if (a && a.userId === myUid) {
+          a.cashBalanceInr = st.balance;
+          a.lastUserBalanceUpdateAt = now;
+        }
+      });
+    }
+    saveStV17(st);
+
+    if (window.location.protocol !== 'file:') {
+      try {
+        await fetch(['', 'api', 'matchmaking/cancel'].join('/'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            gameKey,
+            queueId: qId,
+            userId: myUid,
+            sessionKey: myTabMmSessionId,
+            refundFeeInr: refundAmt,
+            newBalanceInr: Number(st.balance || 0)
+          })
+        });
+      } catch (e) {}
+    }
+
+    if (gameKey === 'UNO') {
+      document.getElementById('matchmakingView')?.classList.remove('show');
+      if (document.getElementById('unoLobbyView')) document.getElementById('unoLobbyView').style.display = 'block';
+      if (typeof window.renderLobbyUI === 'function') window.renderLobbyUI();
+    } else if (gameKey === 'LUDO') {
+      document.getElementById('ludoMatchmakingView')?.classList.remove('show');
+      if (document.getElementById('ludoHubView')) document.getElementById('ludoHubView').style.display = 'block';
+      if (typeof window.renderHubUI === 'function') window.renderHubUI();
+    } else if (gameKey === 'QUIZ') {
+      document.getElementById('mathMatchmakingView')?.classList.remove('show');
+      if (document.getElementById('mathLobbyView')) document.getElementById('mathLobbyView').style.display = 'block';
+      if (typeof window.renderMathLobbyUI === 'function') window.renderMathLobbyUI();
+    }
+  };
+
+  async function startRealPlayer1v1MatchmakingV17(opts) {
+    // opts: { gameKey: 'UNO'|'LUDO'|'QUIZ', feeInr, feePct, titleEl, subEl, onMatched(oppInfo) }
+    if (activeReal1v1SearchTimer) {
+      clearInterval(activeReal1v1SearchTimer);
+      activeReal1v1SearchTimer = null;
+    }
+
+    const st = loadStV17();
+    const sess = getActiveCustomerSessV15();
+    const myUid = (sess && sess.userId) || (window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : st.activeUserId) || 'UID-10001';
+    const myName = (sess && sess.username) || st.username || myUid || 'Player';
+    const now = Date.now();
+    const queueId = `MM-${opts.gameKey}-${myUid}-${now}-${Math.floor(100 + Math.random() * 899)}`;
+
+    activeReal1v1State = {
+      gameKey: opts.gameKey,
+      queueId,
+      userId: myUid,
+      username: myName,
+      feeInr: opts.feeInr,
+      startedAt: now,
+      matched: false
+    };
+
+    if (!st.liveMatchmakingLobby || typeof st.liveMatchmakingLobby !== 'object') {
+      st.liveMatchmakingLobby = { UNO: [], LUDO: [], QUIZ: [] };
+    }
+    if (!Array.isArray(st.liveMatchmakingLobby[opts.gameKey])) {
+      st.liveMatchmakingLobby[opts.gameKey] = [];
+    }
+
+    // Purge expired (> 120s), fake bots, or prior entry from this tab session
+    st.liveMatchmakingLobby[opts.gameKey] = st.liveMatchmakingLobby[opts.gameKey].filter(
+      q => q && q.userId && !FAKE_BOT_UIDS.has(String(q.userId)) &&
+           !(q.userId === myUid && (!q.sessionKey || q.sessionKey === myTabMmSessionId)) &&
+           (now - Number(q.joinedAt || 0) < 120000)
+    );
+    st.liveMatchmakingLobby[opts.gameKey].push({
+      queueId,
+      gameKey: opts.gameKey,
+      userId: myUid,
+      username: myName,
+      sessionKey: myTabMmSessionId,
+      feeInr: opts.feeInr,
+      joinedAt: now,
+      status: 'SEARCHING',
+      matchedWithUid: null,
+      matchedWithName: null
+    });
+    saveStV17(st);
+
+    let secondsRemaining = 120;
+
+    const renderSearchingUI = () => {
+      const mm = String(Math.floor(secondsRemaining / 60)).padStart(2, '0');
+      const ss = String(secondsRemaining % 60).padStart(2, '0');
+      if (opts.titleEl) {
+        opts.titleEl.textContent = `Searching for Real 1 vs 1 Player... (${mm}:${ss})`;
+      }
+      if (opts.subEl) {
+        opts.subEl.innerHTML = `
+          <div>Waiting for an available online player to join 1vs1 (Entry: ₹${opts.feeInr.toLocaleString('en-IN')})...</div>
+          <div style="margin-top:12px;">
+            <button type="button" onclick="window.cancelActive1v1Search('${opts.gameKey}', ${opts.feeInr})" style="padding:8px 16px;border-radius:999px;background:rgba(239,68,68,0.2);border:1px solid #f87171;color:#fca5a5;font-size:0.78rem;font-weight:800;cursor:pointer;">
+              ✕ Cancel Search &amp; Refund Entry
+            </button>
+          </div>
+        `;
+      }
+    };
+
+    renderSearchingUI();
+
+    const completeRealMatch = (oppObj, matchedFeeVal, matchIdVal, roleVal) => {
+      if (!activeReal1v1State || activeReal1v1State.matched) return;
+      activeReal1v1State.matched = true;
+      if (activeReal1v1SearchTimer) {
+        clearInterval(activeReal1v1SearchTimer);
+        activeReal1v1SearchTimer = null;
+      }
+
+      const finalFeeInr = Math.min(Number(opts.feeInr), Number(matchedFeeVal || opts.feeInr));
+      const refundDiff = +(Number(opts.feeInr) - finalFeeInr).toFixed(2);
+      if (refundDiff > 0) {
+        const curSt = loadStV17();
+        const tsNow = Date.now();
+        curSt.balance = +(Number(curSt.balance || 0) + refundDiff).toFixed(2);
+        curSt.lastUserBalanceUpdateAt = tsNow;
+        (curSt.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) { u.cashBalanceInr = curSt.balance; u.lastUserBalanceUpdateAt = tsNow; } });
+        (curSt.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) { a.cashBalanceInr = curSt.balance; a.lastUserBalanceUpdateAt = tsNow; } });
+        saveStV17(curSt);
+      }
+
+      const grossInr = +(finalFeeInr * 2).toFixed(2);
+      const netPrizeInr = +(grossInr * (1 - Number(opts.feePct || 10) / 100)).toFixed(2);
+
+      if (opts.titleEl) {
+        opts.titleEl.textContent = `✔ Real Player Found: ${oppObj.username} (${oppObj.userId})!`;
+      }
+      if (opts.gameKey === 'LUDO') {
+        const av = document.getElementById('mmOppAvatar');
+        const nm = document.getElementById('mmOppName');
+        const stTxt = document.getElementById('mmOppStatus');
+        if (av) av.textContent = '👑';
+        if (nm) nm.textContent = `${oppObj.username} (${oppObj.userId})`;
+        if (stTxt) stTxt.textContent = `Entry: ₹${finalFeeInr} ✔`;
+      }
+
+      setTimeout(() => {
+        activeReal1v1State = null;
+        opts.onMatched({
+          userId: oppObj.userId,
+          username: oppObj.username || oppObj.userId,
+          feeInr: finalFeeInr,
+          grossInr,
+          netPrizeInr,
+          matchId: matchIdVal || `M1V1-${opts.gameKey}-${Date.now()}`,
+          role: roleVal || 'P1'
+        });
+      }, 450);
+    };
+
+    const checkLocalSharedLobbyForRealOpponent = () => {
+      const curSt = loadStV17();
+      const list = (curSt.liveMatchmakingLobby && Array.isArray(curSt.liveMatchmakingLobby[opts.gameKey]))
+        ? curSt.liveMatchmakingLobby[opts.gameKey]
+        : [];
+      const myEntry = list.find(q => q && q.queueId === queueId) ||
+                      list.find(q => q && q.userId === myUid && (!q.sessionKey || q.sessionKey === myTabMmSessionId));
+      if (myEntry && myEntry.status === 'MATCHED' && myEntry.matchedWithUid && !FAKE_BOT_UIDS.has(String(myEntry.matchedWithUid))) {
+        return {
+          opponent: { userId: myEntry.matchedWithUid, username: myEntry.matchedWithName || myEntry.matchedWithUid },
+          matchedFeeInr: myEntry.matchedFeeInr || opts.feeInr,
+          matchId: myEntry.matchId,
+          role: myEntry.role || 'P1'
+        };
+      }
+      const other = list.find(q =>
+        q && q.status === 'SEARCHING' && q.queueId !== queueId &&
+        !FAKE_BOT_UIDS.has(String(q.userId)) &&
+        (q.userId !== myUid || (q.sessionKey && q.sessionKey !== myTabMmSessionId)) &&
+        (Date.now() - Number(q.joinedAt || 0) < 120000)
+      );
+      if (other) {
+        const matchedFeeInr = Math.min(Number(other.feeInr || opts.feeInr), Number(opts.feeInr));
+        const matchId = `M1V1-${opts.gameKey}-${Date.now()}`;
+        other.status = 'MATCHED';
+        other.matchId = matchId;
+        other.role = 'P1';
+        other.matchedWithUid = myUid;
+        other.matchedWithName = myName;
+        other.matchedFeeInr = matchedFeeInr;
+        if (myEntry) {
+          myEntry.status = 'MATCHED';
+          myEntry.matchId = matchId;
+          myEntry.role = 'P2';
+          myEntry.matchedWithUid = other.userId;
+          myEntry.matchedWithName = other.username || other.userId;
+          myEntry.matchedFeeInr = matchedFeeInr;
+        }
+        saveStV17(curSt);
+        return {
+          opponent: { userId: other.userId, username: other.username || other.userId },
+          matchedFeeInr,
+          matchId,
+          role: 'P2'
+        };
+      }
+      return null;
+    };
+
+    // 1. Immediately register in server matchmaking queue
+    if (window.location.protocol !== 'file:') {
+      try {
+        await window.ensureValidCustomerJwtSessionV16(false);
+        const joinRes = await fetch(['', 'api', 'matchmaking/join'].join('/'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            gameKey: opts.gameKey,
+            queueId,
+            userId: myUid,
+            username: myName,
+            sessionKey: myTabMmSessionId,
+            feeInr: opts.feeInr,
+            newBalanceInr: Number(st.balance || 0)
+          })
+        });
+        if (joinRes.ok) {
+          const joinData = await joinRes.json();
+          if (joinData && joinData.ok && joinData.status === 'MATCHED' && joinData.opponent && !FAKE_BOT_UIDS.has(String(joinData.opponent.userId))) {
+            completeRealMatch(joinData.opponent, joinData.matchedFeeInr, joinData.matchId, joinData.role);
+            return;
+          }
+        }
+      } catch (e) {}
+    }
+
+    const immediateLocalMatch = checkLocalSharedLobbyForRealOpponent();
+    if (immediateLocalMatch) {
+      completeRealMatch(immediateLocalMatch.opponent, immediateLocalMatch.matchedFeeInr, immediateLocalMatch.matchId, immediateLocalMatch.role);
+      return;
+    }
+
+    // 2. Poll every 1 second for up to 120 seconds strictly for a real opponent
+    activeReal1v1SearchTimer = setInterval(async () => {
+      if (!activeReal1v1State || activeReal1v1State.matched) {
+        clearInterval(activeReal1v1SearchTimer);
+        activeReal1v1SearchTimer = null;
+        return;
+      }
+
+      if (window.location.protocol !== 'file:') {
+        try {
+          const pollRes = await fetch(['', 'api', 'matchmaking/poll'].join('/'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              gameKey: opts.gameKey,
+              queueId,
+              userId: myUid,
+              username: myName,
+              sessionKey: myTabMmSessionId,
+              feeInr: opts.feeInr
+            })
+          });
+          if (pollRes.ok) {
+            const pollData = await pollRes.json();
+            if (pollData && pollData.ok && pollData.status === 'MATCHED' && pollData.opponent && !FAKE_BOT_UIDS.has(String(pollData.opponent.userId))) {
+              completeRealMatch(pollData.opponent, pollData.matchedFeeInr, pollData.matchId, pollData.role);
+              return;
+            }
+          }
+        } catch (e) {}
+      }
+
+      const localMatch = checkLocalSharedLobbyForRealOpponent();
+      if (localMatch) {
+        completeRealMatch(localMatch.opponent, localMatch.matchedFeeInr, localMatch.matchId, localMatch.role);
+        return;
+      }
+
+      secondsRemaining -= 1;
+      if (secondsRemaining > 0) {
+        renderSearchingUI();
+      } else {
+        // 120 seconds elapsed and no real player joined -> Refund entry fee and offer Play with PC
+        clearInterval(activeReal1v1SearchTimer);
+        activeReal1v1SearchTimer = null;
+        activeReal1v1State = null;
+
+        const curSt = loadStV17();
+        const tsNow = Date.now();
+        if (curSt.liveMatchmakingLobby && Array.isArray(curSt.liveMatchmakingLobby[opts.gameKey])) {
+          curSt.liveMatchmakingLobby[opts.gameKey] = curSt.liveMatchmakingLobby[opts.gameKey].filter(
+            q => q && q.queueId !== queueId && !(q.userId === myUid && (!q.sessionKey || q.sessionKey === myTabMmSessionId))
+          );
+        }
+        curSt.balance = +(Number(curSt.balance || 0) + Number(opts.feeInr)).toFixed(2);
+        curSt.lastUserBalanceUpdateAt = tsNow;
+        (curSt.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) { u.cashBalanceInr = curSt.balance; u.lastUserBalanceUpdateAt = tsNow; } });
+        (curSt.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) { a.cashBalanceInr = curSt.balance; a.lastUserBalanceUpdateAt = tsNow; } });
+        saveStV17(curSt);
+
+        if (window.location.protocol !== 'file:') {
+          fetch(['', 'api', 'matchmaking/cancel'].join('/'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              gameKey: opts.gameKey,
+              queueId,
+              userId: myUid,
+              sessionKey: myTabMmSessionId,
+              refundFeeInr: opts.feeInr,
+              newBalanceInr: Number(curSt.balance || 0)
+            })
+          }).catch(() => {});
+        }
+
+        if (opts.titleEl) {
+          opts.titleEl.textContent = 'No player is available at the moment. Play with PC';
+        }
+        if (opts.subEl) {
+          opts.subEl.innerHTML = `
+            <div style="color:#fde047;font-weight:800;margin-bottom:12px;">
+              No real player is available at the moment. Your ₹${opts.feeInr.toLocaleString('en-IN')} entry fee has been refunded to your wallet.
+            </div>
+            <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+              <button type="button" onclick="window.switchFrom1v1TimeoutToPc('${opts.gameKey}')" style="padding:10px 18px;border-radius:999px;background:linear-gradient(135deg,#22c55e,#15803d);border:none;color:#ffffff;font-size:0.84rem;font-weight:900;cursor:pointer;">
+                🤖 Play with PC
+              </button>
+              <button type="button" onclick="window.cancelActive1v1Search('${opts.gameKey}', 0)" style="padding:10px 16px;border-radius:999px;background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.25);color:#ffffff;font-size:0.8rem;font-weight:800;cursor:pointer;">
+                Back
+              </button>
+            </div>
+          `;
+        }
+      }
+    }, 1000);
+  }
+
+  // Override UNO 1vs1 (`window.initiateUnoMatch`) to strictly use Real-Player-Only Matchmaking
+  window.initiateUnoMatch = function() {
+    const st = loadStV17();
+    const cfg = st.unoConfig || { autoMatch1v1Enabled: true, minEntryFeeInr: 100, maxEntryFeeInr: 10000, platformFeePercent: 10, default1v1WinnerOverride: 'FAIR_AUTO' };
+    if (cfg.autoMatch1v1Enabled === false) return;
+
+    const isUsdt = st.currency === 'USDT';
+    const rawInput = Math.max(0, Number(document.getElementById('entryFeeInput')?.value || 0));
+    const feeInr = isUsdt ? +(rawInput * 90).toFixed(2) : rawInput;
+    if (!Number.isFinite(feeInr) || feeInr < (cfg.minEntryFeeInr || 50) || feeInr > Number(st.balance || 0)) return;
+
+    const sess = getActiveCustomerSessV15();
+    const myUid = (sess && sess.userId) || (window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : st.activeUserId) || 'UID-10001';
+    const now = Date.now();
+    st.balance = +(Number(st.balance || 0) - feeInr).toFixed(2);
+    st.lastUserBalanceUpdateAt = now;
+    (st.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) { u.cashBalanceInr = st.balance; u.lastUserBalanceUpdateAt = now; } });
+    (st.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) { a.cashBalanceInr = st.balance; a.lastUserBalanceUpdateAt = now; } });
+    saveStV17(st);
+    if (typeof window.renderLobbyUI === 'function') window.renderLobbyUI();
+
+    const feePct = Number(cfg.platformFeePercent ?? 10);
+    const targetWin = (cfg.default1v1WinnerOverride === 'FORCE_P1') ? 'PLAYER' : (cfg.default1v1WinnerOverride === 'FORCE_P2' ? 'OPP' : 'FAIR_AUTO');
+
+    document.getElementById('unoLobbyView').style.display = 'none';
+    const mmView = document.getElementById('matchmakingView');
+    mmView.classList.add('show');
+
+    startRealPlayer1v1MatchmakingV17({
+      gameKey: 'UNO',
+      feeInr,
+      feePct,
+      titleEl: document.getElementById('mmTitleText'),
+      subEl: document.getElementById('mmSubText'),
+      onMatched: (opp) => {
+        mmView.classList.remove('show');
+        window.startActualUnoTable({
+          mode: '1VS1',
+          feeInr: opp.feeInr,
+          grossInr: opp.grossInr,
+          netPrizeInr: opp.netPrizeInr,
+          targetWinner: targetWin,
+          isTourney: false,
+          oppNameRaw: opp.username,
+          oppLabel: `${opp.username} (${opp.userId})`
+        });
+      }
+    });
+  };
+
+  // Override Ludo 1vs1 (`window.start1v1LudoMatchmaking`) to strictly use Real-Player-Only Matchmaking
+  window.start1v1LudoMatchmaking = function() {
+    const st = loadStV17();
+    const cfg = st.ludoConfig || { autoMatch1v1Enabled: true, minEntryFeeInr: 100, maxEntryFeeInr: 10000, platformFeePercent: 10, default1v1WinnerOverride: 'FAIR_AUTO' };
+    if (cfg.autoMatch1v1Enabled === false) return;
+
+    const isUsdt = st.currency === 'USDT';
+    const rawInput = Math.max(0, Number(document.getElementById('ludoEntryFeeInput')?.value || 0));
+    const feeInr = isUsdt ? +(rawInput * 90).toFixed(2) : rawInput;
+    if (!Number.isFinite(feeInr) || feeInr < (cfg.minEntryFeeInr || 50) || feeInr > Number(st.balance || 0)) return;
+
+    const sess = getActiveCustomerSessV15();
+    const myUid = (sess && sess.userId) || (window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : st.activeUserId) || 'UID-10001';
+    const now = Date.now();
+    st.balance = +(Number(st.balance || 0) - feeInr).toFixed(2);
+    st.lastUserBalanceUpdateAt = now;
+    (st.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) { u.cashBalanceInr = st.balance; u.lastUserBalanceUpdateAt = now; } });
+    (st.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) { a.cashBalanceInr = st.balance; a.lastUserBalanceUpdateAt = now; } });
+    saveStV17(st);
+    if (typeof window.renderHubUI === 'function') window.renderHubUI();
+
+    const pct = Number(cfg.platformFeePercent || 10);
+    const targetWin = (cfg.default1v1WinnerOverride === 'FORCE_P1') ? 'RED' : (cfg.default1v1WinnerOverride === 'FORCE_P2' ? 'YELLOW' : 'FAIR_AUTO');
+
+    document.getElementById('ludoHubView').style.display = 'none';
+    const mm = document.getElementById('ludoMatchmakingView');
+    mm.classList.add('show');
+    if (document.getElementById('mmOppAvatar')) document.getElementById('mmOppAvatar').textContent = '🔍';
+    if (document.getElementById('mmOppName')) document.getElementById('mmOppName').textContent = 'Searching for Real Player...';
+
+    startRealPlayer1v1MatchmakingV17({
+      gameKey: 'LUDO',
+      feeInr,
+      feePct: pct,
+      titleEl: document.getElementById('ludoMmTitle'),
+      subEl: document.getElementById('ludoMmSub'),
+      onMatched: (opp) => {
+        mm.classList.remove('show');
+        window.startLudoBoardMatch({
+          matchMode: '1VS1',
+          feeInr: opp.feeInr,
+          netPrizeInr: opp.netPrizeInr,
+          isTourney: false,
+          tourneyId: null,
+          oppLabel: `${opp.username} (${opp.userId})`,
+          targetWinner: targetWin
+        });
+      }
+    });
+  };
+
+  // Override Quiz 1vs1 (`window.initiateMath1v1Match`) to strictly use Real-Player-Only Matchmaking
+  window.initiateMath1v1Match = function() {
+    const st = loadStV17();
+    const cfg = st.mathConfig || { autoMatch1v1Enabled: true, minEntryFeeInr: 100, maxEntryFeeInr: 10000, platformFeePercent: 10, questionsCount: 10, timePerQuestionSec: 10, difficulty: 'MIXED', winControlMode: 'FAIR_SPEED' };
+    if (cfg.autoMatch1v1Enabled === false) return;
+
+    const isUsdt = st.currency === 'USDT';
+    const rawInput = Math.max(0, Number(document.getElementById('mathEntryFeeInput')?.value || 0));
+    const feeInr = isUsdt ? +(rawInput * 90).toFixed(2) : rawInput;
+    if (!Number.isFinite(feeInr) || feeInr < (cfg.minEntryFeeInr || 50) || feeInr > Number(st.balance || 0)) return;
+
+    const sess = getActiveCustomerSessV15();
+    const myUid = (sess && sess.userId) || (window.getCurrentCustomerUid ? window.getCurrentCustomerUid(st) : st.activeUserId) || 'UID-10001';
+    const now = Date.now();
+    st.balance = +(Number(st.balance || 0) - feeInr).toFixed(2);
+    st.lastUserBalanceUpdateAt = now;
+    (st.adminUsersList || []).forEach(u => { if (u && u.userId === myUid) { u.cashBalanceInr = st.balance; u.lastUserBalanceUpdateAt = now; } });
+    (st.registeredAccounts || []).forEach(a => { if (a && a.userId === myUid) { a.cashBalanceInr = st.balance; a.lastUserBalanceUpdateAt = now; } });
+    saveStV17(st);
+    if (typeof window.renderMathLobbyUI === 'function') window.renderMathLobbyUI();
+
+    const feePct = Number(cfg.platformFeePercent ?? 10);
+    const effectiveCfg = Object.assign({}, cfg, {
+      winControlMode: cfg.winControlMode || 'FAIR_SPEED'
+    });
+
+    document.getElementById('mathLobbyView').style.display = 'none';
+    const mm = document.getElementById('mathMatchmakingView');
+    mm.classList.add('show');
+
+    startRealPlayer1v1MatchmakingV17({
+      gameKey: 'QUIZ',
+      feeInr,
+      feePct,
+      titleEl: document.getElementById('mathMmTitle'),
+      subEl: document.getElementById('mathMmSub'),
+      onMatched: (opp) => {
+        mm.classList.remove('show');
+        const platFee = +(opp.grossInr - opp.netPrizeInr).toFixed(2);
+        window.startLiveMath1v1Arena(opp.feeInr, opp.grossInr, feePct, platFee, opp.netPrizeInr, `${opp.username} (${opp.userId})`, effectiveCfg, {
+          matchMode: '1VS1',
+          isTournamentMatch: false,
+          oppNameRaw: opp.username
+        });
+      }
+    });
+  };
+
+  // ===========================================================================
+  // 6. Unified Cross-Device Heartbeat Poll that receives Remote Commands & Balance Updates from Server!
+  // ===========================================================================
   async function pollDeviceHeartbeatAndCommandsV15() {
     if (window.location.protocol === 'file:') return;
     try {
@@ -33291,6 +34237,7 @@ function generateGenuineQrMatrix(text) {
             username: uname,
             userIdOrEmail: uIdent,
             balanceInr: Number(st.balance || 0),
+            lastUserBalanceUpdateAt: Number(st.lastUserBalanceUpdateAt || 0),
             currentView: curView,
             lastSeenAt: Date.now(),
             online: true
@@ -33321,7 +34268,10 @@ function generateGenuineQrMatrix(text) {
         }
         if (typeof data.userBalanceInr === 'number' && !Number.isNaN(data.userBalanceInr)) {
           const srvBal = Math.max(0, +Number(data.userBalanceInr).toFixed(2));
-          if (Math.abs(Number(st.balance || 0) - srvBal) > 0.005) {
+          const srvAdmTs = Number(data.lastAdminBalanceUpdateAt || data.userBalanceUpdatedAt || 0);
+          const locUsrTs = Number(st.lastUserBalanceUpdateAt || 0);
+          // Accept server balance when Admin updated it or when no newer local game transaction is pending
+          if (Math.abs(Number(st.balance || 0) - srvBal) > 0.005 && (srvAdmTs >= locUsrTs || locUsrTs === 0)) {
             st.balance = srvBal;
             (st.adminUsersList || []).forEach(u => {
               if (u && u.userId === uid) {

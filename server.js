@@ -745,17 +745,37 @@ function mergeServerState(currentSt, incomingSt, isAdminPush, authSession = null
     base.wingoSettlements = mergeArrayById(cur.wingoSettlements, incomingSt.wingoSettlements, 'settlementId', true);
   }
 
+  const FAKE_BOT_SET = new Set(['USR-601', 'USR-712', 'USR-834', 'USR-819', 'USR-512', 'USR-904', 'USR-701', 'USR-615', 'USR-409', 'USR-204']);
   if (incomingSt.liveMatchmakingLobby && typeof incomingSt.liveMatchmakingLobby === 'object') {
     if (!base.liveMatchmakingLobby || typeof base.liveMatchmakingLobby !== 'object') {
       base.liveMatchmakingLobby = { UNO: [], LUDO: [], QUIZ: [] };
     }
     ['UNO', 'LUDO', 'QUIZ'].forEach(gKey => {
-      base.liveMatchmakingLobby[gKey] = mergeArrayById(
-        base.liveMatchmakingLobby[gKey],
-        incomingSt.liveMatchmakingLobby[gKey],
-        'queueId',
-        true
-      ).filter(q => q && (Date.now() - Number(q.joinedAt || 0) < 180000));
+      const curList = Array.isArray(base.liveMatchmakingLobby[gKey]) ? base.liveMatchmakingLobby[gKey] : [];
+      const incList = (Array.isArray(incomingSt.liveMatchmakingLobby[gKey]) ? incomingSt.liveMatchmakingLobby[gKey] : []).filter(
+        q => q && q.userId && !FAKE_BOT_SET.has(String(q.userId)) && (!q.matchedWithUid || !FAKE_BOT_SET.has(String(q.matchedWithUid)))
+      );
+      const mergedQueue = mergeArrayById(curList, incList, 'queueId', false);
+      // Never let a stale incoming 'SEARCHING' overwrite an already 'MATCHED' entry on the server
+      const curMatchedById = new Map();
+      curList.forEach(q => {
+        if (q && q.status === 'MATCHED') {
+          if (q.queueId) curMatchedById.set(q.queueId, q);
+          if (q.userId) curMatchedById.set('UID:' + q.userId, q);
+        }
+      });
+      base.liveMatchmakingLobby[gKey] = mergedQueue
+        .map(q => {
+          if (!q) return null;
+          const srvMatched = curMatchedById.get(q.queueId) || curMatchedById.get('UID:' + q.userId);
+          if (srvMatched && q.status !== 'MATCHED') return srvMatched;
+          return q;
+        })
+        .filter(q =>
+          q && q.userId && !FAKE_BOT_SET.has(String(q.userId)) &&
+          (!q.matchedWithUid || !FAKE_BOT_SET.has(String(q.matchedWithUid))) &&
+          (Date.now() - Number(q.joinedAt || 0) < 125000)
+        );
     });
   }
 
@@ -1243,7 +1263,19 @@ function verifyAdminPermission(req, res, requiredPermKey) {
       return null;
     }
   }
-  if (adminSess.isMasterSuperAdmin || adminSess.role === 'SUPER_ADMIN') {
+  if (adminSess.isMasterSuperAdmin || adminSess.role === 'SUPER_ADMIN' || adminSess.fullControl === true) {
+    return adminSess;
+  }
+  const liveAdminAcc = staffList.find(
+    a => a && (a.adminId === adminSess.sub || String(a.loginId || '').toLowerCase() === String(adminSess.loginId || adminSess.sub || '').toLowerCase())
+  );
+  if (liveAdminAcc && (liveAdminAcc.isMasterSuperAdmin || liveAdminAcc.roleKey === 'SUPER_ADMIN' || liveAdminAcc.fullControl === true)) {
+    return adminSess;
+  }
+  const featList = Array.isArray(liveAdminAcc && liveAdminAcc.allowedFeatures)
+    ? liveAdminAcc.allowedFeatures
+    : (Array.isArray(adminSess.allowedFeatures) ? adminSess.allowedFeatures : []);
+  if (featList.includes('ALL')) {
     return adminSess;
   }
   if (requiredPermKey) {
@@ -1257,8 +1289,20 @@ function verifyAdminPermission(req, res, requiredPermKey) {
       CUSTOMER_SUPPORT: ['support.manage', 'users.view'],
       READ_ONLY_AUDITOR: ['audit.view']
     };
+    const permToFeatureMap = {
+      'deposits.review': ['DEPOSITS', 'PAYMENT_GATEWAY', 'FINANCE'],
+      'withdrawals.approve': ['WITHDRAWALS', 'FINANCE'],
+      'finance.adjust_ledger': ['USERS', 'DEPOSITS', 'WITHDRAWALS', 'FINANCE'],
+      'promotions.manage': ['GIFT_CARDS', 'PROMOTIONS'],
+      'games.manage': ['WINGO', 'LUDO', 'CARDS', 'LOTTERY', 'AVIATOR'],
+      'wingo.manage': ['WINGO'],
+      'quiz.manage': ['QUIZ'],
+      'users.manage': ['USERS']
+    };
     const allowed = rolePerms[adminSess.role] || [];
-    if (!allowed.includes(requiredPermKey)) {
+    const matchingFeats = permToFeatureMap[requiredPermKey] || [];
+    const hasFeature = matchingFeats.some(f => featList.includes(f));
+    if (!allowed.includes(requiredPermKey) && !hasFeature) {
       securityMetrics.unauthorizedAttempts++;
       sendJsonResponse(req, res, 403, {
         ok: false,
@@ -1742,6 +1786,44 @@ const server = http.createServer(async (req, res) => {
         if (matchedAcc.status === 'BLOCKED' || matchedAcc.status === 'SUSPENDED') {
           sendJsonResponse(req, res, 403, { ok: false, blocked: true, error: 'User is blocked' });
           return;
+        }
+
+        if (Array.isArray(data.pendingDeposits)) {
+          if (!Array.isArray(masterState.adminDeposits)) masterState.adminDeposits = [];
+          if (!Array.isArray(masterState.transactions)) masterState.transactions = [];
+          data.pendingDeposits.forEach(incD => {
+            if (!incD || !incD.depositId) return;
+            const exists = masterState.adminDeposits.some(d => d && d.depositId === incD.depositId);
+            if (!exists) {
+              const restoredDep = Object.assign({}, incD, {
+                userId: matchedAcc.userId,
+                username: matchedAcc.username || incD.username || 'Player',
+                utr: incD.utr || incD.utrNumber || '',
+                utrNumber: incD.utrNumber || incD.utr || '',
+                status: incD.status === 'CONFIRMED' || incD.status === 'FAILED' ? incD.status : 'PENDING'
+              });
+              masterState.adminDeposits.unshift(restoredDep);
+              if (!masterState.transactions.some(t => t && (t.id === restoredDep.depositId || t.depositId === restoredDep.depositId))) {
+                masterState.transactions.unshift({
+                  id: restoredDep.depositId,
+                  depositId: restoredDep.depositId,
+                  txId: restoredDep.txId,
+                  userId: matchedAcc.userId,
+                  username: matchedAcc.username,
+                  type: 'DEPOSIT',
+                  method: restoredDep.method || 'UPI',
+                  paidToId: restoredDep.paidToId || '',
+                  utrNumber: restoredDep.utrNumber || '',
+                  refId: restoredDep.providerRef || ('UTR: ' + (restoredDep.utrNumber || '')),
+                  title: `Deposit #${restoredDep.txId || restoredDep.depositId} (${restoredDep.method || 'UPI'})`,
+                  amount: Number(restoredDep.amountInr || 0),
+                  usdtEquivalent: Number(restoredDep.usdtAmount || 0),
+                  status: restoredDep.status === 'CONFIRMED' ? 'Completed' : (restoredDep.status === 'FAILED' ? 'Rejected' : 'Processing'),
+                  timestamp: Number(restoredDep.createdAt || Date.now())
+                });
+              }
+            }
+          });
         }
 
         const custSess = {
@@ -2357,6 +2439,64 @@ const server = http.createServer(async (req, res) => {
   // 0K. Customer Deposit Submission (`POST /api/deposit/submit`)
   //     & Admin Deposit Resolution (`POST /api/admin/deposit-resolve`)
   // --------------------------------------------------------------------------
+  function computeServerDepositBonus(method, amountInr, usdtAmount, userId, excludeDepositId) {
+    const fdb = masterState.firstDepositBonusConfig || {};
+    if (fdb.enabled === false) return { pct: 0, bonusInr: 0 };
+    const hadPrior = (masterState.adminDeposits || []).some(
+      d => d && d.depositId !== excludeDepositId && d.userId === userId && d.status === 'CONFIRMED'
+    );
+    const isUsdt = String(method || 'UPI').toUpperCase() === 'USDT';
+    if (isUsdt) {
+      if (fdb.usdtEnabled === false) return { pct: 0, bonusInr: 0 };
+      if (fdb.usdtApplyOn === 'FIRST_DEPOSIT' && hadPrior) return { pct: 0, bonusInr: 0 };
+      const uAmt = Number(usdtAmount || (Number(amountInr || 0) / Number((masterState.currencyConfig && masterState.currencyConfig.depositUsdtToInrRate) || 100)));
+      if (uAmt <= 0) return { pct: 0, bonusInr: 0 };
+      const tiers = Array.isArray(fdb.usdtTiers) && fdb.usdtTiers.length > 0
+        ? fdb.usdtTiers
+        : [
+            { minUsdt: 5, maxUsdt: 19, bonusPercent: 3 },
+            { minUsdt: 20, maxUsdt: 49, bonusPercent: 5 },
+            { minUsdt: 50, maxUsdt: 199, bonusPercent: 8 },
+            { minUsdt: 200, maxUsdt: 999999, bonusPercent: 12 }
+          ];
+      const sorted = [...tiers].sort((a, b) => Number(a.minUsdt || 0) - Number(b.minUsdt || 0));
+      let pct = Number(fdb.usdtDefaultBonusPercent ?? 5);
+      for (let i = 0; i < sorted.length; i++) {
+        const t = sorted[i];
+        const minU = Number(t.minUsdt || 0);
+        const maxU = Number(t.maxUsdt || 999999999);
+        if (uAmt >= minU && uAmt <= maxU) { pct = Number(t.bonusPercent || 0); break; }
+        if (uAmt >= minU) pct = Number(t.bonusPercent || 0);
+      }
+      return { pct, bonusInr: +(Number(amountInr || 0) * (pct / 100)).toFixed(2) };
+    } else {
+      if (fdb.upiEnabled === false) return { pct: 0, bonusInr: 0 };
+      if (fdb.upiApplyOn === 'FIRST_DEPOSIT' && hadPrior) return { pct: 0, bonusInr: 0 };
+      const inr = Number(amountInr || 0);
+      if (inr <= 0) return { pct: 0, bonusInr: 0 };
+      const tiers = Array.isArray(fdb.upiTiers) && fdb.upiTiers.length > 0
+        ? fdb.upiTiers
+        : (Array.isArray(fdb.tiers) && fdb.tiers.length > 0
+            ? fdb.tiers
+            : [
+                { minAmountInr: 100, maxAmountInr: 499, bonusPercent: 2 },
+                { minAmountInr: 500, maxAmountInr: 999, bonusPercent: 3 },
+                { minAmountInr: 1000, maxAmountInr: 4999, bonusPercent: 5 },
+                { minAmountInr: 5000, maxAmountInr: 999999999, bonusPercent: 10 }
+              ]);
+      const sorted = [...tiers].sort((a, b) => Number(a.minAmountInr || 0) - Number(b.minAmountInr || 0));
+      let pct = Number(fdb.upiDefaultBonusPercent ?? fdb.defaultBonusPercent ?? 2);
+      for (let i = 0; i < sorted.length; i++) {
+        const t = sorted[i];
+        const minA = Number(t.minAmountInr || 0);
+        const maxA = Number(t.maxAmountInr || 999999999);
+        if (inr >= minA && inr <= maxA) { pct = Number(t.bonusPercent || 0); break; }
+        if (inr >= minA) pct = Number(t.bonusPercent || 0);
+      }
+      return { pct, bonusInr: +(inr * (pct / 100)).toFixed(2) };
+    }
+  }
+
   if (pathname === '/api/deposit/submit' && req.method === 'POST') {
     const authSess = extractAuthSession(req);
     try {
@@ -2368,20 +2508,43 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const userId = (authSess && authSess.type === 'CUSTOMER') ? authSess.sub : (fallbackUid || String(authSess.sub));
-      const amountInr = Number(data.amountInr || data.amount || 0);
-      const usdtAmount = Number(data.usdtAmount || (amountInr / Number(data.appliedRate || 100)));
-      const appliedRate = Number(data.appliedRate || 100);
-      const method = String(data.method || 'UPI').toUpperCase();
-      const utr = String(data.utr || data.utrNumber || data.providerRef || '').replace(/^(UTR:|TXID:)\s*/i, '').trim();
-      const paidToId = String(data.paidToId || (method === 'USDT' ? (masterState.usdtAddress || '') : (masterState.upiId || ''))).trim();
+      const appliedRate = Number(data.appliedRate || (masterState.currencyConfig && masterState.currencyConfig.depositUsdtToInrRate) || 100);
+      const method = String(data.method || 'UPI').toUpperCase() === 'USDT' ? 'USDT' : 'UPI';
+      const amountInr = Number(data.amountInr || data.amount || (method === 'USDT' && data.usdtAmount ? Number(data.usdtAmount) * appliedRate : 0));
+      const usdtAmount = Number(data.usdtAmount || (amountInr / (appliedRate || 100)));
+      const gw = masterState.paymentGatewayConfig || {};
+      const gwMode = String(data.gatewayMode || (method === 'UPI' ? (gw.upiMode || gw.mode) : (gw.usdtMode || gw.mode)) || 'MANUAL').toUpperCase();
+      let utr = String(data.utr || data.utrNumber || data.providerRef || '').replace(/^(UTR:|TXID:|Ref:)\s*/i, '').trim();
+      if (!utr && gwMode === 'AUTOMATIC') {
+        utr = (method === 'USDT' ? 'AUTO-USDT-' : 'AUTO-GW-') + Math.floor(100000000000 + Math.random() * 899999999999);
+      }
+      const paidToId = String(
+        data.paidToId ||
+        (method === 'USDT'
+          ? ((gw.usdtAddresses && gw.usdtAddresses[0]) || masterState.usdtAddress || 'TX9Q8kLmN2pRs7VwXyZ4aBcDeFgHiJkLmN')
+          : ((gw.upiIds && gw.upiIds[0]) || masterState.upiId || 'xyzgames.pay@icici'))
+      ).trim();
 
       if (!userId || !Number.isFinite(amountInr) || amountInr <= 0 || !utr || utr.length < 6) {
-        sendJsonResponse(req, res, 400, { ok: false, error: 'Valid positive deposit amount and UTR/reference (min 6 chars) are required.' });
+        sendJsonResponse(req, res, 400, { ok: false, error: 'Valid positive deposit amount and UTR/TXID reference (min 6 characters) are required.' });
         return;
       }
 
-      // Prevent duplicate UTR submission
-      const dupUtr = (masterState.adminDeposits || []).find(
+      const txId = String(data.txId || Math.floor(12346 + Math.random() * 87000));
+      const depId = String(data.depositId || ('DEP-' + txId));
+
+      if (!Array.isArray(masterState.adminDeposits)) masterState.adminDeposits = [];
+      if (!Array.isArray(masterState.transactions)) masterState.transactions = [];
+
+      // Idempotent check if exact same depositId was already submitted
+      const existingById = masterState.adminDeposits.find(d => d && d.depositId === depId);
+      if (existingById) {
+        sendJsonResponse(req, res, 200, { ok: true, deposit: existingById, idempotent: true });
+        return;
+      }
+
+      // Prevent duplicate UTR submission across different deposits
+      const dupUtr = masterState.adminDeposits.find(
         d => d && String(d.utr || d.utrNumber || '').toLowerCase() === utr.toLowerCase() && d.status !== 'FAILED' && d.status !== 'REJECTED'
       );
       if (dupUtr) {
@@ -2390,46 +2553,83 @@ const server = http.createServer(async (req, res) => {
       }
 
       const now = Date.now();
-      const userObj = findCanonicalUserInState(masterState, userId);
-      const txId = String(data.txId || Math.floor(12346 + Math.random() * 87000));
-      const depId = String(data.depositId || ('DEP-' + txId));
+      let userObj = findCanonicalUserInState(masterState, userId);
+      if (!userObj) {
+        userObj = upsertCanonicalUserInState(masterState, {
+          userId,
+          username: String(data.username || (authSess && authSess.username) || 'Player'),
+          loginId: userId,
+          cashBalanceInr: 0,
+          promoBalanceInr: 0,
+          status: 'ACTIVE',
+          kycStatus: 'VERIFIED',
+          registeredAt: now,
+          updatedAt: now
+        });
+      }
+
+      const bonusInfo = computeServerDepositBonus(method, amountInr, usdtAmount, userId, depId);
+      const bonusPct = data.firstDepositBonusPct !== undefined ? Number(data.firstDepositBonusPct) : bonusInfo.pct;
+      const bonusInr = data.firstDepositBonusInr !== undefined ? Number(data.firstDepositBonusInr) : bonusInfo.bonusInr;
+      const dateFormatted = new Date(now).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
       const depRecord = {
         depositId: depId,
         txId,
         userId,
-        username: (userObj && userObj.username) || data.username || authSess.username || 'Player',
-        amountInr,
-        usdtAmount,
+        username: (userObj && userObj.username) || data.username || (authSess && authSess.username) || 'Player',
+        amountInr: +Number(amountInr).toFixed(2),
+        usdtAmount: +Number(usdtAmount).toFixed(2),
         appliedRate,
         method,
-        gatewayMode: 'MANUAL',
+        gatewayMode: gwMode,
         paidToId,
         utr,
         utrNumber: utr,
         providerRef: method === 'UPI' ? `UTR: ${utr}` : `TXID: ${utr}`,
+        firstDepositBonusPct: bonusPct,
+        firstDepositBonusInr: bonusInr,
         status: 'PENDING',
         webhookVerified: false,
         createdAt: now,
+        confirmedAt: null,
         updatedAt: now,
         idempotencyKey: `IDEMP-${depId}`
       };
 
       masterState.adminDeposits.unshift(depRecord);
+      // Remove any duplicate customer transaction with txId or depId before inserting canonical transaction
+      masterState.transactions = masterState.transactions.filter(
+        t => !t || (t.id !== depId && t.depositId !== depId && String(t.id) !== String(txId))
+      );
       masterState.transactions.unshift({
         id: depId,
+        depositId: depId,
+        txId,
         userId,
         username: depRecord.username,
         type: 'DEPOSIT',
-        title: `Deposit Submitted (${method} • UTR: ${utr})`,
-        amount: amountInr,
-        status: 'PENDING',
-        timestamp: now
+        method,
+        paidToId,
+        utrNumber: utr,
+        refId: depRecord.providerRef,
+        title: `Deposit #${txId} (${method} • ${depRecord.providerRef})`,
+        amount: depRecord.amountInr,
+        usdtEquivalent: depRecord.usdtAmount,
+        status: 'Processing',
+        dateStr: dateFormatted,
+        timestamp: now,
+        updatedAt: now
       });
 
-      scheduleSaveStateToDb(80);
-      broadcastStateToSseClients('DEPOSIT_SUBMIT', false);
+      scheduleSaveStateToDb(50);
+      broadcastStateToSseClients('DEPOSIT_SUBMIT', true);
 
-      sendJsonResponse(req, res, 201, { ok: true, deposit: depRecord });
+      sendJsonResponse(req, res, 201, {
+        ok: true,
+        deposit: depRecord,
+        state: redactStateForClient(masterState, authSess || { sub: userId, type: 'CUSTOMER', role: 'CUSTOMER' })
+      });
     } catch (e) {
       sendJsonResponse(req, res, 400, { ok: false, error: e.message });
     }
@@ -2452,19 +2652,29 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       if (dep.status === 'CONFIRMED' || dep.status === 'APPROVED' || dep.status === 'FAILED' || dep.status === 'REJECTED') {
-        sendJsonResponse(req, res, 200, { ok: true, deposit: dep, alreadyResolved: true });
+        sendJsonResponse(req, res, 200, {
+          ok: true,
+          deposit: dep,
+          alreadyResolved: true,
+          state: redactStateForClient(masterState, adminSess)
+        });
         return;
       }
 
       const now = Date.now();
       const actor = `${adminSess.loginId || adminSess.sub} (${adminSess.role})`;
+      let updatedBalanceInr = null;
 
       if (action === 'CONFIRM' || action === 'APPROVE') {
-        const bonusInr = Math.max(0, Number(data.bonusInr ?? dep.firstDepositBonusInr ?? 0));
-        const totalCreditInr = +(Number(dep.amountInr || 0) + bonusInr).toFixed(2);
-        const targetPre = findCanonicalUserInState(masterState, dep.userId);
+        const calcBonus = computeServerDepositBonus(dep.method, dep.amountInr, dep.usdtAmount, dep.userId, dep.depositId);
+        const bonusPct = data.bonusPct !== undefined ? Number(data.bonusPct) : (dep.firstDepositBonusPct !== undefined ? Number(dep.firstDepositBonusPct) : calcBonus.pct);
+        const bonusInr = Math.max(0, Number(data.bonusInr ?? dep.firstDepositBonusInr ?? calcBonus.bonusInr ?? 0));
+        const amt = Number(dep.amountInr || 0);
+        const totalCreditInr = +(amt + bonusInr).toFixed(2);
+
+        let targetPre = findCanonicalUserInState(masterState, dep.userId);
         if (!targetPre) {
-          upsertCanonicalUserInState(masterState, {
+          targetPre = upsertCanonicalUserInState(masterState, {
             userId: dep.userId,
             username: dep.username || dep.userId,
             loginId: dep.userId,
@@ -2475,13 +2685,14 @@ const server = http.createServer(async (req, res) => {
             registeredAt: now
           });
         }
-        await dbDaemon.syncMasterState(masterState);
         const atomicRes = await dbDaemon.adjustWalletAtomic({
           userId: dep.userId,
           username: dep.username || dep.userId,
           balanceType: 'CASH',
           direction: 'CREDIT',
           amountInr: totalCreditInr,
+          initialCashPaise: inrToPaise(targetPre.cashBalanceInr || 0),
+          initialPromoPaise: inrToPaise(targetPre.promoBalanceInr || 0),
           reason: `Deposit Confirmed (${dep.depositId} • UTR: ${dep.utr || dep.utrNumber || ''})`,
           actor,
           idempotencyKey: `DEP-CONFIRM-${dep.depositId}`
@@ -2490,19 +2701,104 @@ const server = http.createServer(async (req, res) => {
           sendJsonResponse(req, res, 400, { ok: false, error: (atomicRes && atomicRes.error) || 'Failed to credit deposit.' });
           return;
         }
+        updatedBalanceInr = Number(atomicRes.cashBalanceInr || 0);
         dep.status = 'CONFIRMED';
         dep.confirmedAt = now;
         dep.updatedAt = now;
+        dep.webhookVerified = true;
+        dep.firstDepositBonusPct = bonusPct;
+        dep.firstDepositBonusInr = bonusInr;
         dep.reviewedBy = actor;
         dep.reviewReason = reason;
 
         const targetU = findCanonicalUserInState(masterState, dep.userId);
         if (targetU) {
           upsertCanonicalUserInState(masterState, Object.assign({}, targetU, {
-            cashBalanceInr: atomicRes.cashBalanceInr,
+            cashBalanceInr: updatedBalanceInr,
+            firstDepositBonusClaimed: true,
             lastAdminBalanceUpdateAt: now,
             updatedAt: now
           }));
+        }
+
+        if (bonusInr > 0) {
+          if (!Array.isArray(masterState.transactions)) masterState.transactions = [];
+          const fdbTxId = 'FDB-' + dep.depositId;
+          if (!masterState.transactions.some(t => t && t.id === fdbTxId)) {
+            masterState.transactions.unshift({
+              id: fdbTxId,
+              userId: dep.userId,
+              username: dep.username,
+              type: 'BONUS',
+              title: `Deposit Bonus (+${bonusPct}% on ₹${amt.toLocaleString('en-IN')})`,
+              amount: bonusInr,
+              status: 'SUCCESS',
+              timestamp: now,
+              updatedAt: now
+            });
+          }
+        }
+
+        // Credit 7-Level Downline Referral Commission if applicable
+        const rates = (masterState.promoConfig && Array.isArray(masterState.promoConfig.levelRatesPercent))
+          ? masterState.promoConfig.levelRatesPercent
+          : [7, 6, 5, 4, 3, 2, 1];
+        const minQual = Number((masterState.promoConfig && masterState.promoConfig.minQualifyingDepositInr) || 100);
+        if (amt >= minQual && Array.isArray(masterState.referralMembers)) {
+          masterState.referralMembers.forEach(rm => {
+            if (rm && rm.memberId === dep.userId) {
+              rm.depositCount = (rm.depositCount || 0) + 1;
+              rm.totalDepositsInr = +(Number(rm.totalDepositsInr || 0) + amt).toFixed(2);
+              rm.dailyDepositInr = +(Number(rm.dailyDepositInr || 0) + amt).toFixed(2);
+              rm.weeklyDepositInr = +(Number(rm.weeklyDepositInr || 0) + amt).toFixed(2);
+              rm.monthlyDepositInr = +(Number(rm.monthlyDepositInr || 0) + amt).toFixed(2);
+              const lvl = Number(rm.level || 1);
+              if (lvl >= 1 && lvl <= 7) {
+                const rPct = Number(rates[lvl - 1] || 0);
+                const commInr = +(amt * (rPct / 100)).toFixed(2);
+                if (commInr > 0) {
+                  if (!Array.isArray(masterState.commissionLedger)) masterState.commissionLedger = [];
+                  if (!masterState.commissionLedger.some(c => c && c.eventId === dep.depositId && c.level === lvl)) {
+                    masterState.commissionLedger.unshift({
+                      ledgerId: 'COM-' + Math.floor(10000 + Math.random() * 89999),
+                      eventId: dep.depositId,
+                      beneficiaryUserId: rm.rootAgentId || rm.parentId || 'SELF',
+                      memberId: dep.userId,
+                      memberName: dep.username,
+                      level: lvl,
+                      ratePct: rPct,
+                      depositInr: amt,
+                      commissionInr: commInr,
+                      status: 'APPROVED',
+                      ruleVersion: (masterState.promoConfig && masterState.promoConfig.version) || 'v1.0',
+                      chainPath: rm.chainPath || `Level ${lvl}`,
+                      timestamp: now
+                    });
+                  }
+                }
+              }
+            }
+          });
+        }
+
+        if (!Array.isArray(masterState.adminLedger)) masterState.adminLedger = [];
+        const ldgCode = 'LDG-' + dep.depositId;
+        if (!masterState.adminLedger.some(l => l && l.txCode === ldgCode)) {
+          masterState.adminLedger.unshift({
+            txCode: ldgCode,
+            userId: dep.userId,
+            username: dep.username,
+            type: 'DEPOSIT',
+            amountInr: totalCreditInr,
+            currency: dep.method === 'USDT' ? 'USDT' : 'INR',
+            balanceType: 'CASH',
+            relatedRef: bonusInr > 0 ? `${dep.depositId} (+₹${bonusInr} ${bonusPct}% Bonus)` : dep.depositId,
+            reversalOf: null,
+            idempotencyKey: dep.idempotencyKey || ('IDEMP-' + dep.depositId),
+            status: 'COMPLETED',
+            actor,
+            createdAt: now
+          });
         }
       } else {
         dep.status = 'FAILED';
@@ -2512,15 +2808,284 @@ const server = http.createServer(async (req, res) => {
       }
 
       (masterState.transactions || []).forEach(tx => {
-        if (tx && tx.id === depositId) {
-          tx.status = dep.status === 'CONFIRMED' ? 'SUCCESS' : 'FAILED';
+        if (!tx) return;
+        const matchesDep = (
+          tx.id === depositId ||
+          tx.depositId === depositId ||
+          (dep.txId && String(tx.id) === String(dep.txId)) ||
+          (tx.utrNumber && dep.utrNumber && String(tx.utrNumber) === String(dep.utrNumber))
+        );
+        if (matchesDep) {
+          tx.status = dep.status === 'CONFIRMED' ? 'Completed' : 'Rejected';
           tx.updatedAt = now;
         }
       });
 
-      scheduleSaveStateToDb(80);
+      masterState.adminUpdatedAt = now;
+      scheduleSaveStateToDb(50);
       broadcastStateToSseClients('ADMIN_DEPOSIT_RESOLVE', true);
-      sendJsonResponse(req, res, 200, { ok: true, deposit: dep });
+      sendJsonResponse(req, res, 200, {
+        ok: true,
+        deposit: dep,
+        newBalanceInr: updatedBalanceInr,
+        state: redactStateForClient(masterState, adminSess)
+      });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0K-2. Real-Player-Only 1vs1 Matchmaking Engine (`UNO`, `LUDO`, `QUIZ`)
+  //       Strictly pairs ONLY real available online players (NEVER fake bots!)
+  // --------------------------------------------------------------------------
+  if ((pathname === '/api/matchmaking/join' || pathname === '/api/matchmaking/poll' || pathname === '/api/matchmaking/cancel') && req.method === 'POST') {
+    try {
+      const data = await readJsonBody(req);
+      const gameKey = String(data.gameKey || 'UNO').toUpperCase();
+      if (!['UNO', 'LUDO', 'QUIZ'].includes(gameKey)) {
+        sendJsonResponse(req, res, 400, { ok: false, error: 'Unsupported gameKey for 1vs1 matchmaking.' });
+        return;
+      }
+      const authSess = extractAuthSession(req, 'CUSTOMER');
+      const userId = String((authSess && authSess.sub) || data.userId || '').trim();
+      const username = String(data.username || (authSess && authSess.username) || userId || 'Player').trim();
+      const queueId = String(data.queueId || '').trim();
+      const sessionKey = String(data.sessionKey || data.deviceId || queueId || userId).trim();
+      const feeInr = Math.max(0, Number(data.feeInr || 0));
+      const now = Date.now();
+
+      if (!masterState.liveMatchmakingLobby || typeof masterState.liveMatchmakingLobby !== 'object') {
+        masterState.liveMatchmakingLobby = { UNO: [], LUDO: [], QUIZ: [] };
+      }
+      const FAKE_BOT_SET = new Set(['USR-601', 'USR-712', 'USR-834', 'USR-819', 'USR-512', 'USR-904', 'USR-701', 'USR-615', 'USR-409', 'USR-204']);
+      // Purge expired (> 120s) or fake bot entries
+      masterState.liveMatchmakingLobby[gameKey] = (masterState.liveMatchmakingLobby[gameKey] || []).filter(
+        q => q && q.userId && !FAKE_BOT_SET.has(String(q.userId)) &&
+             (!q.matchedWithUid || !FAKE_BOT_SET.has(String(q.matchedWithUid))) &&
+             (now - Number(q.joinedAt || 0) < 120000)
+      );
+      const lobby = masterState.liveMatchmakingLobby[gameKey];
+
+      if (pathname === '/api/matchmaking/cancel') {
+        masterState.liveMatchmakingLobby[gameKey] = lobby.filter(
+          q => q && q.queueId !== queueId && !(userId && q.userId === userId && (!sessionKey || !q.sessionKey || q.sessionKey === sessionKey))
+        );
+        if (data.refundFeeInr && Number(data.refundFeeInr) > 0 && userId && userId !== 'GUEST') {
+          const uObj = findCanonicalUserInState(masterState, userId);
+          if (uObj && typeof data.newBalanceInr === 'number') {
+            upsertCanonicalUserInState(masterState, Object.assign({}, uObj, {
+              cashBalanceInr: Math.max(0, +Number(data.newBalanceInr).toFixed(2)),
+              lastUserBalanceUpdateAt: now,
+              updatedAt: now
+            }));
+          }
+        }
+        scheduleSaveStateToDb(80);
+        broadcastStateToSseClients('MM_CANCEL', false);
+        sendJsonResponse(req, res, 200, { ok: true, cancelled: true });
+        return;
+      }
+
+      if (pathname === '/api/matchmaking/join') {
+        if (!userId || userId === 'GUEST') {
+          sendJsonResponse(req, res, 400, { ok: false, error: 'Valid logged-in player userId is required for 1vs1 matchmaking.' });
+          return;
+        }
+        if (typeof data.newBalanceInr === 'number') {
+          const uObj = findCanonicalUserInState(masterState, userId);
+          if (uObj) {
+            upsertCanonicalUserInState(masterState, Object.assign({}, uObj, {
+              cashBalanceInr: Math.max(0, +Number(data.newBalanceInr).toFixed(2)),
+              lastUserBalanceUpdateAt: now,
+              updatedAt: now
+            }));
+          }
+        }
+
+        // Remove any prior entry from the exact same player session
+        for (let i = lobby.length - 1; i >= 0; i--) {
+          const item = lobby[i];
+          if (item && (item.queueId === queueId || (item.userId === userId && (!item.sessionKey || item.sessionKey === sessionKey)))) {
+            lobby.splice(i, 1);
+          }
+        }
+
+        // Search for a REAL waiting player (must be a distinct player / distinct session, status === 'SEARCHING')
+        const isDistinctRealOpponent = (q) => (
+          q && q.status === 'SEARCHING' && q.queueId !== queueId &&
+          (q.userId !== userId || (q.sessionKey && sessionKey && q.sessionKey !== sessionKey))
+        );
+
+        // 1. Prefer exact entry fee match first
+        let otherEntry = lobby.find(q => isDistinctRealOpponent(q) && Math.abs(Number(q.feeInr || 0) - feeInr) < 0.01);
+        // 2. If another real player is waiting in the same game at a different fee, match at the mutually covered stake
+        if (!otherEntry) {
+          otherEntry = lobby.find(q => isDistinctRealOpponent(q));
+        }
+
+        const effectiveQueueId = queueId || `MM-${gameKey}-${userId}-${now}`;
+        if (otherEntry) {
+          const matchId = `M1V1-${gameKey}-${now}-${Math.floor(100 + Math.random() * 899)}`;
+          const matchedFeeInr = Math.min(Number(otherEntry.feeInr || feeInr), feeInr);
+          otherEntry.status = 'MATCHED';
+          otherEntry.matchId = matchId;
+          otherEntry.role = 'P1';
+          otherEntry.matchedWithUid = userId;
+          otherEntry.matchedWithName = username;
+          otherEntry.matchedFeeInr = matchedFeeInr;
+          otherEntry.matchedAt = now;
+
+          const myEntry = {
+            queueId: effectiveQueueId,
+            gameKey,
+            userId,
+            username,
+            sessionKey,
+            feeInr,
+            matchedFeeInr,
+            joinedAt: now,
+            matchedAt: now,
+            status: 'MATCHED',
+            matchId,
+            role: 'P2',
+            matchedWithUid: otherEntry.userId,
+            matchedWithName: otherEntry.username || otherEntry.userId
+          };
+          lobby.push(myEntry);
+
+          scheduleSaveStateToDb(80);
+          broadcastStateToSseClients('MM_MATCHED', false);
+          sendJsonResponse(req, res, 200, {
+            ok: true,
+            status: 'MATCHED',
+            matchId,
+            queueId: effectiveQueueId,
+            role: 'P2',
+            matchedFeeInr,
+            opponent: {
+              userId: otherEntry.userId,
+              username: otherEntry.username || otherEntry.userId,
+              feeInr: Number(otherEntry.feeInr || feeInr)
+            }
+          });
+          return;
+        }
+
+        const myWaitingEntry = {
+          queueId: effectiveQueueId,
+          gameKey,
+          userId,
+          username,
+          sessionKey,
+          feeInr,
+          joinedAt: now,
+          status: 'SEARCHING',
+          matchedWithUid: null,
+          matchedWithName: null
+        };
+        lobby.push(myWaitingEntry);
+        scheduleSaveStateToDb(80);
+        broadcastStateToSseClients('MM_JOIN', false);
+        sendJsonResponse(req, res, 200, {
+          ok: true,
+          status: 'SEARCHING',
+          queueId: effectiveQueueId
+        });
+        return;
+      }
+
+      if (pathname === '/api/matchmaking/poll') {
+        let myEntry = lobby.find(q => q && ((queueId && q.queueId === queueId) || (q.userId === userId && (!sessionKey || !q.sessionKey || q.sessionKey === sessionKey))));
+        if (myEntry && myEntry.status === 'MATCHED' && myEntry.matchedWithUid) {
+          sendJsonResponse(req, res, 200, {
+            ok: true,
+            status: 'MATCHED',
+            matchId: myEntry.matchId || `M1V1-${gameKey}-${now}`,
+            queueId: myEntry.queueId,
+            role: myEntry.role || 'P1',
+            matchedFeeInr: Number(myEntry.matchedFeeInr || myEntry.feeInr || feeInr),
+            opponent: {
+              userId: myEntry.matchedWithUid,
+              username: myEntry.matchedWithName || myEntry.matchedWithUid,
+              feeInr: Number(myEntry.matchedFeeInr || myEntry.feeInr || feeInr)
+            }
+          });
+          return;
+        }
+
+        // If myEntry was not found (e.g. server restarted while searching), re-insert as SEARCHING
+        if (!myEntry && userId && userId !== 'GUEST') {
+          myEntry = {
+            queueId: queueId || `MM-${gameKey}-${userId}-${now}`,
+            gameKey,
+            userId,
+            username,
+            sessionKey,
+            feeInr,
+            joinedAt: now,
+            status: 'SEARCHING',
+            matchedWithUid: null,
+            matchedWithName: null
+          };
+          lobby.push(myEntry);
+        }
+
+        if (myEntry && myEntry.status === 'SEARCHING') {
+          const isDistinctRealOpponent = (q) => (
+            q && q.status === 'SEARCHING' && q.queueId !== myEntry.queueId &&
+            (q.userId !== userId || (q.sessionKey && sessionKey && q.sessionKey !== sessionKey))
+          );
+          let otherEntry = lobby.find(q => isDistinctRealOpponent(q) && Math.abs(Number(q.feeInr || 0) - Number(myEntry.feeInr || feeInr)) < 0.01);
+          if (!otherEntry) {
+            otherEntry = lobby.find(q => isDistinctRealOpponent(q));
+          }
+          if (otherEntry) {
+            const matchId = `M1V1-${gameKey}-${now}-${Math.floor(100 + Math.random() * 899)}`;
+            const matchedFeeInr = Math.min(Number(otherEntry.feeInr || feeInr), Number(myEntry.feeInr || feeInr));
+            otherEntry.status = 'MATCHED';
+            otherEntry.matchId = matchId;
+            otherEntry.role = 'P1';
+            otherEntry.matchedWithUid = userId;
+            otherEntry.matchedWithName = username;
+            otherEntry.matchedFeeInr = matchedFeeInr;
+            otherEntry.matchedAt = now;
+
+            myEntry.status = 'MATCHED';
+            myEntry.matchId = matchId;
+            myEntry.role = 'P2';
+            myEntry.matchedWithUid = otherEntry.userId;
+            myEntry.matchedWithName = otherEntry.username || otherEntry.userId;
+            myEntry.matchedFeeInr = matchedFeeInr;
+            myEntry.matchedAt = now;
+
+            scheduleSaveStateToDb(80);
+            broadcastStateToSseClients('MM_MATCHED', false);
+            sendJsonResponse(req, res, 200, {
+              ok: true,
+              status: 'MATCHED',
+              matchId,
+              queueId: myEntry.queueId,
+              role: 'P2',
+              matchedFeeInr,
+              opponent: {
+                userId: otherEntry.userId,
+                username: otherEntry.username || otherEntry.userId,
+                feeInr: Number(otherEntry.feeInr || feeInr)
+              }
+            });
+            return;
+          }
+        }
+
+        sendJsonResponse(req, res, 200, {
+          ok: true,
+          status: 'SEARCHING',
+          queueId: myEntry ? myEntry.queueId : queueId
+        });
+        return;
+      }
     } catch (e) {
       sendJsonResponse(req, res, 400, { ok: false, error: e.message });
     }
@@ -2911,6 +3476,14 @@ const server = http.createServer(async (req, res) => {
               matchedUser.lastSeenAt = now;
               matchedUser.deviceId = String(dev.deviceId);
               if (dev.currentView) matchedUser.currentView = String(dev.currentView);
+              const devUsrBalTs = Number(dev.lastUserBalanceUpdateAt || 0);
+              const srvAdmBalTs = Number(matchedUser.lastAdminBalanceUpdateAt || 0);
+              const srvUsrBalTs = Number(matchedUser.lastUserBalanceUpdateAt || 0);
+              if (devUsrBalTs > srvUsrBalTs && devUsrBalTs > srvAdmBalTs && typeof dev.balanceInr === 'number' && !Number.isNaN(dev.balanceInr)) {
+                matchedUser.cashBalanceInr = Math.max(0, +Number(dev.balanceInr).toFixed(2));
+                matchedUser.lastUserBalanceUpdateAt = devUsrBalTs;
+                upsertCanonicalUserInState(masterState, matchedUser);
+              }
             }
           }
           const prevDev = masterState.connectedDevices[dev.deviceId];
@@ -2948,6 +3521,8 @@ const server = http.createServer(async (req, res) => {
         ts: now,
         userBalanceInr: matchedUser ? Number(matchedUser.cashBalanceInr || 0) : undefined,
         userPromoInr: matchedUser ? Number(matchedUser.promoBalanceInr || 0) : undefined,
+        userBalanceUpdatedAt: matchedUser ? Math.max(Number(matchedUser.lastAdminBalanceUpdateAt || 0), Number(matchedUser.lastUserBalanceUpdateAt || 0)) : 0,
+        lastAdminBalanceUpdateAt: matchedUser ? Number(matchedUser.lastAdminBalanceUpdateAt || 0) : 0,
         userStatus: matchedUser ? matchedUser.status : undefined,
         forceLogoutAt: matchedUser ? Math.max(Number(matchedUser.forceLogoutAt || 0), Number((masterState.forceLogoutMap && masterState.forceLogoutMap[matchedUser.userId]) || 0)) : 0,
         remoteCommandsQueue: activeCmds
