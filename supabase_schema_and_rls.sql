@@ -545,13 +545,14 @@ ALTER TABLE kv_master_state ENABLE ROW LEVEL SECURITY;
 
 DO $$
 BEGIN
+  DROP POLICY IF EXISTS "Allow anon and service_role access to kv_master_state" ON kv_master_state;
   IF NOT EXISTS (
-    SELECT 1 FROM pg_policies WHERE tablename = 'kv_master_state' AND policyname = 'Allow anon and service_role access to kv_master_state'
+    SELECT 1 FROM pg_policies WHERE tablename = 'kv_master_state' AND policyname = 'Service role exclusive access to kv_master_state'
   ) THEN
-    CREATE POLICY "Allow anon and service_role access to kv_master_state"
+    CREATE POLICY "Service role exclusive access to kv_master_state"
       ON kv_master_state
       FOR ALL
-      TO anon, authenticated, service_role
+      TO service_role
       USING (true)
       WITH CHECK (true);
   END IF;
@@ -589,13 +590,15 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies WHERE tablename = 'game_periods' AND policyname = 'Public read and service role write on game_periods'
   ) THEN
-    CREATE POLICY "Public read and service role write on game_periods" ON game_periods FOR ALL TO anon, authenticated, service_role USING (true) WITH CHECK (true);
+    CREATE POLICY "Public read on game_periods" ON game_periods FOR SELECT TO anon, authenticated USING (true);
+    CREATE POLICY "Service role write on game_periods" ON game_periods FOR ALL TO service_role USING (true) WITH CHECK (true);
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_policies WHERE tablename = 'game_results' AND policyname = 'Public read and service role write on game_results'
   ) THEN
-    CREATE POLICY "Public read and service role write on game_results" ON game_results FOR ALL TO anon, authenticated, service_role USING (true) WITH CHECK (true);
+    CREATE POLICY "Public read on game_results" ON game_results FOR SELECT TO anon, authenticated USING (true);
+    CREATE POLICY "Service role write on game_results" ON game_results FOR ALL TO service_role USING (true) WITH CHECK (true);
   END IF;
 
   IF NOT EXISTS (
@@ -638,4 +641,157 @@ BEGIN
     END IF;
   END IF;
 END
+$$;
+
+
+-- ============================================================================
+-- 11. V14.0 ATOMIC INTEGER-PAISE FINANCIAL TABLES & PL/pgSQL RPC FUNCTIONS
+--     (1 INR = 100 Paise • Row-Level FOR UPDATE Locks • Idempotency Enforcement)
+-- ============================================================================
+
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS cash_balance_paise BIGINT NOT NULL DEFAULT 0 CHECK (cash_balance_paise >= 0);
+ALTER TABLE wallets ADD COLUMN IF NOT EXISTS promo_balance_paise BIGINT NOT NULL DEFAULT 0 CHECK (promo_balance_paise >= 0);
+ALTER TABLE ledger_transactions ADD COLUMN IF NOT EXISTS amount_paise BIGINT NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS gift_codes (
+  code TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  distribution_mode TEXT NOT NULL DEFAULT 'FULL_TO_EACH' CHECK (distribution_mode IN ('FULL_TO_EACH', 'SPLIT_EQUALLY')),
+  total_value_paise BIGINT NOT NULL DEFAULT 0 CHECK (total_value_paise >= 0),
+  reward_per_user_paise BIGINT NOT NULL DEFAULT 0 CHECK (reward_per_user_paise >= 0),
+  max_claims INT NOT NULL DEFAULT 1 CHECK (max_claims >= 1),
+  claimed_count INT NOT NULL DEFAULT 0 CHECK (claimed_count >= 0 AND claimed_count <= max_claims),
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'EXHAUSTED', 'DISABLED', 'EXPIRED')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS gift_code_redemptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  code TEXT NOT NULL REFERENCES gift_codes(code) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reward_paise BIGINT NOT NULL CHECK (reward_paise > 0),
+  ledger_tx_code TEXT NOT NULL,
+  redeemed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(code, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS wingo_settlement_locks (
+  period_id TEXT PRIMARY KEY,
+  slot_key TEXT NOT NULL,
+  winning_number INT NOT NULL CHECK (winning_number BETWEEN 0 AND 9),
+  commit_hash TEXT NOT NULL,
+  server_seed TEXT NOT NULL,
+  total_bets INT NOT NULL DEFAULT 0,
+  total_wager_paise BIGINT NOT NULL DEFAULT 0,
+  total_payout_paise BIGINT NOT NULL DEFAULT 0,
+  settled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE gift_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gift_code_redemptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE wingo_settlement_locks ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Service role full access on gift_codes" ON gift_codes;
+CREATE POLICY "Service role full access on gift_codes" ON gift_codes FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Service role full access on gift_code_redemptions" ON gift_code_redemptions;
+CREATE POLICY "Service role full access on gift_code_redemptions" ON gift_code_redemptions FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Service role full access on wingo_settlement_locks" ON wingo_settlement_locks;
+CREATE POLICY "Service role full access on wingo_settlement_locks" ON wingo_settlement_locks FOR ALL TO service_role USING (true) WITH CHECK (true);
+
+-- Atomic Wallet Credit / Debit RPC with Row-Level FOR UPDATE Lock & Idempotency
+CREATE OR REPLACE FUNCTION fn_adjust_wallet_atomic(
+  p_user_uid TEXT,
+  p_balance_type TEXT,
+  p_direction TEXT,
+  p_amount_paise BIGINT,
+  p_reason TEXT,
+  p_actor TEXT,
+  p_idempotency_key TEXT
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_user_id UUID;
+  v_wallet RECORD;
+  v_existing_tx RECORD;
+  v_signed_paise BIGINT;
+  v_next_cash BIGINT;
+  v_next_promo BIGINT;
+  v_tx_code TEXT;
+BEGIN
+  IF p_amount_paise <= 0 THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'Amount in paise must be positive.');
+  END IF;
+
+  SELECT * INTO v_existing_tx FROM ledger_transactions WHERE idempotency_key = p_idempotency_key LIMIT 1;
+  IF FOUND THEN
+    SELECT * INTO v_wallet FROM wallets WHERE user_id = v_existing_tx.user_id;
+    RETURN jsonb_build_object(
+      'ok', true,
+      'idempotentReplay', true,
+      'txCode', v_existing_tx.tx_code,
+      'cashBalancePaise', COALESCE(v_wallet.cash_balance_paise, 0),
+      'promoBalancePaise', COALESCE(v_wallet.promo_balance_paise, 0)
+    );
+  END IF;
+
+  SELECT id INTO v_user_id FROM users WHERE uid_code = p_user_uid LIMIT 1;
+  IF v_user_id IS NULL THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'User not found.');
+  END IF;
+
+  SELECT * INTO v_wallet FROM wallets WHERE user_id = v_user_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('ok', false, 'error', 'Wallet not found.');
+  END IF;
+
+  v_signed_paise := CASE WHEN UPPER(p_direction) = 'CREDIT' THEN p_amount_paise ELSE -p_amount_paise END;
+  v_next_cash := v_wallet.cash_balance_paise;
+  v_next_promo := v_wallet.promo_balance_paise;
+
+  IF UPPER(p_balance_type) = 'PROMO' THEN
+    IF v_next_promo + v_signed_paise < 0 THEN
+      RETURN jsonb_build_object('ok', false, 'error', 'Insufficient Promo Balance.');
+    END IF;
+    v_next_promo := v_next_promo + v_signed_paise;
+  ELSE
+    IF v_next_cash + v_signed_paise < 0 THEN
+      RETURN jsonb_build_object('ok', false, 'error', 'Insufficient Cash Balance.');
+    END IF;
+    v_next_cash := v_next_cash + v_signed_paise;
+  END IF;
+
+  UPDATE wallets
+  SET cash_balance_paise = v_next_cash,
+      cash_balance_inr = ROUND(v_next_cash::NUMERIC / 100.0, 2),
+      promo_balance_paise = v_next_promo,
+      promo_bonus_balance_inr = ROUND(v_next_promo::NUMERIC / 100.0, 2),
+      updated_at = NOW()
+  WHERE id = v_wallet.id;
+
+  v_tx_code := 'LDG-' || EXTRACT(EPOCH FROM NOW())::BIGINT || '-' || SUBSTRING(md5(random()::text) FROM 1 FOR 6);
+
+  INSERT INTO ledger_transactions (
+    tx_code, user_id, wallet_id, tx_type, amount_inr, amount_paise,
+    currency, balance_type, related_reference_id, idempotency_key,
+    status, authorized_actor, notes
+  ) VALUES (
+    v_tx_code, v_user_id, v_wallet.id, 'ATOMIC_ADJUSTMENT',
+    ROUND(v_signed_paise::NUMERIC / 100.0, 2), v_signed_paise,
+    'INR', UPPER(p_balance_type), 'DIRECT_WALLET_ADJ', p_idempotency_key,
+    'COMPLETED', p_actor, p_reason
+  );
+
+  RETURN jsonb_build_object(
+    'ok', true,
+    'idempotentReplay', false,
+    'txCode', v_tx_code,
+    'cashBalancePaise', v_next_cash,
+    'promoBalancePaise', v_next_promo
+  );
+END;
 $$;

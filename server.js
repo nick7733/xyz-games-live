@@ -1,28 +1,35 @@
 /**
- * XYZ Games — Production High-Traffic Backend Server, Database & Security Gateway (server.js v13.0)
- * Engineered to handle 20,000+ Daily Active Users (DAU) with Zero External npm Dependencies:
+ * XYZ Games — Production High-Traffic Backend Server, Database & Security Gateway (server.js v14.0)
+ * Engineered for 20,000+ Daily Active Users (DAU) with Zero External npm Dependencies:
  *   node server.js
  *
- * Production Capabilities (v13.0):
- * 1. Normalized Relational SQLite3 WAL Database (`database.js` -> `xyz_production.sqlite`) + Atomic Write-Behind Batching:
- *    - Indexed relational tables (`users`, `staff_admins`, `deposits`, `withdrawals`, `transactions`, `game_bets`, `audit_logs`, `kv_master_state`).
- *    - Sub-millisecond in-memory reads + debounced WAL batch transactions (handles 2,500+ req/sec).
- * 2. Enterprise Security & Cryptography (`security.js`):
- *    - `scrypt` + CSPRNG 16-byte salt password hashing + timing-safe verification + transparent plaintext compatibility.
- *    - Stateless HMAC-SHA256 JWT tokens + HTTP-only cookies for both Customer Webapp & Admin Panel.
- *    - High-capacity sliding-window IP rate limiter (tuned for 20,000+ DAU behind Cloudflare/Render), brute-force login lockout, XSS/prototype-pollution sanitization, and HSTS/CSP/XFO security headers.
- *    - Server-side Anti-Tamper Guard: Non-admin customer pushes can NEVER overwrite `ADMIN_EXCLUSIVE_KEYS` or forge admin-approved deposits/withdrawals.
- * 3. Server-Side 24/7 WinGo Scheduler & Atomic Game/Finance Endpoints:
- *    - Continuous 1-second server-side UTC WinGo engine across all 5 modes (`30SEC`, `1MIN`, `2MIN`, `3MIN`, `5MIN`) that automatically settles waiting bets on period rollover using least-exposure house-profit or Admin manual override!
+ * Production Architecture & Security Remediations (v14.0):
+ * 1. Normalized Relational SQLite3 WAL Database (`database.js` -> `xyz_production.sqlite`) + Atomic ACID Transactions:
+ *    - Indexed relational tables (`users`, `staff_admins`, `ledger_transactions`, `gift_codes`, `gift_code_redemptions`,
+ *      `deposits`, `withdrawals`, `transactions`, `game_bets`, `wingo_settlement_locks`, `audit_logs`, `kv_master_state`).
+ *    - Integer paise (`1 INR = 100 paise`) financial arithmetic with `BEGIN IMMEDIATE` locking and idempotency keys.
+ * 2. Enterprise Security, RBAC & Privacy Redaction (`security.js` v14.0):
+ *    - `scrypt` (N=16384, r=8, p=1, 64B key) + 16-byte CSPRNG salt + `crypto.timingSafeEqual` verification.
+ *    - Purpose-bound HMAC-SHA256 JWTs (`aud: 'xyz-admin'` vs `aud: 'xyz-customer'`) + `HttpOnly; SameSite=Lax; Secure` cookies.
+ *    - Server-side JWT verification on ALL administrative and financial endpoints (never trusts client headers like
+ *      `x-xyz-source: ADMIN_PANEL` or `isAdminPush: true`).
+ *    - Role-scoped state redaction (`redactStateForClient`) on `GET /api/xyz-state` and `/api/xyz-stream` SSE so
+ *      password hashes, secrets, and other users' private records are never exposed.
+ * 3. Provably Fair CSPRNG WinGo Engine & Atomic Financial Endpoints:
+ *    - Cryptographic HMAC-SHA256 commit-reveal outcome generator (`generatePeriodCommitAndOutcome`) independent of bets.
+ *    - Strict server-side betting cutoff enforcement and single-settlement lock per period (`wingo_settlement_locks`).
  *    - Dedicated atomic endpoints:
- *      * `POST /api/gift-code/redeem` (Atomic Gift Code validation, claim tracking & wallet credit)
- *      * `POST /api/admin/wallet-adjust` (Atomic Direct Wallet Balance Credit / Debit for Cash & Promo)
- *      * `POST /api/deposit/submit` & `POST /api/admin/deposit-resolve`
- *      * `POST /api/withdraw/submit` & `POST /api/admin/withdraw-resolve`
- *      * `POST /api/device/heartbeat` (Lightweight multi-device presence & All-India device registry)
- *      * `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/admin/login`
- *      * `GET  /api/health`, `GET /api/security-status`, `GET /api/xyz-time`, `GET /api/xyz-stream`
+ *      * `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`
+ *      * `POST /api/auth/admin-bootstrap`, `POST /api/admin/login`, `POST /api/xyz-admin-session`
+ *      * `POST /api/gift-code/redeem` & `POST /api/admin/gift-code`
+ *      * `POST /api/admin/wallet-adjust` & `POST /api/admin/reconcile`
+ *      * `POST /api/deposit/submit`, `POST /api/admin/deposit-resolve`, `POST /api/webhooks/payment`
+ *      * `POST /api/withdraw/submit`, `POST /api/admin/withdraw-resolve`
+ *      * `POST /api/wingo/bet`, `GET /api/wingo/verify`
+ *      * `POST /api/device/heartbeat`, `GET /api/health`, `GET /api/xyz-time`, `GET /api/xyz-stream`
  */
+
+'use strict';
 
 const http = require('node:http');
 const https = require('node:https');
@@ -31,6 +38,7 @@ const path = require('node:path');
 const url = require('node:url');
 const zlib = require('node:zlib');
 const os = require('node:os');
+const crypto = require('node:crypto');
 
 const {
   isPasswordHashed,
@@ -38,7 +46,12 @@ const {
   verifyPasswordSync,
   signJwt,
   verifyJwt,
+  revokeTokenJti,
+  revokeAllSessionsForSubject,
   extractAuthSession,
+  buildCookieHeader,
+  clearCookieHeader,
+  validateCsrfAndOrigin,
   getClientIp,
   checkRateLimit,
   checkBruteForceLock,
@@ -47,11 +60,16 @@ const {
   applySecurityHeaders,
   sanitizeObjectDeep,
   hashStatePasswordsInPlace,
+  redactStateForClient,
+  generatePeriodCommitAndOutcome,
+  verifyWebhookSignature,
   securityMetrics
 } = require('./security');
 
 const {
   DB_FILE,
+  inrToPaise,
+  paiseToInr,
   loadInitialStateFromSqliteOrJson,
   dbDaemon
 } = require('./database');
@@ -59,12 +77,10 @@ const {
 const PORT = Number(process.env.PORT || 4000);
 
 // ============================================================================
-// SUPABASE CLOUD SYNC BRIDGE (Project: acpzrkazjoeylyamdrrq)
-// Automatically syncs masterState to Supabase `kv_master_state` via REST API
+// SUPABASE CLOUD SYNC BRIDGE (Strictly Environment-Driven — No Hardcoded Keys)
 // ============================================================================
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://acpzrkazjoeylyamdrrq.supabase.co';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MjgxMjE5NSwiZXhwIjoyMTA4Mzg4MTk1fQ._6-EXphUoPv9sPJTsUPXPVHqP8PKL2xJVgRmmyuVdPg';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc';
+const SUPABASE_URL = String(process.env.SUPABASE_URL || '').trim();
+const SUPABASE_SERVICE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || '').trim();
 
 function pullMasterStateFromSupabaseCloud() {
   return new Promise((resolve) => {
@@ -153,8 +169,10 @@ function ensureMasterStateDefaults(st) {
   if (!st.deletedDeviceIds || typeof st.deletedDeviceIds !== 'object') st.deletedDeviceIds = {};
   if (!st.manualOverrides || typeof st.manualOverrides !== 'object') st.manualOverrides = {};
   if (!st.settledPeriodResults || typeof st.settledPeriodResults !== 'object') st.settledPeriodResults = {};
+  if (!st.wingoCommitRevealMap || typeof st.wingoCommitRevealMap !== 'object') st.wingoCommitRevealMap = {};
   if (!Array.isArray(st.adminUsersList)) st.adminUsersList = [];
   if (!Array.isArray(st.registeredAccounts)) st.registeredAccounts = [];
+  if (!Array.isArray(st.staffAdmins)) st.staffAdmins = [];
   if (!Array.isArray(st.adminDeposits)) st.adminDeposits = [];
   if (!Array.isArray(st.adminWithdrawals)) st.adminWithdrawals = [];
   if (!Array.isArray(st.transactions)) st.transactions = [];
@@ -206,14 +224,14 @@ hashStatePasswordsInPlace(masterState);
 setTimeout(async () => {
   const cloudState = await pullMasterStateFromSupabaseCloud();
   if (cloudState && typeof cloudState === 'object' && Object.keys(cloudState).length > 0) {
-    masterState = mergeServerState(masterState, cloudState, true);
+    masterState = mergeServerState(masterState, cloudState, true, { type: 'ADMIN', role: 'SUPER_ADMIN', isMasterSuperAdmin: true });
     masterState = ensureMasterStateDefaults(masterState);
     hashStatePasswordsInPlace(masterState);
     broadcastStateToSseClients('SUPABASE_BOOT_HYDRATE', true);
   }
   pushMasterStateToSupabaseCloud(masterState);
   dbDaemon.syncMasterState(masterState).catch(() => {});
-}, 100);
+}, 100).unref();
 
 // Debounced Write-Behind Persistence Queue
 let saveDebounceTimer = null;
@@ -243,6 +261,85 @@ function flushStateToDatabaseNow() {
 function scheduleSaveStateToDb(delayMs = 120) {
   if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
   saveDebounceTimer = setTimeout(flushStateToDatabaseNow, delayMs);
+}
+
+// ============================================================================
+// UNIFIED USER SYNCHRONIZATION HELPER (Single Canonical Identity Across Lists)
+// ============================================================================
+function upsertCanonicalUserInState(st, userObj) {
+  if (!st || !userObj || !userObj.userId) return null;
+  const uid = String(userObj.userId);
+  const cleanCopy = Object.assign({}, userObj);
+  if (cleanCopy.password && !isPasswordHashed(cleanCopy.password)) {
+    cleanCopy.passwordHash = hashPasswordSync(cleanCopy.password);
+  }
+  delete cleanCopy.password;
+
+  if (!Array.isArray(st.adminUsersList)) st.adminUsersList = [];
+  if (!Array.isArray(st.registeredAccounts)) st.registeredAccounts = [];
+
+  const updateInArr = (arr) => {
+    const idx = arr.findIndex(u => u && String(u.userId) === uid);
+    if (idx >= 0) {
+      arr[idx] = Object.assign({}, arr[idx], cleanCopy);
+      delete arr[idx].password;
+      return arr[idx];
+    } else {
+      const inserted = Object.assign({}, cleanCopy);
+      arr.unshift(inserted);
+      return inserted;
+    }
+  };
+
+  const canonical = updateInArr(st.adminUsersList);
+  updateInArr(st.registeredAccounts);
+
+  if (st.connectedDevices && typeof st.connectedDevices === 'object') {
+    Object.keys(st.connectedDevices).forEach(devId => {
+      const d = st.connectedDevices[devId];
+      if (d && d.userId === uid) {
+        d.balanceInr = Number(canonical.cashBalanceInr || 0);
+      }
+    });
+  }
+  return canonical;
+}
+
+function findCanonicalUserInState(st, queryStr) {
+  if (!st || !queryStr) return null;
+  const norm = String(queryStr).trim().toLowerCase();
+  const cleanPhone = String(queryStr).replace(/[\s\-()]/g, '');
+  const list = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+  return list.find(acc => {
+    if (!acc) return false;
+    const uidMatch = String(acc.userId || '').toLowerCase() === norm;
+    const loginMatch = String(acc.loginId || '').toLowerCase() === norm;
+    const identMatch = String(acc.identity || '').toLowerCase() === norm || String(acc.identity || '') === cleanPhone;
+    const emailMatch = String(acc.email || '').toLowerCase() === norm;
+    const phoneClean = String(acc.phone || '').replace(/[\s\-()]/g, '');
+    const phoneMatch = Boolean(phoneClean && cleanPhone && (phoneClean === cleanPhone || phoneClean.endsWith(cleanPhone)));
+    return uidMatch || loginMatch || identMatch || emailMatch || phoneMatch;
+  }) || null;
+}
+
+function findInviterByReferralCodeServer(st, inviteCodeRaw) {
+  const code = String(inviteCodeRaw || '').trim().toUpperCase();
+  if (!code) return null;
+  const allUsers = [...(st.adminUsersList || []), ...(st.registeredAccounts || [])];
+  for (const u of allUsers) {
+    if (!u || !u.userId) continue;
+    const uRef = String(u.referralCode || ('XYZ' + String(u.userId).replace(/[^0-9]/g, ''))).toUpperCase();
+    const uidUpper = String(u.userId).toUpperCase();
+    const uidDigits = String(u.userId).replace(/[^0-9]/g, '');
+    if (code === uRef || code === uidUpper || (uidDigits && code === `XYZ${uidDigits}`)) {
+      return u;
+    }
+  }
+  // Allow default platform master invite codes if no user matches or during initial bootstrap
+  if (['XYZ10001', 'XYZADMIN', 'XYZ2026', 'WELCOME', 'XYZ100'].includes(code) || code.startsWith('XYZ')) {
+    return allUsers[0] || { userId: 'UID-10001', username: 'MasterAgent', referralCode: code };
+  }
+  return null;
 }
 
 // ============================================================================
@@ -298,8 +395,8 @@ function mergeArrayById(localArr, remoteArr, idField, preferIncomingOnConflict) 
       const existing = map.get(sk);
       const exTs = getTs(existing);
       const itTs = getTs(item);
-      const exSettled = existing.status && existing.status !== "WAITING" && existing.status !== "PENDING";
-      const itSettled = item.status && item.status !== "WAITING" && item.status !== "PENDING";
+      const exSettled = existing.status && existing.status !== 'WAITING' && existing.status !== 'PENDING';
+      const itSettled = item.status && item.status !== 'WAITING' && item.status !== 'PENDING';
       if (itSettled && !exSettled) {
         map.set(sk, Object.assign({}, existing, item));
       } else if (exSettled && !itSettled) {
@@ -319,55 +416,35 @@ function mergeArrayById(localArr, remoteArr, idField, preferIncomingOnConflict) 
 function mergePromotionsAuthoritatively(curPromos, incPromos, isAdminPush) {
   const curList = Array.isArray(curPromos) ? curPromos : [];
   const incList = Array.isArray(incPromos) ? incPromos : [];
-  if (isAdminPush) {
-    // Admin push can add, edit, disable, or delete gift codes, while preserving higher claimedCount / redeemedByUids from server
-    const curMap = new Map();
-    curList.forEach(p => {
-      if (p && p.code) curMap.set(String(p.code).toUpperCase(), p);
-    });
-    return incList.map(incP => {
-      if (!incP || !incP.code) return incP;
-      const codeKey = String(incP.code).toUpperCase();
-      const exP = curMap.get(codeKey);
-      if (!exP) return incP;
-      const mergedUids = Array.from(new Set([...(exP.redeemedByUids || []), ...(incP.redeemedByUids || [])]));
-      const maxClaimed = Math.max(Number(exP.claimedCount || 0), Number(incP.claimedCount || 0), mergedUids.length);
-      const maxLim = Math.max(1, Number(incP.maxClaims || exP.maxClaims || 1));
-      let st = incP.status || exP.status || 'ACTIVE';
-      if (maxClaimed >= maxLim && st === 'ACTIVE') st = 'EXHAUSTED';
-      return Object.assign({}, exP, incP, {
-        code: codeKey,
-        claimedCount: maxClaimed,
-        redeemedByUids: mergedUids,
-        status: st
-      });
-    });
-  } else {
-    // Customer push can NEVER create fake gift codes, but CAN increment claimedCount & add their UID to redeemedByUids
-    const incMap = new Map();
-    incList.forEach(p => {
-      if (p && p.code) incMap.set(String(p.code).toUpperCase(), p);
-    });
-    return curList.map(srvP => {
-      if (!srvP || !srvP.code) return srvP;
-      const codeKey = String(srvP.code).toUpperCase();
-      const incP = incMap.get(codeKey);
-      if (!incP) return srvP;
-      const mergedUids = Array.from(new Set([...(srvP.redeemedByUids || []), ...(incP.redeemedByUids || [])]));
-      const maxClaimed = Math.max(Number(srvP.claimedCount || 0), Number(incP.claimedCount || 0), mergedUids.length);
-      const maxLim = Math.max(1, Number(srvP.maxClaims || 1));
-      let st = srvP.status || 'ACTIVE';
-      if (maxClaimed >= maxLim && st === 'ACTIVE') st = 'EXHAUSTED';
-      return Object.assign({}, srvP, {
-        claimedCount: maxClaimed,
-        redeemedByUids: mergedUids,
-        status: st
-      });
-    });
+  if (!isAdminPush) {
+    // Non-admin state push can NEVER create, modify, or claim gift codes directly;
+    // gift code redemptions must go through POST /api/gift-code/redeem
+    return curList;
   }
+  const curMap = new Map();
+  curList.forEach(p => {
+    if (p && p.code) curMap.set(String(p.code).toUpperCase(), p);
+  });
+  return incList.map(incP => {
+    if (!incP || !incP.code) return incP;
+    const codeKey = String(incP.code).toUpperCase();
+    const exP = curMap.get(codeKey);
+    if (!exP) return Object.assign({}, incP, { code: codeKey });
+    const mergedUids = Array.from(new Set([...(exP.redeemedByUids || []), ...(incP.redeemedByUids || [])]));
+    const maxClaimed = Math.max(Number(exP.claimedCount || 0), Number(incP.claimedCount || 0), mergedUids.length);
+    const maxLim = Math.max(1, Number(incP.maxClaims || exP.maxClaims || 1));
+    let st = incP.status || exP.status || 'ACTIVE';
+    if (maxClaimed >= maxLim && st === 'ACTIVE') st = 'EXHAUSTED';
+    return Object.assign({}, exP, incP, {
+      code: codeKey,
+      claimedCount: maxClaimed,
+      redeemedByUids: mergedUids,
+      status: st
+    });
+  });
 }
 
-function mergeUsersAuthoritatively(curUsers, incUsers, isAdminPush, forceLogoutMap) {
+function mergeUsersAuthoritatively(curUsers, incUsers, isAdminPush, forceLogoutMap, authSession) {
   const curList = Array.isArray(curUsers) ? curUsers : [];
   const incList = Array.isArray(incUsers) ? incUsers : [];
   const map = new Map();
@@ -380,12 +457,25 @@ function mergeUsersAuthoritatively(curUsers, incUsers, isAdminPush, forceLogoutM
     }
   });
 
+  // If unauthenticated, do NOT allow mutating or injecting users via raw state sync
+  if (!isAdminPush && (!authSession || authSession.type !== 'CUSTOMER')) {
+    return order.map(k => map.get(k)).filter(Boolean);
+  }
+
   incList.forEach(incU => {
     if (!incU || !incU.userId) return;
     const uid = String(incU.userId);
+
+    // A customer session can only update their OWN user record
+    if (!isAdminPush && authSession && authSession.type === 'CUSTOMER' && authSession.sub !== uid) {
+      return;
+    }
+
     if (!map.has(uid)) {
-      map.set(uid, Object.assign({}, incU));
-      order.unshift(uid);
+      if (isAdminPush) {
+        map.set(uid, Object.assign({}, incU));
+        order.unshift(uid);
+      }
       return;
     }
     const exU = map.get(uid);
@@ -394,47 +484,40 @@ function mergeUsersAuthoritatively(curUsers, incUsers, isAdminPush, forceLogoutM
     const exUsrTs = Number(exU.lastUserBalanceUpdateAt || 0);
     const incUsrTs = Number(incU.lastUserBalanceUpdateAt || 0);
 
-    const merged = Object.assign({}, exU, incU);
+    const merged = Object.assign({}, exU);
 
-    // Resolve cashBalanceInr & promoBalanceInr by latest timestamp
     if (isAdminPush) {
+      Object.assign(merged, incU);
       if (incAdmTs >= exAdmTs && incAdmTs >= exUsrTs) {
         merged.cashBalanceInr = Number(incU.cashBalanceInr ?? exU.cashBalanceInr ?? 0);
         merged.promoBalanceInr = Number(incU.promoBalanceInr ?? exU.promoBalanceInr ?? 0);
-        merged.lastAdminBalanceUpdateAt = Math.max(incAdmTs, exAdmTs);
-      } else if (exUsrTs > incAdmTs && Number(incU.cashBalanceInr) === Number(exU.cashBalanceInr)) {
-        merged.cashBalanceInr = Number(exU.cashBalanceInr || 0);
-      }
-    } else {
-      // Customer push: if Admin updated balance more recently than customer's last known sync, preserve Admin's balance!
-      const latestExTs = Math.max(exAdmTs, exUsrTs);
-      const latestIncTs = Math.max(incAdmTs, incUsrTs);
-      if (exAdmTs > incAdmTs && exAdmTs >= incUsrTs) {
-        merged.cashBalanceInr = Number(exU.cashBalanceInr || 0);
-        merged.promoBalanceInr = Number(exU.promoBalanceInr || 0);
-        merged.lastAdminBalanceUpdateAt = exAdmTs;
-      } else if (latestIncTs >= latestExTs) {
-        merged.cashBalanceInr = Number(incU.cashBalanceInr ?? exU.cashBalanceInr ?? 0);
-        merged.promoBalanceInr = Number(incU.promoBalanceInr ?? exU.promoBalanceInr ?? 0);
-        merged.lastUserBalanceUpdateAt = Math.max(incUsrTs, exUsrTs);
         merged.lastAdminBalanceUpdateAt = Math.max(incAdmTs, exAdmTs);
       } else {
         merged.cashBalanceInr = Number(exU.cashBalanceInr || 0);
         merged.promoBalanceInr = Number(exU.promoBalanceInr || 0);
       }
-      // Customer cannot unblock themselves
-      if (exU.status === 'BLOCKED' || exU.status === 'SUSPENDED') {
-        merged.status = exU.status;
+    } else {
+      // Customer push: allow updating bank/USDT profile details and legitimate game balance sync,
+      // but NEVER allow unblocking or overriding a more recent Admin balance update
+      ['bankHolderName', 'bankName', 'accountNumber', 'ifsc', 'usdtNetwork', 'usdtWalletAddress', 'currentView', 'lastSeenAt'].forEach(field => {
+        if (incU[field] !== undefined) merged[field] = incU[field];
+      });
+      if (exAdmTs > incAdmTs && exAdmTs >= incUsrTs) {
+        merged.cashBalanceInr = Number(exU.cashBalanceInr || 0);
+        merged.promoBalanceInr = Number(exU.promoBalanceInr || 0);
+      } else if (incUsrTs > exUsrTs && incUsrTs >= exAdmTs) {
+        merged.cashBalanceInr = Math.max(0, Number(incU.cashBalanceInr ?? exU.cashBalanceInr ?? 0));
+        merged.promoBalanceInr = Math.max(0, Number(incU.promoBalanceInr ?? exU.promoBalanceInr ?? 0));
+        merged.lastUserBalanceUpdateAt = incUsrTs;
       }
+      merged.status = exU.status || 'ACTIVE';
+      merged.kycStatus = exU.kycStatus || 'VERIFIED';
     }
 
-    // Preserve plaintext password for Admin 360 inspector alongside passwordHash
-    if (exU.password && exU.password !== '—' && !isPasswordHashed(exU.password) && (!merged.password || merged.password === '—')) {
-      merged.password = exU.password;
-    }
     if (exU.passwordHash && !merged.passwordHash) {
       merged.passwordHash = exU.passwordHash;
     }
+    delete merged.password;
 
     if (forceLogoutMap && forceLogoutMap[uid]) {
       merged.forceLogoutAt = Math.max(Number(merged.forceLogoutAt || 0), Number(forceLogoutMap[uid] || 0));
@@ -442,7 +525,6 @@ function mergeUsersAuthoritatively(curUsers, incUsers, isAdminPush, forceLogoutM
     map.set(uid, merged);
   });
 
-  // If isAdminPush and an account was intentionally deleted by Admin, allow deletion if adminUsersList was explicitly shrunk
   return order.map(k => map.get(k)).filter(Boolean);
 }
 
@@ -459,7 +541,7 @@ const ADMIN_EXCLUSIVE_KEYS = [
   'deletedDeviceIds'
 ];
 
-function mergeServerState(currentSt, incomingSt, isAdminPush) {
+function mergeServerState(currentSt, incomingSt, isAdminPush, authSession = null) {
   if (!incomingSt || typeof incomingSt !== 'object') return currentSt || {};
   const cur = (currentSt && typeof currentSt === 'object') ? currentSt : {};
   const base = Object.assign({}, cur);
@@ -477,7 +559,7 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
   );
 
   const mergedForceLogout = Object.assign({}, cur.forceLogoutMap || {});
-  if (incomingSt.forceLogoutMap && typeof incomingSt.forceLogoutMap === 'object') {
+  if (isAdminPush && incomingSt.forceLogoutMap && typeof incomingSt.forceLogoutMap === 'object') {
     Object.keys(incomingSt.forceLogoutMap).forEach(uid => {
       const ts = Number(incomingSt.forceLogoutMap[uid] || 0);
       if (ts > Number(mergedForceLogout[uid] || 0)) {
@@ -499,7 +581,24 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
   if (isAdminPush) {
     ADMIN_EXCLUSIVE_KEYS.forEach(k => {
       if (incomingSt[k] !== undefined) {
-        base[k] = incomingSt[k];
+        if (k === 'staffAdmins' && Array.isArray(incomingSt.staffAdmins)) {
+          // Preserve existing passwordHash on staffAdmins when Admin updates staff list
+          const existingHashes = new Map((cur.staffAdmins || []).map(a => [String(a.loginId || '').toLowerCase(), a.passwordHash]));
+          base.staffAdmins = incomingSt.staffAdmins.map(adm => {
+            if (!adm) return adm;
+            const copy = Object.assign({}, adm);
+            const prevHash = existingHashes.get(String(copy.loginId || '').toLowerCase());
+            if (copy.password && !isPasswordHashed(copy.password)) {
+              copy.passwordHash = hashPasswordSync(copy.password);
+            } else if (!copy.passwordHash && prevHash) {
+              copy.passwordHash = prevHash;
+            }
+            delete copy.password;
+            return copy;
+          });
+        } else {
+          base[k] = incomingSt[k];
+        }
       }
     });
 
@@ -534,23 +633,7 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
       base.adminAuditLogs = mergeArrayById(cur.adminAuditLogs, incomingSt.adminAuditLogs, 'auditId', true);
     }
   } else {
-    ADMIN_EXCLUSIVE_KEYS.forEach(k => {
-      if (cur[k] === undefined && incomingSt[k] !== undefined && k !== 'superAdminConfigured' && k !== 'staffAdmins') {
-        base[k] = incomingSt[k];
-      }
-    });
-
-    if (Array.isArray(incomingSt.adminPromotions)) {
-      base.adminPromotions = mergePromotionsAuthoritatively(cur.adminPromotions, incomingSt.adminPromotions, false);
-    }
-
-    if (incomingSt.settledPeriodResults && typeof incomingSt.settledPeriodResults === 'object') {
-      base.settledPeriodResults = Object.assign({}, incomingSt.settledPeriodResults, cur.settledPeriodResults || {});
-    }
-    if (incomingSt.manualOverrides && typeof incomingSt.manualOverrides === 'object') {
-      base.manualOverrides = Object.assign({}, incomingSt.manualOverrides, cur.manualOverrides || {});
-    }
-
+    // Non-admin push: NEVER allow modifying ADMIN_EXCLUSIVE_KEYS, promotions, or settled results
     if (Array.isArray(cur.adminNotifications) && Array.isArray(incomingSt.adminNotifications)) {
       base.adminNotifications = cur.adminNotifications.map(srvN => {
         const incN = incomingSt.adminNotifications.find(x => x && (x.notifId || x.id) === (srvN.notifId || srvN.id));
@@ -579,63 +662,81 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
   // Merge Users Authoritatively across adminUsersList and registeredAccounts
   const combinedCurUsers = mergeArrayById(cur.adminUsersList, cur.registeredAccounts, 'userId', false);
   const combinedIncUsers = mergeArrayById(incomingSt.adminUsersList, incomingSt.registeredAccounts, 'userId', isAdminPush);
-  const authoritativeUsers = mergeUsersAuthoritatively(combinedCurUsers, combinedIncUsers, isAdminPush, base.forceLogoutMap);
+  const authoritativeUsers = mergeUsersAuthoritatively(combinedCurUsers, combinedIncUsers, isAdminPush, base.forceLogoutMap, authSession);
   base.adminUsersList = authoritativeUsers.map(u => Object.assign({}, u));
   base.registeredAccounts = authoritativeUsers.map(u => Object.assign({}, u));
 
   // Anti-Tamper Guard for Deposits & Withdrawals on non-admin push
   let incDeposits = Array.isArray(incomingSt.adminDeposits) ? incomingSt.adminDeposits : [];
-  if (!isAdminPush && incDeposits.length > 0) {
-    const existingDepMap = new Map((cur.adminDeposits || []).map(d => [d.depositId, d]));
-    incDeposits = incDeposits.map(incD => {
-      if (!incD || !incD.depositId) return incD;
-      const exD = existingDepMap.get(incD.depositId);
-      if (exD) return exD;
-      return Object.assign({}, incD, { status: 'PENDING', webhookVerified: false });
-    });
+  if (!isAdminPush) {
+    if (!authSession || authSession.type !== 'CUSTOMER') {
+      incDeposits = [];
+    } else {
+      const existingDepMap = new Map((cur.adminDeposits || []).map(d => [d.depositId, d]));
+      incDeposits = incDeposits
+        .filter(incD => incD && incD.depositId && incD.userId === authSession.sub)
+        .map(incD => {
+          const exD = existingDepMap.get(incD.depositId);
+          if (exD) return exD;
+          return Object.assign({}, incD, { status: 'PENDING', webhookVerified: false });
+        });
+    }
   }
 
   let incWithdrawals = Array.isArray(incomingSt.adminWithdrawals) ? incomingSt.adminWithdrawals : [];
-  if (!isAdminPush && incWithdrawals.length > 0) {
-    const existingWdMap = new Map((cur.adminWithdrawals || []).map(w => [w.withdrawalId, w]));
-    incWithdrawals = incWithdrawals.map(incW => {
-      if (!incW || !incW.withdrawalId) return incW;
-      const exW = existingWdMap.get(incW.withdrawalId);
-      if (exW) return exW;
-      return Object.assign({}, incW, { reviewStatus: 'PENDING', payoutStatus: 'QUEUED' });
-    });
+  if (!isAdminPush) {
+    if (!authSession || authSession.type !== 'CUSTOMER') {
+      incWithdrawals = [];
+    } else {
+      const existingWdMap = new Map((cur.adminWithdrawals || []).map(w => [w.withdrawalId, w]));
+      incWithdrawals = incWithdrawals
+        .filter(incW => incW && incW.withdrawalId && incW.userId === authSession.sub)
+        .map(incW => {
+          const exW = existingWdMap.get(incW.withdrawalId);
+          if (exW) return exW;
+          return Object.assign({}, incW, { reviewStatus: 'PENDING', payoutStatus: 'QUEUED' });
+        });
+    }
   }
 
   base.adminDeposits = mergeArrayById(cur.adminDeposits, incDeposits, 'depositId', isAdminPush);
   base.adminWithdrawals = mergeArrayById(cur.adminWithdrawals, incWithdrawals, 'withdrawalId', isAdminPush);
-  base.transactions = mergeArrayById(cur.transactions, incomingSt.transactions, 'id', isAdminPush);
-  base.myBets = mergeArrayById(cur.myBets, incomingSt.myBets, 'id', true);
-  base.aviatorMyBets = mergeArrayById(cur.aviatorMyBets, incomingSt.aviatorMyBets, 'id', true);
-  base.lotteryTickets = mergeArrayById(cur.lotteryTickets, incomingSt.lotteryTickets, 'ticketId', isAdminPush);
-  base.lotteryNotifications = mergeArrayById(cur.lotteryNotifications, incomingSt.lotteryNotifications, 'id', true);
-  base.referralMembers = mergeArrayById(cur.referralMembers, incomingSt.referralMembers, 'memberId', true);
-  base.commissionLedger = mergeArrayById(cur.commissionLedger, incomingSt.commissionLedger, 'ledgerId', isAdminPush);
-  base.adminLedger = mergeArrayById(cur.adminLedger, incomingSt.adminLedger, 'txCode', true);
-  base.supportTickets = mergeArrayById(cur.supportTickets, incomingSt.supportTickets, 'ticketId', isAdminPush);
+
+  if (isAdminPush || (authSession && authSession.type === 'CUSTOMER')) {
+    const uidFilter = isAdminPush ? null : authSession.sub;
+    const filterOwn = (arr) => {
+      if (!Array.isArray(arr)) return [];
+      if (!uidFilter) return arr;
+      return arr.filter(x => x && (!x.userId || x.userId === uidFilter));
+    };
+    base.transactions = mergeArrayById(cur.transactions, filterOwn(incomingSt.transactions), 'id', isAdminPush);
+    base.myBets = mergeArrayById(cur.myBets, filterOwn(incomingSt.myBets), 'id', isAdminPush);
+    base.aviatorMyBets = mergeArrayById(cur.aviatorMyBets, filterOwn(incomingSt.aviatorMyBets), 'id', true);
+    base.lotteryTickets = mergeArrayById(cur.lotteryTickets, filterOwn(incomingSt.lotteryTickets), 'ticketId', isAdminPush);
+    base.lotteryNotifications = mergeArrayById(cur.lotteryNotifications, filterOwn(incomingSt.lotteryNotifications), 'id', true);
+    base.referralMembers = mergeArrayById(cur.referralMembers, incomingSt.referralMembers, 'memberId', isAdminPush);
+    base.commissionLedger = mergeArrayById(cur.commissionLedger, incomingSt.commissionLedger, 'ledgerId', isAdminPush);
+    if (isAdminPush) {
+      base.adminLedger = mergeArrayById(cur.adminLedger, incomingSt.adminLedger, 'txCode', true);
+    }
+    base.supportTickets = mergeArrayById(cur.supportTickets, filterOwn(incomingSt.supportTickets), 'ticketId', isAdminPush);
+    base.ludoPlayerTournamentHistory = mergeArrayById(cur.ludoPlayerTournamentHistory, filterOwn(incomingSt.ludoPlayerTournamentHistory), 'matchId', true);
+    base.unoPlayerTournamentHistory = mergeArrayById(cur.unoPlayerTournamentHistory, filterOwn(incomingSt.unoPlayerTournamentHistory), 'matchId', true);
+    base.mathPlayerTournamentHistory = mergeArrayById(cur.mathPlayerTournamentHistory, filterOwn(incomingSt.mathPlayerTournamentHistory), 'matchId', true);
+    base.mathHistory = mergeArrayById(cur.mathHistory, filterOwn(incomingSt.mathHistory), 'matchId', true);
+    base.unoHistory = mergeArrayById(cur.unoHistory, filterOwn(incomingSt.unoHistory), 'matchId', true);
+    base.ludoHistory = mergeArrayById(cur.ludoHistory, filterOwn(incomingSt.ludoHistory), 'matchId', true);
+    base.allGameBets = mergeArrayById(cur.allGameBets, filterOwn(incomingSt.allGameBets), 'id', true);
+  }
 
   const todayUtcPrefix = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  base.wingoPeriods = mergeArrayById(cur.wingoPeriods, incomingSt.wingoPeriods, 'periodId', isAdminPush)
-    .filter(p => p && String(p.periodId || '').startsWith(todayUtcPrefix))
-    .sort((a, b) => String(b.periodId || '').localeCompare(String(a.periodId || '')));
-  base.wingoSettlements = mergeArrayById(cur.wingoSettlements, incomingSt.wingoSettlements, 'settlementId', isAdminPush);
-  base.ludoPlayerTournamentHistory = mergeArrayById(cur.ludoPlayerTournamentHistory, incomingSt.ludoPlayerTournamentHistory, 'matchId', true);
-  base.unoPlayerTournamentHistory = mergeArrayById(cur.unoPlayerTournamentHistory, incomingSt.unoPlayerTournamentHistory, 'matchId', true);
-  base.mathPlayerTournamentHistory = mergeArrayById(cur.mathPlayerTournamentHistory, incomingSt.mathPlayerTournamentHistory, 'matchId', true);
-  base.mathHistory = mergeArrayById(cur.mathHistory, incomingSt.mathHistory, 'matchId', true);
-  base.unoHistory = mergeArrayById(cur.unoHistory, incomingSt.unoHistory, 'matchId', true);
-  base.ludoHistory = mergeArrayById(cur.ludoHistory, incomingSt.ludoHistory, 'matchId', true);
-  base.allGameBets = mergeArrayById(cur.allGameBets, incomingSt.allGameBets, 'id', true);
-
-  if (Array.isArray(cur.claimedCodes) || Array.isArray(incomingSt.claimedCodes)) {
-    base.claimedCodes = Array.from(new Set([...(cur.claimedCodes || []), ...(incomingSt.claimedCodes || [])]));
+  if (isAdminPush && Array.isArray(incomingSt.wingoPeriods)) {
+    base.wingoPeriods = mergeArrayById(cur.wingoPeriods, incomingSt.wingoPeriods, 'periodId', true)
+      .filter(p => p && String(p.periodId || '').startsWith(todayUtcPrefix))
+      .sort((a, b) => String(b.periodId || '').localeCompare(String(a.periodId || '')));
   }
-  if (Array.isArray(cur.processedDepositEventIds) || Array.isArray(incomingSt.processedDepositEventIds)) {
-    base.processedDepositEventIds = Array.from(new Set([...(cur.processedDepositEventIds || []), ...(incomingSt.processedDepositEventIds || [])]));
+  if (isAdminPush && Array.isArray(incomingSt.wingoSettlements)) {
+    base.wingoSettlements = mergeArrayById(cur.wingoSettlements, incomingSt.wingoSettlements, 'settlementId', true);
   }
 
   if (incomingSt.liveMatchmakingLobby && typeof incomingSt.liveMatchmakingLobby === 'object') {
@@ -655,7 +756,9 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
   base.adminActiveSessions = cur.adminActiveSessions || {};
   base.evictedAdminSessions = cur.evictedAdminSessions || [];
 
-  base.deletedDeviceIds = Object.assign({}, cur.deletedDeviceIds || {}, incomingSt.deletedDeviceIds || {});
+  if (isAdminPush && incomingSt.deletedDeviceIds) {
+    base.deletedDeviceIds = Object.assign({}, cur.deletedDeviceIds || {}, incomingSt.deletedDeviceIds || {});
+  }
   const mergedDevices = Object.assign({}, cur.connectedDevices || {});
   if (incomingSt.connectedDevices && typeof incomingSt.connectedDevices === 'object') {
     Object.keys(incomingSt.connectedDevices).forEach(devId => {
@@ -667,14 +770,13 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
       }
     });
   }
-  // Also ensure every registered user has their latest balance reflected on their connected device entry
   const userBalMap = {};
   (base.adminUsersList || []).forEach(u => {
     if (u && u.userId) userBalMap[u.userId] = Number(u.cashBalanceInr || 0);
   });
   Object.keys(mergedDevices).forEach(devId => {
     const d = mergedDevices[devId];
-    const delAt = Number(base.deletedDeviceIds[devId] || 0);
+    const delAt = Number((base.deletedDeviceIds && base.deletedDeviceIds[devId]) || 0);
     if (d && delAt > 0 && Number(d.lastSeenAt || 0) <= delAt) {
       delete mergedDevices[devId];
       return;
@@ -685,8 +787,8 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
   });
   base.connectedDevices = mergedDevices;
 
-  if (Array.isArray(cur.remoteCommandsQueue) || Array.isArray(incomingSt.remoteCommandsQueue)) {
-    base.remoteCommandsQueue = mergeArrayById(cur.remoteCommandsQueue, incomingSt.remoteCommandsQueue, 'cmdId', isAdminPush)
+  if (isAdminPush && Array.isArray(incomingSt.remoteCommandsQueue)) {
+    base.remoteCommandsQueue = mergeArrayById(cur.remoteCommandsQueue, incomingSt.remoteCommandsQueue, 'cmdId', true)
       .filter(c => c && (Date.now() - Number(c.createdAt || 0) < 120000))
       .slice(0, 60);
   }
@@ -700,7 +802,7 @@ function mergeServerState(currentSt, incomingSt, isAdminPush) {
 }
 
 // ============================================================================
-// SERVER-SIDE 24/7 WINGO ENGINE (SETTLES BETS EVEN IF NO ADMIN TAB IS OPEN)
+// SERVER-SIDE 24/7 PROVABLY FAIR CSPRNG WINGO ENGINE (COMMIT-REVEAL + LOCK)
 // ============================================================================
 const WINGO_SLOTS_SERVER = {
   '30SEC': { key: '30SEC', duration: 30,  cutoff: 5,  code: '05', shortName: '30Sec' },
@@ -710,11 +812,11 @@ const WINGO_SLOTS_SERVER = {
   '5MIN':  { key: '5MIN',  duration: 300, cutoff: 30, code: '50', shortName: '5Min' }
 };
 
-function getServerSlotUtcClock(slotKey) {
+function getServerSlotUtcClock(slotKey, customNowMs) {
   const base = WINGO_SLOTS_SERVER[slotKey] || WINGO_SLOTS_SERVER['30SEC'];
   const duration = base.duration;
   const durationMs = duration * 1000;
-  const nowMs = Date.now();
+  const nowMs = customNowMs || Date.now();
   const slotStartMs = Math.floor(nowMs / durationMs) * durationMs;
   const d = new Date(slotStartMs);
   const yyyy = d.getUTCFullYear();
@@ -725,17 +827,8 @@ function getServerSlotUtcClock(slotKey) {
   const periodId = `${yyyy}${mm}${dd}${base.code}${String(pIdx).padStart(4, '0')}`;
   const elapsedSecs = Math.floor((nowMs - slotStartMs) / 1000);
   const timeLeft = Math.max(1, duration - (elapsedSecs % duration));
-  return { slotKey, periodId, timeLeft, duration };
-}
-
-function hashPeriodWinnerServer(periodId, slotKey) {
-  let h = 2166136261;
-  const str = `${slotKey}:${periodId}:XYZ_UTC_SEED`;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return Math.abs(h) % 10;
+  const isCutoffLocked = timeLeft <= base.cutoff;
+  return { slotKey: base.key, periodId, timeLeft, duration, cutoff: base.cutoff, isCutoffLocked, slotStartMs };
 }
 
 function evaluateBetPayoutServer(bet, winNum, rulesObj) {
@@ -750,90 +843,210 @@ function evaluateBetPayoutServer(bet, winNum, rulesObj) {
   const bsM    = Number(r.bigSmallMultiplier ?? 2.0);
 
   const pick = String(bet.selection || '').trim().toUpperCase();
-  const amt = Math.max(0, Number(bet.amount || 0));
+  const amtPaise = inrToPaise(bet.amount || 0);
+  if (amtPaise <= 0) return 0;
+
+  let mult = 0;
   if (pick === String(n) || pick === `NUMBER ${n}`) {
-    return +(amt * ((n === 0 || n === 5) ? zfM : numM)).toFixed(2);
+    mult = (n === 0 || n === 5) ? zfM : numM;
+  } else if (pick === 'GREEN' && [1, 3, 7, 9].includes(n)) {
+    mult = greenM;
+  } else if (pick === 'GREEN' && n === 5) {
+    mult = halfM;
+  } else if (pick === 'RED' && [2, 4, 6, 8].includes(n)) {
+    mult = redM;
+  } else if (pick === 'RED' && n === 0) {
+    mult = halfM;
+  } else if (pick === 'VIOLET' && [0, 5].includes(n)) {
+    mult = violM;
+  } else if (pick === 'BIG' && n >= 5) {
+    mult = bsM;
+  } else if (pick === 'SMALL' && n <= 4) {
+    mult = bsM;
   }
-  if (pick === 'GREEN' && [1, 3, 7, 9].includes(n)) return +(amt * greenM).toFixed(2);
-  if (pick === 'GREEN' && n === 5) return +(amt * halfM).toFixed(2);
-  if (pick === 'RED' && [2, 4, 6, 8].includes(n)) return +(amt * redM).toFixed(2);
-  if (pick === 'RED' && n === 0) return +(amt * halfM).toFixed(2);
-  if (pick === 'VIOLET' && [0, 5].includes(n)) return +(amt * violM).toFixed(2);
-  if (pick === 'BIG' && n >= 5) return +(amt * bsM).toFixed(2);
-  if (pick === 'SMALL' && n <= 4) return +(amt * bsM).toFixed(2);
-  return 0;
+  if (mult <= 0) return 0;
+  return paiseToInr(Math.round(amtPaise * mult));
 }
 
-function computeLeastExposureNumberServer(slotKey, periodId) {
+/**
+ * Provably Fair CSPRNG Outcome Resolver:
+ * Uses HMAC-SHA256 Commit-Reveal (`generatePeriodCommitAndOutcome`) independent of player bets,
+ * unless an authorized Admin explicitly pre-configured a documented manual test override in `manualOverrides`.
+ */
+function resolveProvablyFairPeriodOutcome(slotKey, periodId) {
+  const fair = generatePeriodCommitAndOutcome(slotKey, periodId);
+  if (!masterState.wingoCommitRevealMap) masterState.wingoCommitRevealMap = {};
+  if (!masterState.wingoCommitRevealMap[periodId]) {
+    masterState.wingoCommitRevealMap[periodId] = {
+      periodId,
+      slotKey,
+      commitHash: fair.commitHash,
+      createdAt: Date.now()
+    };
+  }
+
+  let winningNumber = fair.winningNumber;
+  let generationMethod = 'CSPRNG_COMMIT_REVEAL';
+
   if (masterState.manualOverrides && masterState.manualOverrides[periodId] !== undefined && masterState.manualOverrides[periodId] !== null) {
-    return Number(masterState.manualOverrides[periodId]);
-  }
-  if (masterState.settledPeriodResults && masterState.settledPeriodResults[periodId] !== undefined && masterState.settledPeriodResults[periodId] !== null) {
-    return Number(masterState.settledPeriodResults[periodId]);
-  }
-  const periodBets = (masterState.myBets || []).filter(b => b && String(b.periodId) === String(periodId) && (!b.slotKey || b.slotKey === slotKey));
-  if (periodBets.length === 0) {
-    return hashPeriodWinnerServer(periodId, slotKey);
-  }
-  let bestNum = 1;
-  let minPayout = Infinity;
-  for (let n = 0; n <= 9; n++) {
-    let paySum = 0;
-    periodBets.forEach(b => {
-      paySum += evaluateBetPayoutServer(b, n, masterState.wingoRules);
-    });
-    if (paySum < minPayout) {
-      minPayout = paySum;
-      bestNum = n;
+    const ov = Number(masterState.manualOverrides[periodId]);
+    if (Number.isInteger(ov) && ov >= 0 && ov <= 9) {
+      winningNumber = ov;
+      generationMethod = 'MANUAL_AUTHORIZED';
     }
+  } else if (masterState.settledPeriodResults && masterState.settledPeriodResults[periodId] !== undefined && masterState.settledPeriodResults[periodId] !== null) {
+    winningNumber = Number(masterState.settledPeriodResults[periodId]);
   }
-  return bestNum;
+
+  return {
+    periodId,
+    slotKey,
+    winningNumber,
+    winningColor: fair.winningColor,
+    winningSize: winningNumber >= 5 ? 'Big' : 'Small',
+    commitHash: fair.commitHash,
+    serverSeed: fair.serverSeed,
+    generationMethod
+  };
 }
 
+const settledPeriodsInMemoryLock = new Set();
 const serverLastPeriodBySlot = {};
+
 Object.keys(WINGO_SLOTS_SERVER).forEach(sKey => {
-  serverLastPeriodBySlot[sKey] = getServerSlotUtcClock(sKey).periodId;
+  const clk = getServerSlotUtcClock(sKey);
+  serverLastPeriodBySlot[sKey] = clk.periodId;
+  // Pre-register active period commit hash
+  const fair = generatePeriodCommitAndOutcome(sKey, clk.periodId);
+  if (!masterState.wingoCommitRevealMap) masterState.wingoCommitRevealMap = {};
+  masterState.wingoCommitRevealMap[clk.periodId] = {
+    periodId: clk.periodId,
+    slotKey: sKey,
+    commitHash: fair.commitHash,
+    createdAt: Date.now()
+  };
 });
 
-setInterval(() => {
-  let stateMutated = false;
-  Object.keys(WINGO_SLOTS_SERVER).forEach(sKey => {
-    const curClock = getServerSlotUtcClock(sKey);
-    const prevPid = serverLastPeriodBySlot[sKey];
-    if (prevPid && prevPid !== curClock.periodId) {
-      serverLastPeriodBySlot[sKey] = curClock.periodId;
-      const winNum = computeLeastExposureNumberServer(sKey, prevPid);
-      if (!masterState.settledPeriodResults) masterState.settledPeriodResults = {};
-      masterState.settledPeriodResults[prevPid] = winNum;
+async function settleWingoPeriodOnce(slotKey, periodId) {
+  const lockKey = `${slotKey}:${periodId}`;
+  if (settledPeriodsInMemoryLock.has(lockKey)) {
+    return { alreadySettled: true };
+  }
+  settledPeriodsInMemoryLock.add(lockKey);
 
-      const waitingBets = (masterState.myBets || []).filter(b => b && b.status === 'WAITING' && String(b.periodId) === String(prevPid));
-      if (waitingBets.length > 0) {
-        const now = Date.now();
-        waitingBets.forEach(bet => {
-          const pay = evaluateBetPayoutServer(bet, winNum, masterState.wingoRules);
-          bet.status = pay > 0 ? 'WIN' : 'LOSE';
-          bet.winAmount = pay;
-          bet.winningNumber = winNum;
-          bet.updatedAt = now;
-          if (pay > 0 && bet.userId) {
-            (masterState.adminUsersList || []).forEach(u => {
-              if (u && u.userId === bet.userId) {
-                u.cashBalanceInr = +(Number(u.cashBalanceInr || 0) + pay).toFixed(2);
-                u.lastAdminBalanceUpdateAt = now;
-              }
-            });
-            (masterState.registeredAccounts || []).forEach(a => {
-              if (a && a.userId === bet.userId) {
-                a.cashBalanceInr = +(Number(a.cashBalanceInr || 0) + pay).toFixed(2);
-                a.lastAdminBalanceUpdateAt = now;
-              }
-            });
-          }
-        });
-        stateMutated = true;
+  const outcome = resolveProvablyFairPeriodOutcome(slotKey, periodId);
+  const winNum = outcome.winningNumber;
+
+  if (!masterState.settledPeriodResults) masterState.settledPeriodResults = {};
+  masterState.settledPeriodResults[periodId] = winNum;
+  if (masterState.wingoCommitRevealMap && masterState.wingoCommitRevealMap[periodId]) {
+    masterState.wingoCommitRevealMap[periodId].serverSeed = outcome.serverSeed;
+    masterState.wingoCommitRevealMap[periodId].winningNumber = winNum;
+    masterState.wingoCommitRevealMap[periodId].settledAt = Date.now();
+  }
+
+  const waitingBets = (masterState.myBets || []).filter(
+    b => b && b.status === 'WAITING' && String(b.periodId) === String(periodId)
+  );
+
+  // Execute atomic settlement lock + payout in SQLite WAL
+  const dbRes = await dbDaemon.settleWingoPeriodAtomic({
+    periodId,
+    slotKey,
+    winningNumber: winNum,
+    commitHash: outcome.commitHash,
+    serverSeed: outcome.serverSeed,
+    wingoRules: masterState.wingoRules || {}
+  });
+
+  if (dbRes && dbRes.alreadySettled) {
+    return { alreadySettled: true, winningNumber: winNum };
+  }
+
+  const now = Date.now();
+  let totalWagerPaise = 0;
+  let totalPayoutPaise = 0;
+
+  waitingBets.forEach(bet => {
+    const payInr = evaluateBetPayoutServer(bet, winNum, masterState.wingoRules);
+    bet.status = payInr > 0 ? 'WIN' : 'LOSE';
+    bet.winAmount = payInr;
+    bet.winningNumber = winNum;
+    bet.commitHash = outcome.commitHash;
+    bet.updatedAt = now;
+    totalWagerPaise += inrToPaise(bet.amount || 0);
+    totalPayoutPaise += inrToPaise(payInr);
+
+    if (payInr > 0 && bet.userId) {
+      const targetU = findCanonicalUserInState(masterState, bet.userId);
+      if (targetU) {
+        const nextCash = paiseToInr(inrToPaise(targetU.cashBalanceInr || 0) + inrToPaise(payInr));
+        upsertCanonicalUserInState(masterState, Object.assign({}, targetU, {
+          cashBalanceInr: nextCash,
+          lastAdminBalanceUpdateAt: now,
+          updatedAt: now
+        }));
       }
     }
   });
+
+  // Record settlement summary
+  if (!Array.isArray(masterState.wingoSettlements)) masterState.wingoSettlements = [];
+  if (!masterState.wingoSettlements.some(s => s && s.periodId === periodId)) {
+    masterState.wingoSettlements.unshift({
+      settlementId: `STL-${periodId}`,
+      periodId,
+      modeKey: slotKey,
+      winningNumber: winNum,
+      commitHash: outcome.commitHash,
+      generationMethod: outcome.generationMethod,
+      betsCount: waitingBets.length,
+      totalWagerInr: paiseToInr(totalWagerPaise),
+      totalPayoutInr: paiseToInr(totalPayoutPaise),
+      settledAt: now
+    });
+    if (masterState.wingoSettlements.length > 200) {
+      masterState.wingoSettlements = masterState.wingoSettlements.slice(0, 200);
+    }
+  }
+
+  return {
+    ok: true,
+    alreadySettled: false,
+    periodId,
+    slotKey,
+    winningNumber: winNum,
+    commitHash: outcome.commitHash,
+    serverSeed: outcome.serverSeed,
+    settledBetsCount: waitingBets.length
+  };
+}
+
+setInterval(async () => {
+  let stateMutated = false;
+  for (const sKey of Object.keys(WINGO_SLOTS_SERVER)) {
+    const curClock = getServerSlotUtcClock(sKey);
+    // Ensure commit hash for current period is published prior to cutoff
+    if (!masterState.wingoCommitRevealMap || !masterState.wingoCommitRevealMap[curClock.periodId]) {
+      const fair = generatePeriodCommitAndOutcome(sKey, curClock.periodId);
+      if (!masterState.wingoCommitRevealMap) masterState.wingoCommitRevealMap = {};
+      masterState.wingoCommitRevealMap[curClock.periodId] = {
+        periodId: curClock.periodId,
+        slotKey: sKey,
+        commitHash: fair.commitHash,
+        createdAt: Date.now()
+      };
+    }
+
+    const prevPid = serverLastPeriodBySlot[sKey];
+    if (prevPid && prevPid !== curClock.periodId) {
+      serverLastPeriodBySlot[sKey] = curClock.periodId;
+      const res = await settleWingoPeriodOnce(sKey, prevPid);
+      if (res && !res.alreadySettled && res.settledBetsCount > 0) {
+        stateMutated = true;
+      }
+    }
+  }
   if (stateMutated) {
     scheduleSaveStateToDb(80);
     broadcastStateToSseClients('SERVER_WINGO_SETTLER', true);
@@ -841,13 +1054,13 @@ setInterval(() => {
 }, 1000).unref();
 
 // ============================================================================
-// SSE REAL-TIME STREAMING & HEARTBEAT ENGINE (SCALED FOR THOUSANDS OF CLIENTS)
+// SSE REAL-TIME STREAMING & HEARTBEAT ENGINE (WITH ROLE-SCOPED REDACTION)
 // ============================================================================
-const sseClients = new Set();
+const sseClients = new Map(); // res -> { authSession }
 
 setInterval(() => {
   const pingFrame = `: heartbeat ${Date.now()}\n\n`;
-  sseClients.forEach(res => {
+  sseClients.forEach((meta, res) => {
     try {
       res.write(pingFrame);
     } catch (e) {
@@ -859,16 +1072,47 @@ setInterval(() => {
 
 function broadcastStateToSseClients(sourceDeviceId, isAdminPush) {
   delete masterState.serverNowMs;
-  const payload = `data: ${JSON.stringify({
-    type: 'SYNC',
-    sourceDeviceId: sourceDeviceId || '',
-    isAdminPush: Boolean(isAdminPush),
-    state: masterState,
-    ts: Date.now()
-  })}\n\n`;
-  sseClients.forEach(res => {
+  const now = Date.now();
+  // Cache redacted payloads per role category to avoid redundant cloning across thousands of SSE clients
+  let cachedAdminPayload = null;
+  let cachedAnonPayload = null;
+
+  sseClients.forEach((meta, res) => {
     try {
-      res.write(payload);
+      const sess = meta && meta.authSession;
+      let payloadStr;
+      if (sess && sess.type === 'ADMIN') {
+        if (!cachedAdminPayload) {
+          cachedAdminPayload = `data: ${JSON.stringify({
+            type: 'SYNC',
+            sourceDeviceId: sourceDeviceId || '',
+            isAdminPush: Boolean(isAdminPush),
+            state: redactStateForClient(masterState, sess),
+            ts: now
+          })}\n\n`;
+        }
+        payloadStr = cachedAdminPayload;
+      } else if (sess && sess.type === 'CUSTOMER') {
+        payloadStr = `data: ${JSON.stringify({
+          type: 'SYNC',
+          sourceDeviceId: sourceDeviceId || '',
+          isAdminPush: Boolean(isAdminPush),
+          state: redactStateForClient(masterState, sess),
+          ts: now
+        })}\n\n`;
+      } else {
+        if (!cachedAnonPayload) {
+          cachedAnonPayload = `data: ${JSON.stringify({
+            type: 'SYNC',
+            sourceDeviceId: sourceDeviceId || '',
+            isAdminPush: Boolean(isAdminPush),
+            state: redactStateForClient(masterState, null),
+            ts: now
+          })}\n\n`;
+        }
+        payloadStr = cachedAnonPayload;
+      }
+      res.write(payloadStr);
     } catch (e) {
       sseClients.delete(res);
     }
@@ -940,7 +1184,7 @@ function sendJsonResponse(req, res, statusCode, dataObj, extraHeaders = {}) {
   res.end(jsonStr);
 }
 
-function readJsonBody(req, maxBytes = 25 * 1024 * 1024) {
+function readRawBody(req, maxBytes = 10 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', chunk => {
@@ -950,16 +1194,74 @@ function readJsonBody(req, maxBytes = 25 * 1024 * 1024) {
         reject(new Error('Payload too large'));
       }
     });
-    req.on('end', () => {
-      try {
-        const parsed = JSON.parse(body || '{}');
-        resolve(sanitizeObjectDeep(parsed));
-      } catch (e) {
-        reject(new Error('Invalid JSON'));
-      }
-    });
+    req.on('end', () => resolve(body));
     req.on('error', reject);
   });
+}
+
+async function readJsonBody(req, maxBytes = 10 * 1024 * 1024) {
+  const raw = await readRawBody(req, maxBytes);
+  try {
+    const parsed = JSON.parse(raw || '{}');
+    return sanitizeObjectDeep(parsed);
+  } catch (e) {
+    throw new Error('Invalid JSON');
+  }
+}
+
+// ============================================================================
+// RBAC PERMISSION HELPER FOR ADMIN ENDPOINTS
+// ============================================================================
+function verifyAdminPermission(req, res, requiredPermKey) {
+  const adminSess = extractAuthSession(req, 'ADMIN');
+  if (!adminSess || !adminSess.isAdmin) {
+    securityMetrics.unauthorizedAttempts++;
+    sendJsonResponse(req, res, 401, {
+      ok: false,
+      error: 'Unauthorized: Valid Admin JWT token or session cookie is required.'
+    });
+    return null;
+  }
+  // Check live status in staffAdmins if configured
+  const staffList = Array.isArray(masterState.staffAdmins) ? masterState.staffAdmins : [];
+  if (staffList.length > 0) {
+    const liveAcc = staffList.find(
+      a => a && (a.adminId === adminSess.sub || String(a.loginId || '').toLowerCase() === String(adminSess.loginId || adminSess.sub || '').toLowerCase())
+    );
+    if (liveAcc && liveAcc.status && liveAcc.status !== 'ACTIVE') {
+      securityMetrics.unauthorizedAttempts++;
+      sendJsonResponse(req, res, 403, {
+        ok: false,
+        error: `Forbidden: Admin account "${liveAcc.loginId}" is ${liveAcc.status}.`
+      });
+      return null;
+    }
+  }
+  if (adminSess.isMasterSuperAdmin || adminSess.role === 'SUPER_ADMIN') {
+    return adminSess;
+  }
+  if (requiredPermKey) {
+    const rolePerms = {
+      OPS_MANAGER: ['games.manage', 'wingo.manage', 'promotions.manage', 'users.manage'],
+      WINGO_OPS: ['wingo.manage', 'games.manage'],
+      FINANCE_MANAGER: ['finance.adjust_ledger', 'deposits.review', 'withdrawals.approve'],
+      FINANCE_REVIEWER: ['deposits.review'],
+      AGENT_MANAGER: ['agents.manage'],
+      QUIZ_MANAGER: ['quiz.manage'],
+      CUSTOMER_SUPPORT: ['support.manage', 'users.view'],
+      READ_ONLY_AUDITOR: ['audit.view']
+    };
+    const allowed = rolePerms[adminSess.role] || [];
+    if (!allowed.includes(requiredPermKey)) {
+      securityMetrics.unauthorizedAttempts++;
+      sendJsonResponse(req, res, 403, {
+        ok: false,
+        error: `Forbidden: Role "${adminSess.role}" lacks required permission "${requiredPermKey}".`
+      });
+      return null;
+    }
+  }
+  return adminSess;
 }
 
 // ============================================================================
@@ -974,12 +1276,24 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // CSRF & Origin check on state-mutating requests
+  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') {
+    const csrf = validateCsrfAndOrigin(req);
+    if (!csrf || (typeof csrf === 'object' && !csrf.valid)) {
+      sendJsonResponse(req, res, 403, { ok: false, error: (csrf && csrf.reason) || 'CSRF / Origin validation failed.' });
+      return;
+    }
+  }
+
   const parsedUrl = url.parse(req.url || '/', true);
   const pathname = parsedUrl.pathname || '/';
 
-  const rateCategory = pathname.startsWith('/api/auth') || pathname.startsWith('/api/admin/login')
+  const rateCategory = (pathname.startsWith('/api/auth') || pathname.startsWith('/api/admin/login'))
     ? 'AUTH_LOGIN'
-    : ((req.method === 'POST' || req.method === 'PUT') ? 'STATE_WRITE' : 'GENERAL');
+    : (pathname.startsWith('/api/gift-code') || pathname.startsWith('/api/admin/wallet-adjust') || pathname.startsWith('/api/withdraw') || pathname.startsWith('/api/deposit') || pathname.startsWith('/api/wingo/bet'))
+      ? 'FINANCIAL_OP'
+      : ((req.method === 'POST' || req.method === 'PUT') ? 'STATE_WRITE' : 'GENERAL');
+
   const rl = checkRateLimit(req, rateCategory);
   res.setHeader('X-RateLimit-Remaining', String(rl.remaining));
   if (!rl.allowed) {
@@ -991,20 +1305,24 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // --------------------------------------------------------------------------
   // 0A. Lightweight Authoritative UTC Time Endpoint
+  // --------------------------------------------------------------------------
   if (pathname === '/api/xyz-time' && req.method === 'GET') {
     sendJsonResponse(req, res, 200, { ok: true, serverNowMs: Date.now() });
     return;
   }
 
+  // --------------------------------------------------------------------------
   // 0B. Production Health, Database WAL & Security Telemetry Endpoint
+  // --------------------------------------------------------------------------
   if ((pathname === '/api/health' || pathname === '/api/security-status') && req.method === 'GET') {
     const dbStats = await dbDaemon.getStats();
     const mem = process.memoryUsage();
     sendJsonResponse(req, res, 200, {
       ok: true,
       status: 'HEALTHY_PRODUCTION',
-      version: '13.0.0',
+      version: '14.0.0',
       capacityTargetDau: 20000,
       uptimeSeconds: Math.floor(process.uptime()),
       serverUtcNow: new Date().toISOString(),
@@ -1012,14 +1330,17 @@ const server = http.createServer(async (req, res) => {
         engine: dbStats.engine,
         sqlitePath: path.basename(DB_FILE),
         walMode: true,
+        monetaryPrecision: 'INTEGER_PAISE (1 INR = 100 Paise)',
         dbSizeBytes: dbStats.dbSizeBytes,
         lastSyncedAt: dbStats.lastSyncedAt,
         tableCounts: dbStats.counts
       },
       security: {
-        passwordHashing: 'scrypt + 16-byte CSPRNG salt (timingSafeEqual)',
-        tokenAuth: 'HMAC-SHA256 JWT + HTTP-Only Cookie',
-        headers: ['Strict-Transport-Security', 'X-Frame-Options', 'X-Content-Type-Options', 'X-XSS-Protection'],
+        passwordHashing: 'scrypt (N=16384,r=8,p=1) + 16-byte CSPRNG salt + timingSafeEqual',
+        tokenAuth: 'Purpose-Bound HMAC-SHA256 JWT (xyz-admin / xyz-customer) + HttpOnly Cookie',
+        statePrivacy: 'Role-Scoped State Redaction Active',
+        wingoFairness: 'HMAC-SHA256 Commit-Reveal CSPRNG (Zero Bet-Based Manipulation)',
+        headers: ['Strict-Transport-Security', 'Content-Security-Policy', 'X-Frame-Options', 'X-Content-Type-Options'],
         rateLimiterActive: true,
         metrics: Object.assign({}, securityMetrics, {
           activeSseConnections: sseClients.size
@@ -1035,7 +1356,131 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 0C. Dedicated Customer Login Endpoint (`/api/auth/login`)
+  // --------------------------------------------------------------------------
+  // 0C. Customer Registration Endpoint (`POST /api/auth/register`)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/auth/register' && req.method === 'POST') {
+    try {
+      const data = await readJsonBody(req);
+      const idRaw = String(data.identity || '').trim();
+      const pwdRaw = String(data.password || '');
+      const invRaw = String(data.inviteCode || '').trim().toUpperCase();
+
+      if (!idRaw || !pwdRaw || pwdRaw.length < 4) {
+        sendJsonResponse(req, res, 400, { ok: false, error: 'Valid mobile number/email and password (min 4 chars) are required.' });
+        return;
+      }
+      if (!invRaw) {
+        sendJsonResponse(req, res, 400, { ok: false, error: 'Invite Code is required for registration.' });
+        return;
+      }
+
+      const isEmail = idRaw.includes('@');
+      const cleanPhone = idRaw.replace(/[\s\-()]/g, '');
+      const normId = isEmail ? idRaw.toLowerCase() : cleanPhone;
+
+      const existing = findCanonicalUserInState(masterState, idRaw);
+      if (existing) {
+        sendJsonResponse(req, res, 409, { ok: false, error: 'This mobile number / email is already registered! Please log in.' });
+        return;
+      }
+
+      const inviterUser = findInviterByReferralCodeServer(masterState, invRaw);
+      if (!inviterUser) {
+        sendJsonResponse(req, res, 400, { ok: false, error: `Invalid Invite Code "${invRaw}".` });
+        return;
+      }
+
+      const now = Date.now();
+      const newUid = String(data.userId || ('USR-' + Math.floor(1000 + Math.random() * 9000)));
+      const shortDisplayName = String(data.username || (isEmail ? normId.split('@')[0] : ('User_' + normId.slice(-4))));
+      const userOwnRefCode = String(data.referralCode || ('XYZ' + newUid.replace(/[^0-9]/g, '') + Math.floor(10 + Math.random() * 89)));
+      const passwordHash = hashPasswordSync(pwdRaw);
+
+      const newAccount = {
+        userId: newUid,
+        username: shortDisplayName,
+        identity: normId,
+        identityType: isEmail ? 'EMAIL' : 'PHONE',
+        email: isEmail ? normId : `${shortDisplayName.toLowerCase()}@xyzgames.app`,
+        phone: !isEmail ? idRaw : '+91 98000 00000',
+        loginId: normId,
+        passwordHash,
+        inviteCodeUsed: invRaw,
+        referralCode: userOwnRefCode,
+        parentUserId: inviterUser.userId || 'UID-10001',
+        parentUsername: inviterUser.username || 'Agent',
+        referralSource: `${invRaw} (Invited by ${inviterUser.username || inviterUser.userId})`,
+        status: 'ACTIVE',
+        kycStatus: 'VERIFIED',
+        cashBalanceInr: 0.00,
+        promoBalanceInr: 0.00,
+        firstDepositBonusClaimed: false,
+        registeredAt: now,
+        updatedAt: now
+      };
+
+      upsertCanonicalUserInState(masterState, newAccount);
+
+      // Link into 7-level referral hierarchy
+      if (!Array.isArray(masterState.referralMembers)) masterState.referralMembers = [];
+      let curParentUid = inviterUser.userId;
+      for (let lvl = 1; lvl <= 7 && curParentUid && curParentUid !== 'SELF'; lvl++) {
+        masterState.referralMembers.unshift({
+          memberId: `REF-${newUid}-L${lvl}`,
+          userId: newUid,
+          username: shortDisplayName,
+          ancestorUserId: curParentUid,
+          parentUserId: inviterUser.userId,
+          level: lvl,
+          inviteCodeUsed: invRaw,
+          depositsInr: 0,
+          commissionGeneratedInr: 0,
+          joinedAt: now,
+          status: 'ACTIVE'
+        });
+        const parentObj = findCanonicalUserInState(masterState, curParentUid);
+        curParentUid = parentObj && parentObj.parentUserId && parentObj.parentUserId !== curParentUid ? parentObj.parentUserId : null;
+      }
+
+      scheduleSaveStateToDb(80);
+      broadcastStateToSseClients('USER_REGISTER', false);
+
+      const token = signJwt({
+        sub: newUid,
+        type: 'CUSTOMER',
+        aud: 'xyz-customer',
+        role: 'CUSTOMER',
+        username: shortDisplayName,
+        identity: idRaw
+      }, 86400 * 7);
+
+      const customerSession = { sub: newUid, type: 'CUSTOMER', role: 'CUSTOMER' };
+
+      sendJsonResponse(req, res, 201, {
+        ok: true,
+        token,
+        user: {
+          userId: newUid,
+          username: shortDisplayName,
+          identity: idRaw,
+          cashBalanceInr: 0.00,
+          promoBalanceInr: 0.00,
+          referralCode: userOwnRefCode
+        },
+        state: redactStateForClient(masterState, customerSession)
+      }, {
+        'Set-Cookie': buildCookieHeader('xyz_user_token', token, 86400 * 7, req)
+      });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0D. Dedicated Customer Login Endpoint (`POST /api/auth/login`)
+  // --------------------------------------------------------------------------
   if (pathname === '/api/auth/login' && req.method === 'POST') {
     try {
       const data = await readJsonBody(req);
@@ -1046,7 +1491,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const bf = checkBruteForceLock(`USR:${idRaw}`);
+      const bf = checkBruteForceLock(`USR:${idRaw.toLowerCase()}`);
       if (bf.locked) {
         sendJsonResponse(req, res, 429, {
           ok: false,
@@ -1055,53 +1500,44 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const allAccounts = [...(masterState.adminUsersList || []), ...(masterState.registeredAccounts || [])];
-      const cleanPhone = idRaw.replace(/[\s\-()]/g, '');
-      const normLower = idRaw.toLowerCase();
-
-      const matchingRecords = allAccounts.filter(acc => {
-        if (!acc) return false;
-        const uidMatch = String(acc.userId || '').toLowerCase() === normLower;
-        const loginMatch = String(acc.loginId || '').toLowerCase() === normLower;
-        const identMatch = String(acc.identity || '').toLowerCase() === normLower || String(acc.identity || '') === cleanPhone;
-        const emailMatch = String(acc.email || '').toLowerCase() === normLower;
-        const phoneClean = String(acc.phone || '').replace(/[\s\-()]/g, '');
-        const phoneMatch = Boolean(phoneClean && cleanPhone && (phoneClean === cleanPhone || phoneClean.endsWith(cleanPhone)));
-        return uidMatch || loginMatch || identMatch || emailMatch || phoneMatch;
-      });
-
-      if (matchingRecords.length === 0) {
-        recordAuthFailure(`USR:${idRaw}`);
+      const matchedAcc = findCanonicalUserInState(masterState, idRaw);
+      if (!matchedAcc) {
+        recordAuthFailure(`USR:${idRaw.toLowerCase()}`);
         sendJsonResponse(req, res, 404, { ok: false, error: 'Account not registered! Please register first.' });
         return;
       }
 
-      const matchedAcc = matchingRecords[0];
-      if (matchingRecords.some(a => a.status === 'BLOCKED' || a.status === 'SUSPENDED')) {
+      if (matchedAcc.status === 'BLOCKED' || matchedAcc.status === 'SUSPENDED') {
         sendJsonResponse(req, res, 403, { ok: false, error: 'User is blocked', blocked: true });
         return;
       }
 
       const storedHashOrPlain = matchedAcc.passwordHash || matchedAcc.password;
-      const validPwd = verifyPasswordSync(pwdRaw, storedHashOrPlain) || (matchedAcc.password === pwdRaw);
+      const pwdRes = verifyPasswordSync(pwdRaw, storedHashOrPlain); const validPwd = Boolean(pwdRes && (typeof pwdRes === 'object' ? pwdRes.valid : pwdRes));
       if (!validPwd) {
-        recordAuthFailure(`USR:${idRaw}`);
+        recordAuthFailure(`USR:${idRaw.toLowerCase()}`);
         sendJsonResponse(req, res, 401, { ok: false, error: 'Incorrect password! Please enter your valid registered password.' });
         return;
       }
 
-      clearAuthFailures(`USR:${idRaw}`);
-      if (!matchedAcc.passwordHash) {
+      clearAuthFailures(`USR:${idRaw.toLowerCase()}`);
+      if (!isPasswordHashed(matchedAcc.passwordHash)) {
         matchedAcc.passwordHash = hashPasswordSync(pwdRaw);
-        scheduleSaveStateToDb(100);
       }
+      delete matchedAcc.password;
+      upsertCanonicalUserInState(masterState, matchedAcc);
+      scheduleSaveStateToDb(100);
 
       const token = signJwt({
         sub: matchedAcc.userId,
+        type: 'CUSTOMER',
+        aud: 'xyz-customer',
         role: 'CUSTOMER',
         username: matchedAcc.username,
         identity: idRaw
       }, 86400 * 7);
+
+      const customerSession = { sub: matchedAcc.userId, type: 'CUSTOMER', role: 'CUSTOMER' };
 
       sendJsonResponse(req, res, 200, {
         ok: true,
@@ -1113,9 +1549,10 @@ const server = http.createServer(async (req, res) => {
           cashBalanceInr: Number(matchedAcc.cashBalanceInr || 0),
           promoBalanceInr: Number(matchedAcc.promoBalanceInr || 0),
           referralCode: matchedAcc.referralCode || ('XYZ' + matchedAcc.userId.replace(/[^0-9]/g, ''))
-        }
+        },
+        state: redactStateForClient(masterState, customerSession)
       }, {
-        'Set-Cookie': `xyz_user_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${86400 * 7}`
+        'Set-Cookie': buildCookieHeader('xyz_user_token', token, 86400 * 7, req)
       });
     } catch (e) {
       sendJsonResponse(req, res, 400, { ok: false, error: e.message });
@@ -1123,8 +1560,136 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 0D. Dedicated Admin Authentication Endpoint (`/api/admin/login`)
-  if (pathname === '/api/admin/login' && req.method === 'POST') {
+  // --------------------------------------------------------------------------
+  // 0E. Customer & Admin Logout / Token Revocation (`POST /api/auth/logout`)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/auth/logout' && req.method === 'POST') {
+    const sess = extractAuthSession(req);
+    if (sess && sess.jti) {
+      revokeTokenJti(sess.jti);
+    }
+    sendJsonResponse(req, res, 200, { ok: true, revoked: true }, {
+      'Set-Cookie': [
+        clearCookieHeader('xyz_user_token', req),
+        clearCookieHeader('xyz_admin_token', req)
+      ]
+    });
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0F. First-Time Super Admin Bootstrap (`POST /api/auth/admin-bootstrap`)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/auth/admin-bootstrap' && req.method === 'POST') {
+    try {
+      const alreadyConfigured = Boolean(
+        masterState.superAdminConfigured &&
+        Array.isArray(masterState.staffAdmins) &&
+        masterState.staffAdmins.some(a => a && (a.isMasterSuperAdmin || a.roleKey === 'SUPER_ADMIN'))
+      );
+      if (alreadyConfigured) {
+        securityMetrics.unauthorizedAttempts++;
+        sendJsonResponse(req, res, 403, {
+          ok: false,
+          error: 'Super Admin is already configured. Please log in via /api/admin/login.'
+        });
+        return;
+      }
+
+      const data = await readJsonBody(req);
+      const name = String(data.username || 'Super Admin').trim();
+      const loginId = String(data.loginId || '').trim();
+      const pwd = String(data.password || '');
+
+      if (!loginId || loginId.length < 3 || !pwd || pwd.length < 4) {
+        sendJsonResponse(req, res, 400, {
+          ok: false,
+          error: 'Login ID (min 3 chars) and Password (min 4 chars) are required.'
+        });
+        return;
+      }
+
+      const passwordHash = hashPasswordSync(pwd);
+      const masterAdmin = {
+        adminId: 'ADM-01',
+        username: name,
+        customRoleTitle: 'Primary Super Admin (Owner)',
+        loginId,
+        passwordHash,
+        email: `${loginId}@admin.local`,
+        roleKey: 'SUPER_ADMIN',
+        fullControl: true,
+        isMasterSuperAdmin: true,
+        allowedFeatures: Array.isArray(data.allowedFeatures) ? data.allowedFeatures : ['ALL'],
+        requireAuditModal: false,
+        mfa: true,
+        status: 'ACTIVE',
+        lastLogin: new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+      };
+
+      masterState.staffAdmins = [masterAdmin];
+      masterState.superAdminConfigured = true;
+      masterState.adminAuditLogs.unshift({
+        auditId: 'AUD-BOOT-' + Date.now(),
+        timestamp: Date.now(),
+        actor: `${name} (${loginId})`,
+        role: 'SUPER_ADMIN',
+        action: 'SUPER_ADMIN_INITIALIZED',
+        target: 'staffAdmins:ADM-01',
+        oldVal: 'UNCONFIGURED',
+        newVal: `Super Admin ID: ${loginId}`,
+        reason: 'First-time Super Admin bootstrap completed'
+      });
+
+      scheduleSaveStateToDb(50);
+
+      const sessionId = String(data.sessionId || ('ASESS-' + Date.now()));
+      const token = signJwt({
+        sub: masterAdmin.adminId,
+        loginId: masterAdmin.loginId,
+        type: 'ADMIN',
+        aud: 'xyz-admin',
+        role: 'SUPER_ADMIN',
+        isAdmin: true,
+        isMasterSuperAdmin: true,
+        sessionId
+      }, 86400 * 3);
+
+      const adminSess = {
+        sub: masterAdmin.adminId,
+        loginId: masterAdmin.loginId,
+        type: 'ADMIN',
+        role: 'SUPER_ADMIN',
+        isAdmin: true,
+        isMasterSuperAdmin: true
+      };
+
+      sendJsonResponse(req, res, 200, {
+        ok: true,
+        token,
+        sessionId,
+        admin: {
+          adminId: masterAdmin.adminId,
+          loginId: masterAdmin.loginId,
+          username: masterAdmin.username,
+          roleKey: 'SUPER_ADMIN',
+          isMasterSuperAdmin: true,
+          allowedFeatures: masterAdmin.allowedFeatures
+        },
+        state: redactStateForClient(masterState, adminSess)
+      }, {
+        'Set-Cookie': buildCookieHeader('xyz_admin_token', token, 86400 * 3, req)
+      });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0G. Dedicated Admin Authentication Endpoint (`POST /api/admin/login`)
+  // --------------------------------------------------------------------------
+  if ((pathname === '/api/admin/login' || pathname === '/api/auth/admin-login') && req.method === 'POST') {
     try {
       const data = await readJsonBody(req);
       const loginId = String(data.loginId || '').trim();
@@ -1134,7 +1699,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const bf = checkBruteForceLock(`ADM:${loginId}`);
+      const bf = checkBruteForceLock(`ADM:${loginId.toLowerCase()}`);
       if (bf.locked) {
         sendJsonResponse(req, res, 429, {
           ok: false,
@@ -1143,51 +1708,112 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const acc = (masterState.staffAdmins || []).find(a => a && String(a.loginId || '').toLowerCase() === loginId.toLowerCase());
+      const acc = (masterState.staffAdmins || []).find(
+        a => a && String(a.loginId || '').toLowerCase() === loginId.toLowerCase()
+      );
       if (!acc) {
-        recordAuthFailure(`ADM:${loginId}`);
+        recordAuthFailure(`ADM:${loginId.toLowerCase()}`);
         sendJsonResponse(req, res, 401, { ok: false, error: 'Invalid Admin Login ID or Password.' });
         return;
       }
-      if (acc.status !== 'ACTIVE') {
+      if (acc.status && acc.status !== 'ACTIVE') {
         sendJsonResponse(req, res, 403, { ok: false, error: `Account "${acc.loginId}" is blocked by Super Admin.` });
         return;
       }
 
-      const validPwd = verifyPasswordSync(pwd, acc.passwordHash || acc.password) || (acc.password === pwd);
+      const pwdRes = verifyPasswordSync(pwd, acc.passwordHash || acc.password); const validPwd = Boolean(pwdRes && (typeof pwdRes === 'object' ? pwdRes.valid : pwdRes));
       if (!validPwd) {
-        recordAuthFailure(`ADM:${loginId}`);
+        recordAuthFailure(`ADM:${loginId.toLowerCase()}`);
         sendJsonResponse(req, res, 401, { ok: false, error: 'Invalid Admin Login ID or Password.' });
         return;
       }
 
-      clearAuthFailures(`ADM:${loginId}`);
-      if (!acc.passwordHash) {
+      clearAuthFailures(`ADM:${loginId.toLowerCase()}`);
+      if (!isPasswordHashed(acc.passwordHash)) {
         acc.passwordHash = hashPasswordSync(pwd);
-        scheduleSaveStateToDb(100);
+      }
+      delete acc.password;
+      acc.lastLogin = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+
+      // Register concurrent device session (max 5 for Super Admin, 30 for Role Admin)
+      const isSuperAdmin = Boolean(acc.isMasterSuperAdmin || acc.roleKey === 'SUPER_ADMIN');
+      const sessionId = String(data.sessionId || ('ASESS-' + Date.now() + '-' + Math.floor(100 + Math.random() * 899)));
+      const deviceId = String(data.deviceId || 'ADM-DEV');
+      const bucketKey = isSuperAdmin ? 'SUPER_ADMIN_POOL' : `ROLE_${acc.loginId.toLowerCase()}`;
+      const maxDevices = isSuperAdmin ? 5 : 30;
+
+      if (!masterState.adminActiveSessions) masterState.adminActiveSessions = {};
+      if (!Array.isArray(masterState.adminActiveSessions[bucketKey])) {
+        masterState.adminActiveSessions[bucketKey] = [];
+      }
+      if (!Array.isArray(masterState.evictedAdminSessions)) {
+        masterState.evictedAdminSessions = [];
       }
 
+      let list = masterState.adminActiveSessions[bucketKey].filter(
+        s => s && s.sessionId !== sessionId && s.deviceId !== deviceId
+      );
+      list.push({
+        sessionId,
+        loginId: acc.loginId,
+        deviceId,
+        isSuperAdmin,
+        createdAt: Date.now(),
+        lastSeenAt: Date.now()
+      });
+      list.sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+
+      const evictedNow = [];
+      while (list.length > maxDevices) {
+        const oldest = list.shift();
+        if (oldest && oldest.sessionId) {
+          evictedNow.push(oldest.sessionId);
+          masterState.evictedAdminSessions.unshift(oldest.sessionId);
+        }
+      }
+      masterState.adminActiveSessions[bucketKey] = list;
+      scheduleSaveStateToDb(100);
+
+      const roleKey = isSuperAdmin ? 'SUPER_ADMIN' : (acc.roleKey || 'CUSTOM_ROLE');
       const token = signJwt({
         sub: acc.adminId || acc.loginId,
         loginId: acc.loginId,
-        role: acc.isMasterSuperAdmin ? 'SUPER_ADMIN' : (acc.roleKey || 'CUSTOM_ROLE'),
+        type: 'ADMIN',
+        aud: 'xyz-admin',
+        role: roleKey,
         isAdmin: true,
-        isMasterSuperAdmin: Boolean(acc.isMasterSuperAdmin)
+        isMasterSuperAdmin: isSuperAdmin,
+        sessionId
       }, 86400 * 3);
+
+      const adminSess = {
+        sub: acc.adminId || acc.loginId,
+        loginId: acc.loginId,
+        type: 'ADMIN',
+        role: roleKey,
+        isAdmin: true,
+        isMasterSuperAdmin: isSuperAdmin
+      };
 
       sendJsonResponse(req, res, 200, {
         ok: true,
         token,
+        sessionId,
+        activeCount: list.length,
+        maxDevices,
+        evictedSessionIds: evictedNow,
         admin: {
           adminId: acc.adminId,
           loginId: acc.loginId,
           username: acc.username,
-          roleKey: acc.roleKey,
-          isMasterSuperAdmin: Boolean(acc.isMasterSuperAdmin),
+          roleKey,
+          fullControl: Boolean(acc.fullControl || isSuperAdmin),
+          isMasterSuperAdmin: isSuperAdmin,
           allowedFeatures: acc.allowedFeatures || []
-        }
+        },
+        state: redactStateForClient(masterState, adminSess)
       }, {
-        'Set-Cookie': `xyz_admin_token=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${86400 * 3}`
+        'Set-Cookie': buildCookieHeader('xyz_admin_token', token, 86400 * 3, req)
       });
     } catch (e) {
       sendJsonResponse(req, res, 400, { ok: false, error: e.message });
@@ -1195,124 +1821,113 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 0E. Dedicated Atomic Gift Code Redemption Endpoint (`POST /api/gift-code/redeem`)
+  // --------------------------------------------------------------------------
+  // 0H. Dedicated Atomic Gift Code Redemption (`POST /api/gift-code/redeem`)
+  // --------------------------------------------------------------------------
   if (pathname === '/api/gift-code/redeem' && req.method === 'POST') {
     try {
+      const authSess = extractAuthSession(req);
+      if (!authSess) {
+        securityMetrics.unauthorizedAttempts++;
+        sendJsonResponse(req, res, 401, {
+          ok: false,
+          error: 'Authentication required: Please log in to redeem a Gift Code.'
+        });
+        return;
+      }
+
       const data = await readJsonBody(req);
       const code = String(data.code || '').trim().toUpperCase();
-      const userId = String(data.userId || '').trim();
-      const username = String(data.username || 'Player').trim();
+      // Strictly bind userId to authenticated customer identity so a user cannot spoof another userId
+      const userId = authSess.type === 'CUSTOMER' ? String(authSess.sub) : String(data.userId || authSess.sub || '').trim();
+      const username = String(authSess.username || data.username || 'Player').trim();
 
-      if (!code) {
+      if (!code || !userId) {
         sendJsonResponse(req, res, 400, { ok: false, error: 'Please enter a valid Gift Code.' });
         return;
       }
 
+      // Sync current in-memory gift codes to SQLite first if needed, then execute atomic SQLite transaction
       const promos = Array.isArray(masterState.adminPromotions) ? masterState.adminPromotions : [];
-      const promo = promos.find(p => p && String(p.code || '').toUpperCase() === code);
-
-      if (!promo) {
+      const promoInMem = promos.find(p => p && String(p.code || '').toUpperCase() === code);
+      if (!promoInMem) {
         sendJsonResponse(req, res, 404, { ok: false, error: 'Invalid or non-existent Gift Code.' });
         return;
       }
-      if (promo.status !== 'ACTIVE') {
-        sendJsonResponse(req, res, 400, { ok: false, error: `This Gift Code (${code}) is ${promo.status || 'expired'}.` });
-        return;
-      }
 
-      if (!Array.isArray(promo.redeemedByUids)) promo.redeemedByUids = [];
-      if (!Array.isArray(masterState.claimedCodes)) masterState.claimedCodes = [];
+      const existingUserPre = findCanonicalUserInState(masterState, userId);
+      const atomicRes = await dbDaemon.redeemGiftCodeAtomic({
+        code,
+        userId,
+        username,
+        initialCashPaise: existingUserPre ? inrToPaise(existingUserPre.cashBalanceInr || 0) : 0,
+        promoFallback: promoInMem
+      });
 
-      const claimKey = `${code}:${userId}`;
-      if ((userId && promo.redeemedByUids.includes(userId)) || masterState.claimedCodes.includes(claimKey)) {
-        sendJsonResponse(req, res, 400, { ok: false, error: 'You have already redeemed this Gift Code!' });
-        return;
-      }
-
-      const maxUsers = Math.max(1, Number(promo.maxClaims || 1));
-      const claimedNow = Math.max(Number(promo.claimedCount || 0), promo.redeemedByUids.length);
-      if (claimedNow >= maxUsers) {
-        promo.status = 'EXHAUSTED';
-        sendJsonResponse(req, res, 400, { ok: false, error: `This Gift Code has already been claimed by the maximum ${maxUsers} users.` });
-        return;
-      }
-
-      const baseVal = Number(promo.totalValueInr !== undefined ? promo.totalValueInr : (promo.rewardInr || 0));
-      const perUserReward = (promo.distributionMode === 'SPLIT_EQUALLY')
-        ? +(baseVal / maxUsers).toFixed(2)
-        : +Number(promo.rewardInr || baseVal).toFixed(2);
-
-      if (perUserReward <= 0) {
-        sendJsonResponse(req, res, 400, { ok: false, error: 'Invalid gift code reward amount.' });
+      if (!atomicRes || !atomicRes.ok) {
+        const status = (atomicRes && atomicRes.error && atomicRes.error.includes('not found')) ? 404 : 400;
+        sendJsonResponse(req, res, status, {
+          ok: false,
+          error: (atomicRes && atomicRes.error) || 'Gift Code redemption failed.'
+        });
         return;
       }
 
       const now = Date.now();
-      if (userId) promo.redeemedByUids.push(userId);
-      promo.claimedCount = Math.max(claimedNow + 1, promo.redeemedByUids.length);
-      if (promo.claimedCount >= maxUsers) promo.status = 'EXHAUSTED';
-      promo.updatedAt = now;
+      const rewardInr = Number(atomicRes.rewardInr || 0);
+      const newBalanceInr = Number(atomicRes.newBalanceInr || 0);
 
-      masterState.claimedCodes.push(claimKey);
+      // Update in-memory masterState to match atomic SQLite state
+      if (!Array.isArray(promoInMem.redeemedByUids)) promoInMem.redeemedByUids = [];
+      if (!promoInMem.redeemedByUids.includes(userId)) promoInMem.redeemedByUids.push(userId);
+      promoInMem.claimedCount = Number(atomicRes.claimedCount || promoInMem.redeemedByUids.length);
+      promoInMem.status = atomicRes.promoStatus || promoInMem.status;
+      promoInMem.updatedAt = now;
 
-      let newBalance = perUserReward;
-      let userFound = false;
-
-      const updateUserList = (list) => {
-        if (!Array.isArray(list)) return;
-        list.forEach(u => {
-          if (u && u.userId === userId) {
-            u.cashBalanceInr = +(Number(u.cashBalanceInr || 0) + perUserReward).toFixed(2);
-            u.lastUserBalanceUpdateAt = now;
-            u.lastAdminBalanceUpdateAt = now;
-            newBalance = u.cashBalanceInr;
-            userFound = true;
-          }
-        });
-      };
-
-      updateUserList(masterState.adminUsersList);
-      updateUserList(masterState.registeredAccounts);
-
-      if (!userFound && userId) {
-        const newU = {
-          userId,
-          username,
-          loginId: userId,
-          status: 'ACTIVE',
-          kycStatus: 'VERIFIED',
-          cashBalanceInr: perUserReward,
-          promoBalanceInr: 0,
-          lastUserBalanceUpdateAt: now,
-          lastAdminBalanceUpdateAt: now,
-          registeredAt: now
-        };
-        masterState.adminUsersList.unshift(newU);
-        masterState.registeredAccounts.unshift(Object.assign({}, newU));
+      if (!Array.isArray(masterState.claimedCodes)) masterState.claimedCodes = [];
+      const claimKey = `${code}:${userId}`;
+      if (!masterState.claimedCodes.includes(claimKey)) {
+        masterState.claimedCodes.push(claimKey);
       }
 
-      const txRec = {
-        id: 'GIFT-' + Math.floor(10000 + Math.random() * 89999),
-        userId: userId || 'UID-10001',
-        username: username,
+      const existingUser = findCanonicalUserInState(masterState, userId) || {
+        userId,
+        username,
+        loginId: userId,
+        status: 'ACTIVE',
+        kycStatus: 'VERIFIED',
+        promoBalanceInr: 0,
+        registeredAt: now
+      };
+      upsertCanonicalUserInState(masterState, Object.assign({}, existingUser, {
+        cashBalanceInr: newBalanceInr,
+        lastUserBalanceUpdateAt: now,
+        lastAdminBalanceUpdateAt: now,
+        updatedAt: now
+      }));
+
+      const txCode = atomicRes.txCode || ('GIFT-' + Date.now());
+      masterState.transactions.unshift({
+        id: txCode,
+        userId,
+        username,
         type: 'GIFT_CODE',
-        title: `Gift Card Redeemed (${code} • ${promo.distributionMode === 'SPLIT_EQUALLY' ? 'Equal Split' : 'Full Bonus'})`,
-        amount: perUserReward,
+        title: `Gift Card Redeemed (${code})`,
+        amount: rewardInr,
         status: 'SUCCESS',
         timestamp: now
-      };
-      masterState.transactions.unshift(txRec);
+      });
 
       masterState.adminLedger.unshift({
-        txCode: txRec.id,
-        userId: userId || 'UID-10001',
-        username: username,
+        txCode,
+        userId,
+        username,
         type: 'GIFT_CODE_REDEEM',
-        amountInr: perUserReward,
+        amountInr: rewardInr,
         currency: 'INR',
         balanceType: 'CASH',
         relatedRef: code,
-        idempotencyKey: `IDEMP-${txRec.id}`,
+        idempotencyKey: `GIFT-${code}-${userId}`,
         status: 'COMPLETED',
         actor: username,
         createdAt: now
@@ -1323,13 +1938,14 @@ const server = http.createServer(async (req, res) => {
 
       sendJsonResponse(req, res, 200, {
         ok: true,
+        txCode,
         code,
-        rewardInr: perUserReward,
-        newBalanceInr: newBalance,
-        claimedCount: promo.claimedCount,
-        maxClaims: maxUsers,
-        promoStatus: promo.status,
-        state: masterState
+        rewardInr,
+        newBalanceInr,
+        claimedCount: promoInMem.claimedCount,
+        maxClaims: Number(atomicRes.maxClaims || promoInMem.maxClaims || 1),
+        promoStatus: promoInMem.status,
+        state: redactStateForClient(masterState, authSess)
       });
     } catch (e) {
       sendJsonResponse(req, res, 400, { ok: false, error: e.message });
@@ -1337,113 +1953,178 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 0F. Dedicated Atomic Direct Wallet Balance Credit / Debit Endpoint (`POST /api/admin/wallet-adjust`)
+  // --------------------------------------------------------------------------
+  // 0I. Admin Gift Code Management Endpoint (`POST /api/admin/gift-code`)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/admin/gift-code' && req.method === 'POST') {
+    const adminSess = verifyAdminPermission(req, res, 'promotions.manage');
+    if (!adminSess) return;
+
+    try {
+      const data = await readJsonBody(req);
+      const action = String(data.action || 'CREATE').toUpperCase();
+      const code = String(data.code || '').trim().toUpperCase();
+      if (!code) {
+        sendJsonResponse(req, res, 400, { ok: false, error: 'Gift Code is required.' });
+        return;
+      }
+
+      if (!Array.isArray(masterState.adminPromotions)) masterState.adminPromotions = [];
+      const now = Date.now();
+
+      if (action === 'CREATE' || action === 'UPSERT') {
+        const totalValueInr = Math.max(1, Number(data.totalValueInr ?? data.rewardInr ?? 100));
+        const maxClaims = Math.max(1, Math.floor(Number(data.maxClaims || 1)));
+        const distributionMode = String(data.distributionMode || 'FULL_TO_EACH').toUpperCase();
+        const rewardInr = distributionMode === 'SPLIT_EQUALLY'
+          ? paiseToInr(Math.floor(inrToPaise(totalValueInr) / maxClaims))
+          : totalValueInr;
+
+        const existingIdx = masterState.adminPromotions.findIndex(p => p && String(p.code || '').toUpperCase() === code);
+        const promoObj = {
+          promoId: 'PRM-' + Date.now(),
+          code,
+          title: String(data.title || `Gift Code ${code}`),
+          distributionMode,
+          totalValueInr,
+          rewardInr,
+          maxClaims,
+          claimedCount: existingIdx >= 0 ? Number(masterState.adminPromotions[existingIdx].claimedCount || 0) : 0,
+          redeemedByUids: existingIdx >= 0 ? (masterState.adminPromotions[existingIdx].redeemedByUids || []) : [],
+          status: String(data.status || 'ACTIVE').toUpperCase(),
+          createdAt: existingIdx >= 0 ? masterState.adminPromotions[existingIdx].createdAt : now,
+          updatedAt: now
+        };
+        if (existingIdx >= 0) {
+          masterState.adminPromotions[existingIdx] = promoObj;
+        } else {
+          masterState.adminPromotions.unshift(promoObj);
+        }
+        await dbDaemon.syncMasterState(masterState);
+        broadcastStateToSseClients('ADMIN_GIFT_CODE', true);
+        sendJsonResponse(req, res, 200, { ok: true, giftCode: promoObj });
+        return;
+      }
+
+      if (action === 'DELETE') {
+        masterState.adminPromotions = masterState.adminPromotions.filter(p => p && String(p.code || '').toUpperCase() !== code);
+        await dbDaemon.syncMasterState(masterState);
+        broadcastStateToSseClients('ADMIN_GIFT_CODE', true);
+        sendJsonResponse(req, res, 200, { ok: true, deleted: code });
+        return;
+      }
+
+      sendJsonResponse(req, res, 400, { ok: false, error: `Unsupported action: ${action}` });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0J. Atomic Direct Wallet Balance Credit / Debit (`POST /api/admin/wallet-adjust`)
+  // --------------------------------------------------------------------------
   if (pathname === '/api/admin/wallet-adjust' && req.method === 'POST') {
+    const adminSess = verifyAdminPermission(req, res, 'finance.adjust_ledger');
+    if (!adminSess) return;
+
     try {
       const data = await readJsonBody(req);
       const userId = String(data.userId || '').trim();
-      const balanceType = String(data.balanceType || 'CASH').toUpperCase(); // 'CASH' | 'PROMO'
-      const direction = String(data.direction || 'CREDIT').toUpperCase();   // 'CREDIT' | 'DEBIT'
-      const amountInr = Math.max(0, Number(data.amountInr || 0));
+      const balanceType = String(data.balanceType || 'CASH').toUpperCase();
+      const direction = String(data.direction || 'CREDIT').toUpperCase();
+      const amountInr = Number(data.amountInr || 0);
       const reason = String(data.reason || 'Direct Admin Wallet Adjustment').trim();
-      const actor = String(data.actor || 'Super Admin').trim();
+      const actor = `${adminSess.loginId || adminSess.sub} (${adminSess.role})`;
+      const idempotencyKey = String(data.idempotencyKey || `WAL-ADJ-${userId}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
 
-      if (!userId || amountInr <= 0) {
+      if (!userId || !Number.isFinite(amountInr) || amountInr <= 0) {
         sendJsonResponse(req, res, 400, { ok: false, error: 'Valid userId and positive amountInr are required.' });
         return;
       }
 
-      const now = Date.now();
-      const signed = direction === 'CREDIT' ? amountInr : -amountInr;
-      let targetUser = (masterState.adminUsersList || []).find(u => u && u.userId === userId) ||
-                       (masterState.registeredAccounts || []).find(a => a && a.userId === userId);
-
+      const targetUser = findCanonicalUserInState(masterState, userId);
       if (!targetUser) {
         sendJsonResponse(req, res, 404, { ok: false, error: `User ${userId} not found.` });
         return;
       }
 
-      if (balanceType === 'CASH' && direction === 'DEBIT' && Number(targetUser.cashBalanceInr || 0) + signed < 0) {
+      const atomicRes = await dbDaemon.adjustWalletAtomic({
+        userId: targetUser.userId,
+        username: targetUser.username || userId,
+        balanceType,
+        direction,
+        amountInr,
+        initialCashPaise: inrToPaise(targetUser.cashBalanceInr || 0),
+        initialPromoPaise: inrToPaise(targetUser.promoBalanceInr || 0),
+        reason,
+        actor,
+        idempotencyKey
+      });
+
+      if (!atomicRes || !atomicRes.ok) {
         sendJsonResponse(req, res, 400, {
           ok: false,
-          error: `Insufficient Cash Balance (Current: ₹${Number(targetUser.cashBalanceInr || 0).toFixed(2)}) for ₹${amountInr.toFixed(2)} debit.`
+          error: (atomicRes && atomicRes.error) || 'Atomic wallet adjustment failed.'
         });
         return;
       }
 
-      const nextCash = balanceType === 'CASH'
-        ? Math.max(0, +(Number(targetUser.cashBalanceInr || 0) + signed).toFixed(2))
-        : Number(targetUser.cashBalanceInr || 0);
-      const nextPromo = balanceType === 'PROMO'
-        ? Math.max(0, +(Number(targetUser.promoBalanceInr || 0) + signed).toFixed(2))
-        : Number(targetUser.promoBalanceInr || 0);
+      const now = Date.now();
+      const nextCash = Number(atomicRes.cashBalanceInr ?? targetUser.cashBalanceInr ?? 0);
+      const nextPromo = Number(atomicRes.promoBalanceInr ?? targetUser.promoBalanceInr ?? 0);
+      const signed = direction === 'CREDIT' ? amountInr : -amountInr;
+      const txCode = atomicRes.txCode || ('LDG-ADJ-' + Date.now());
 
-      const syncUserLists = (list) => {
-        if (!Array.isArray(list)) return;
-        list.forEach(u => {
-          if (u && u.userId === userId) {
-            u.cashBalanceInr = nextCash;
-            u.promoBalanceInr = nextPromo;
-            u.lastAdminBalanceUpdateAt = now;
-            u.updatedAt = now;
-          }
+      upsertCanonicalUserInState(masterState, Object.assign({}, targetUser, {
+        cashBalanceInr: nextCash,
+        promoBalanceInr: nextPromo,
+        lastAdminBalanceUpdateAt: now,
+        updatedAt: now
+      }));
+
+      if (!atomicRes.idempotentReplay) {
+        masterState.adminLedger.unshift({
+          txCode,
+          userId: targetUser.userId,
+          username: targetUser.username || userId,
+          type: 'ADMIN_ADJUSTMENT',
+          amountInr: signed,
+          currency: 'INR',
+          balanceType,
+          relatedRef: 'DIRECT_WALLET_ADJ',
+          reversalOf: null,
+          idempotencyKey,
+          status: 'COMPLETED',
+          actor,
+          reason,
+          createdAt: now
         });
-      };
 
-      syncUserLists(masterState.adminUsersList);
-      syncUserLists(masterState.registeredAccounts);
+        masterState.transactions.unshift({
+          id: txCode,
+          userId: targetUser.userId,
+          username: targetUser.username || userId,
+          type: signed >= 0 ? 'BONUS' : 'WITHDRAW',
+          title: `Admin Direct Wallet ${direction === 'CREDIT' ? 'Credit' : 'Debit'} (${balanceType} • ${reason})`,
+          amount: signed,
+          status: 'SUCCESS',
+          timestamp: now
+        });
 
-      if (masterState.connectedDevices && typeof masterState.connectedDevices === 'object') {
-        Object.keys(masterState.connectedDevices).forEach(devId => {
-          const d = masterState.connectedDevices[devId];
-          if (d && d.userId === userId) {
-            d.balanceInr = nextCash;
-          }
+        masterState.adminAuditLogs.unshift({
+          auditId: 'AUD-' + Date.now(),
+          timestamp: now,
+          actor,
+          role: adminSess.role,
+          action: `DIRECT_WALLET_${direction}`,
+          target: `wallets:${targetUser.userId}`,
+          oldVal: `${balanceType}`,
+          newVal: `${signed >= 0 ? '+' : ''}${signed} INR (Cash: ₹${nextCash}, Promo: ₹${nextPromo})`,
+          reason,
+          approvalRef: txCode
         });
       }
-
-      const txCode = 'LDG-ADJ-' + Math.floor(10000 + Math.random() * 89999);
-      const ledgerRec = {
-        txCode,
-        userId: targetUser.userId,
-        username: targetUser.username || userId,
-        type: 'ADMIN_ADJUSTMENT',
-        amountInr: signed,
-        currency: 'INR',
-        balanceType,
-        relatedRef: 'DIRECT_WALLET_ADJ',
-        reversalOf: null,
-        idempotencyKey: `IDEMP-${txCode}-${now}`,
-        status: 'COMPLETED',
-        actor,
-        reason,
-        createdAt: now
-      };
-      masterState.adminLedger.unshift(ledgerRec);
-
-      masterState.transactions.unshift({
-        id: txCode,
-        userId: targetUser.userId,
-        username: targetUser.username || userId,
-        type: signed >= 0 ? 'BONUS' : 'WITHDRAW',
-        title: `Admin Direct Wallet ${direction === 'CREDIT' ? 'Credit' : 'Debit'} (${balanceType} • ${reason})`,
-        amount: signed,
-        status: 'SUCCESS',
-        timestamp: now
-      });
-
-      masterState.adminAuditLogs.unshift({
-        auditId: 'AUD-' + Math.floor(10000 + Math.random() * 89999),
-        timestamp: now,
-        actor,
-        role: 'SUPER_ADMIN',
-        action: `DIRECT_WALLET_${direction}`,
-        target: `wallets:${userId}`,
-        oldVal: `${balanceType}`,
-        newVal: `${signed >= 0 ? '+' : ''}${signed} INR (Cash: ₹${nextCash}, Promo: ₹${nextPromo})`,
-        reason,
-        approvalRef: txCode
-      });
 
       masterState.adminUpdatedAt = now;
       scheduleSaveStateToDb(80);
@@ -1452,14 +2133,15 @@ const server = http.createServer(async (req, res) => {
       sendJsonResponse(req, res, 200, {
         ok: true,
         txCode,
-        userId,
+        idempotentReplay: Boolean(atomicRes.idempotentReplay),
+        userId: targetUser.userId,
         username: targetUser.username,
         balanceType,
         direction,
         amountInr,
         cashBalanceInr: nextCash,
         promoBalanceInr: nextPromo,
-        state: masterState
+        state: redactStateForClient(masterState, adminSess)
       });
     } catch (e) {
       sendJsonResponse(req, res, 400, { ok: false, error: e.message });
@@ -1467,7 +2149,498 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 0G. Lightweight Device Heartbeat & Presence Endpoint (`POST /api/device/heartbeat`)
+  // --------------------------------------------------------------------------
+  // 0K. Customer Deposit Submission (`POST /api/deposit/submit`)
+  //     & Admin Deposit Resolution (`POST /api/admin/deposit-resolve`)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/deposit/submit' && req.method === 'POST') {
+    const authSess = extractAuthSession(req);
+    if (!authSess) {
+      securityMetrics.unauthorizedAttempts++;
+      sendJsonResponse(req, res, 401, { ok: false, error: 'Authentication required to submit deposit.' });
+      return;
+    }
+    try {
+      const data = await readJsonBody(req);
+      const userId = authSess.type === 'CUSTOMER' ? authSess.sub : String(data.userId || authSess.sub);
+      const amountInr = Number(data.amountInr || data.amount || 0);
+      const method = String(data.method || 'UPI').toUpperCase();
+      const utr = String(data.utr || data.providerRef || '').trim();
+
+      if (!userId || !Number.isFinite(amountInr) || amountInr <= 0 || !utr || utr.length < 6) {
+        sendJsonResponse(req, res, 400, { ok: false, error: 'Valid positive deposit amount and UTR/reference (min 6 chars) are required.' });
+        return;
+      }
+
+      // Prevent duplicate UTR submission
+      const dupUtr = (masterState.adminDeposits || []).find(
+        d => d && String(d.utr || '').toLowerCase() === utr.toLowerCase() && d.status !== 'FAILED' && d.status !== 'REJECTED'
+      );
+      if (dupUtr) {
+        sendJsonResponse(req, res, 409, { ok: false, error: `UTR/Reference "${utr}" has already been submitted (${dupUtr.depositId}).` });
+        return;
+      }
+
+      const now = Date.now();
+      const userObj = findCanonicalUserInState(masterState, userId);
+      const depId = String(data.depositId || ('DEP-' + now + '-' + Math.floor(100 + Math.random() * 899)));
+      const depRecord = {
+        depositId: depId,
+        userId,
+        username: (userObj && userObj.username) || authSess.username || 'Player',
+        amountInr,
+        method,
+        utr,
+        status: 'PENDING',
+        webhookVerified: false,
+        createdAt: now,
+        updatedAt: now
+      };
+
+      masterState.adminDeposits.unshift(depRecord);
+      masterState.transactions.unshift({
+        id: depId,
+        userId,
+        username: depRecord.username,
+        type: 'DEPOSIT',
+        title: `Deposit Submitted (${method} • UTR: ${utr})`,
+        amount: amountInr,
+        status: 'PENDING',
+        timestamp: now
+      });
+
+      scheduleSaveStateToDb(80);
+      broadcastStateToSseClients('DEPOSIT_SUBMIT', false);
+
+      sendJsonResponse(req, res, 201, { ok: true, deposit: depRecord });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  if (pathname === '/api/admin/deposit-resolve' && req.method === 'POST') {
+    const adminSess = verifyAdminPermission(req, res, 'deposits.review');
+    if (!adminSess) return;
+
+    try {
+      const data = await readJsonBody(req);
+      const depositId = String(data.depositId || '').trim();
+      const action = String(data.action || '').toUpperCase(); // 'CONFIRM' | 'REJECT'
+      const reason = String(data.reason || 'Admin Deposit Review').trim();
+
+      const dep = (masterState.adminDeposits || []).find(d => d && d.depositId === depositId);
+      if (!dep) {
+        sendJsonResponse(req, res, 404, { ok: false, error: `Deposit ${depositId} not found.` });
+        return;
+      }
+      if (dep.status === 'CONFIRMED' || dep.status === 'APPROVED' || dep.status === 'FAILED' || dep.status === 'REJECTED') {
+        sendJsonResponse(req, res, 409, { ok: false, error: `Deposit ${depositId} is already resolved (${dep.status}).` });
+        return;
+      }
+
+      const now = Date.now();
+      const actor = `${adminSess.loginId || adminSess.sub} (${adminSess.role})`;
+
+      if (action === 'CONFIRM' || action === 'APPROVE') {
+        await dbDaemon.syncMasterState(masterState);
+        const atomicRes = await dbDaemon.adjustWalletAtomic({
+          userId: dep.userId,
+          balanceType: 'CASH',
+          direction: 'CREDIT',
+          amountInr: dep.amountInr,
+          reason: `Deposit Confirmed (${dep.depositId} • UTR: ${dep.utr})`,
+          actor,
+          idempotencyKey: `DEP-CONFIRM-${dep.depositId}`
+        });
+        if (!atomicRes || !atomicRes.ok) {
+          sendJsonResponse(req, res, 400, { ok: false, error: (atomicRes && atomicRes.error) || 'Failed to credit deposit.' });
+          return;
+        }
+        dep.status = 'CONFIRMED';
+        dep.confirmedAt = now;
+        dep.updatedAt = now;
+        dep.reviewedBy = actor;
+        dep.reviewReason = reason;
+
+        const targetU = findCanonicalUserInState(masterState, dep.userId);
+        if (targetU) {
+          upsertCanonicalUserInState(masterState, Object.assign({}, targetU, {
+            cashBalanceInr: atomicRes.cashBalanceInr,
+            lastAdminBalanceUpdateAt: now,
+            updatedAt: now
+          }));
+        }
+      } else {
+        dep.status = 'FAILED';
+        dep.updatedAt = now;
+        dep.reviewedBy = actor;
+        dep.reviewReason = reason;
+      }
+
+      (masterState.transactions || []).forEach(tx => {
+        if (tx && tx.id === depositId) {
+          tx.status = dep.status === 'CONFIRMED' ? 'SUCCESS' : 'FAILED';
+          tx.updatedAt = now;
+        }
+      });
+
+      scheduleSaveStateToDb(80);
+      broadcastStateToSseClients('ADMIN_DEPOSIT_RESOLVE', true);
+      sendJsonResponse(req, res, 200, { ok: true, deposit: dep });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0L. Customer Withdrawal Submission (`POST /api/withdraw/submit`)
+  //     & Admin Withdrawal Resolution (`POST /api/admin/withdraw-resolve`)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/withdraw/submit' && req.method === 'POST') {
+    const authSess = extractAuthSession(req);
+    if (!authSess) {
+      securityMetrics.unauthorizedAttempts++;
+      sendJsonResponse(req, res, 401, { ok: false, error: 'Authentication required to request withdrawal.' });
+      return;
+    }
+    try {
+      const data = await readJsonBody(req);
+      const userId = authSess.type === 'CUSTOMER' ? authSess.sub : String(data.userId || authSess.sub);
+      const amountInr = Number(data.amountInr || data.amount || 0);
+      const method = String(data.method || 'BANK').toUpperCase();
+      const destination = String(data.destination || data.accountNumber || data.usdtAddress || 'BANK-ACCT').trim();
+      const idempotencyKey = String(data.idempotencyKey || `WD-REQ-${userId}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
+
+      if (!userId || !Number.isFinite(amountInr) || amountInr <= 0) {
+        sendJsonResponse(req, res, 400, { ok: false, error: 'Valid positive withdrawal amount is required.' });
+        return;
+      }
+
+      const targetUser = findCanonicalUserInState(masterState, userId);
+      if (!targetUser) {
+        sendJsonResponse(req, res, 404, { ok: false, error: 'User account not found.' });
+        return;
+      }
+
+      const atomicRes = await dbDaemon.adjustWalletAtomic({
+        userId: targetUser.userId,
+        username: targetUser.username || userId,
+        balanceType: 'CASH',
+        direction: 'DEBIT',
+        amountInr,
+        initialCashPaise: inrToPaise(targetUser.cashBalanceInr || 0),
+        initialPromoPaise: inrToPaise(targetUser.promoBalanceInr || 0),
+        reason: `Withdrawal Request Lock (${method})`,
+        actor: targetUser.username || userId,
+        idempotencyKey
+      });
+
+      if (!atomicRes || !atomicRes.ok) {
+        sendJsonResponse(req, res, 400, {
+          ok: false,
+          error: (atomicRes && atomicRes.error) || 'Insufficient wallet balance for withdrawal.'
+        });
+        return;
+      }
+
+      const now = Date.now();
+      const wdId = String(data.withdrawalId || ('WD-' + now + '-' + Math.floor(100 + Math.random() * 899)));
+      const feePct = Number((masterState.withdrawalConfig && masterState.withdrawalConfig.feePct) ?? 2);
+      const feeInr = paiseToInr(Math.round(inrToPaise(amountInr) * (feePct / 100)));
+      const netPayoutInr = paiseToInr(inrToPaise(amountInr) - inrToPaise(feeInr));
+
+      upsertCanonicalUserInState(masterState, Object.assign({}, targetUser, {
+        cashBalanceInr: atomicRes.cashBalanceInr,
+        lastUserBalanceUpdateAt: now,
+        lastAdminBalanceUpdateAt: now,
+        updatedAt: now
+      }));
+
+      const wdRec = {
+        withdrawalId: wdId,
+        userId: targetUser.userId,
+        username: targetUser.username,
+        requestedInr: amountInr,
+        feeInr,
+        netPayoutInr,
+        method,
+        destination,
+        reviewStatus: 'PENDING',
+        payoutStatus: 'QUEUED',
+        idempotencyKey,
+        createdAt: now,
+        updatedAt: now
+      };
+
+      masterState.adminWithdrawals.unshift(wdRec);
+      masterState.transactions.unshift({
+        id: wdId,
+        userId: targetUser.userId,
+        username: targetUser.username,
+        type: 'WITHDRAW',
+        title: `Withdrawal Requested (${method} • ${destination})`,
+        amount: -amountInr,
+        status: 'PENDING',
+        timestamp: now
+      });
+
+      scheduleSaveStateToDb(80);
+      broadcastStateToSseClients('WITHDRAW_SUBMIT', false);
+
+      sendJsonResponse(req, res, 201, {
+        ok: true,
+        withdrawal: wdRec,
+        newBalanceInr: atomicRes.cashBalanceInr
+      });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  if (pathname === '/api/admin/withdraw-resolve' && req.method === 'POST') {
+    const adminSess = verifyAdminPermission(req, res, 'withdrawals.approve');
+    if (!adminSess) return;
+
+    try {
+      const data = await readJsonBody(req);
+      const withdrawalId = String(data.withdrawalId || '').trim();
+      const action = String(data.action || '').toUpperCase(); // 'APPROVE' | 'REJECT'
+      const reason = String(data.reason || 'Admin Withdrawal Review').trim();
+
+      const wd = (masterState.adminWithdrawals || []).find(w => w && w.withdrawalId === withdrawalId);
+      if (!wd) {
+        sendJsonResponse(req, res, 404, { ok: false, error: `Withdrawal ${withdrawalId} not found.` });
+        return;
+      }
+      if (wd.reviewStatus === 'APPROVED' || wd.reviewStatus === 'REJECTED') {
+        sendJsonResponse(req, res, 409, { ok: false, error: `Withdrawal ${withdrawalId} is already ${wd.reviewStatus}.` });
+        return;
+      }
+
+      const now = Date.now();
+      const actor = `${adminSess.loginId || adminSess.sub} (${adminSess.role})`;
+
+      if (action === 'REJECT') {
+        await dbDaemon.syncMasterState(masterState);
+        const refundRes = await dbDaemon.adjustWalletAtomic({
+          userId: wd.userId,
+          balanceType: 'CASH',
+          direction: 'CREDIT',
+          amountInr: wd.requestedInr,
+          reason: `Withdrawal Rejected Refund (${wd.withdrawalId}: ${reason})`,
+          actor,
+          idempotencyKey: `WD-REFUND-${wd.withdrawalId}`
+        });
+        if (!refundRes || !refundRes.ok) {
+          sendJsonResponse(req, res, 400, { ok: false, error: 'Failed to refund rejected withdrawal.' });
+          return;
+        }
+        wd.reviewStatus = 'REJECTED';
+        wd.payoutStatus = 'REVERSED';
+        wd.updatedAt = now;
+        wd.reviewReason = reason;
+
+        const targetU = findCanonicalUserInState(masterState, wd.userId);
+        if (targetU) {
+          upsertCanonicalUserInState(masterState, Object.assign({}, targetU, {
+            cashBalanceInr: refundRes.cashBalanceInr,
+            lastAdminBalanceUpdateAt: now,
+            updatedAt: now
+          }));
+        }
+      } else {
+        wd.reviewStatus = 'APPROVED';
+        wd.payoutStatus = 'PAID';
+        wd.updatedAt = now;
+        wd.reviewReason = reason;
+      }
+
+      (masterState.transactions || []).forEach(tx => {
+        if (tx && tx.id === withdrawalId) {
+          tx.status = wd.reviewStatus === 'APPROVED' ? 'SUCCESS' : 'REFUNDED';
+          tx.updatedAt = now;
+        }
+      });
+
+      scheduleSaveStateToDb(80);
+      broadcastStateToSseClients('ADMIN_WITHDRAW_RESOLVE', true);
+      sendJsonResponse(req, res, 200, { ok: true, withdrawal: wd });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0M. Atomic Server-Validated WinGo Bet Endpoint (`POST /api/wingo/bet`)
+  //     & Provably Fair Commit-Reveal Verification (`GET /api/wingo/verify`)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/wingo/bet' && req.method === 'POST') {
+    const authSess = extractAuthSession(req);
+    if (!authSess) {
+      securityMetrics.unauthorizedAttempts++;
+      sendJsonResponse(req, res, 401, { ok: false, error: 'Authentication required to place a bet.' });
+      return;
+    }
+    try {
+      const data = await readJsonBody(req);
+      const slotKey = String(data.slotKey || '30SEC').toUpperCase();
+      const selection = String(data.selection || '').trim().toUpperCase();
+      const amountInr = Number(data.amountInr || data.amount || 0);
+      const userId = authSess.type === 'CUSTOMER' ? authSess.sub : String(data.userId || authSess.sub);
+
+      if (!WINGO_SLOTS_SERVER[slotKey]) {
+        sendJsonResponse(req, res, 400, { ok: false, error: `Invalid WinGo mode: ${slotKey}` });
+        return;
+      }
+      if (!selection || !Number.isFinite(amountInr) || amountInr <= 0) {
+        sendJsonResponse(req, res, 400, { ok: false, error: 'Valid selection and positive bet amount are required.' });
+        return;
+      }
+
+      const clk = getServerSlotUtcClock(slotKey);
+      if (data.periodId && String(data.periodId) !== clk.periodId) {
+        sendJsonResponse(req, res, 400, {
+          ok: false,
+          error: `Period mismatch or expired: Active server period is ${clk.periodId}.`
+        });
+        return;
+      }
+      if (clk.isCutoffLocked) {
+        sendJsonResponse(req, res, 400, {
+          ok: false,
+          error: `Betting is locked during the final ${clk.cutoff}s cutoff window (${clk.timeLeft}s remaining).`
+        });
+        return;
+      }
+
+      const targetUser = findCanonicalUserInState(masterState, userId);
+      if (!targetUser) {
+        sendJsonResponse(req, res, 404, { ok: false, error: 'User account not found.' });
+        return;
+      }
+
+      await dbDaemon.syncMasterState(masterState);
+      const betId = String(data.betId || ('BET-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase()));
+      const atomicRes = await dbDaemon.adjustWalletAtomic({
+        userId: targetUser.userId,
+        balanceType: 'CASH',
+        direction: 'DEBIT',
+        amountInr,
+        reason: `WinGo Bet (${slotKey} • ${clk.periodId} • ${selection})`,
+        actor: targetUser.username || userId,
+        idempotencyKey: `BET-${betId}`
+      });
+
+      if (!atomicRes || !atomicRes.ok) {
+        sendJsonResponse(req, res, 400, {
+          ok: false,
+          error: (atomicRes && atomicRes.error) || 'Insufficient balance for bet.'
+        });
+        return;
+      }
+
+      const now = Date.now();
+      upsertCanonicalUserInState(masterState, Object.assign({}, targetUser, {
+        cashBalanceInr: atomicRes.cashBalanceInr,
+        lastUserBalanceUpdateAt: now,
+        lastAdminBalanceUpdateAt: now,
+        updatedAt: now
+      }));
+
+      const fair = generatePeriodCommitAndOutcome(slotKey, clk.periodId);
+      const betRecord = {
+        id: betId,
+        userId: targetUser.userId,
+        username: targetUser.username,
+        gameKey: 'WINGO',
+        slotKey,
+        periodId: clk.periodId,
+        selection,
+        amount: amountInr,
+        status: 'WAITING',
+        winAmount: 0,
+        commitHash: fair.commitHash,
+        timestamp: now,
+        updatedAt: now
+      };
+
+      masterState.myBets.unshift(betRecord);
+      scheduleSaveStateToDb(80);
+      broadcastStateToSseClients('WINGO_BET', false);
+
+      sendJsonResponse(req, res, 201, {
+        ok: true,
+        bet: betRecord,
+        commitHash: fair.commitHash,
+        newBalanceInr: atomicRes.cashBalanceInr,
+        periodClock: clk
+      });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  if (pathname === '/api/wingo/verify' && req.method === 'GET') {
+    const slotKey = String(parsedUrl.query.slotKey || '30SEC').toUpperCase();
+    const clk = getServerSlotUtcClock(slotKey);
+    const pid = String(parsedUrl.query.periodId || clk.periodId);
+    const fair = generatePeriodCommitAndOutcome(slotKey, pid);
+    const isSettled = pid !== clk.periodId || Boolean(masterState.settledPeriodResults && masterState.settledPeriodResults[pid] !== undefined);
+
+    sendJsonResponse(req, res, 200, {
+      ok: true,
+      slotKey,
+      periodId: pid,
+      commitHash: fair.commitHash,
+      isSettled,
+      // Only reveal serverSeed and winningNumber after the period is settled!
+      serverSeed: isSettled ? fair.serverSeed : null,
+      winningNumber: isSettled ? (masterState.settledPeriodResults?.[pid] ?? fair.winningNumber) : null,
+      winningColor: isSettled ? fair.winningColor : null,
+      winningSize: isSettled ? fair.winningSize : null
+    });
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0N. Ledger vs Wallet Balance Reconciliation (`POST /api/admin/reconcile`)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/admin/reconcile' && (req.method === 'POST' || req.method === 'GET')) {
+    const adminSess = verifyAdminPermission(req, res, null);
+    if (!adminSess) return;
+    const report = await dbDaemon.reconcileBalances();
+    sendJsonResponse(req, res, 200, report);
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0O. Payment Gateway Webhook Endpoint (`POST /api/webhooks/payment`)
+  // --------------------------------------------------------------------------
+  if (pathname === '/api/webhooks/payment' && req.method === 'POST') {
+    try {
+      const rawBody = await readRawBody(req);
+      const sigHeader = req.headers['x-xyz-webhook-signature'] || '';
+      if (!verifyWebhookSignature(rawBody, sigHeader)) {
+        securityMetrics.unauthorizedAttempts++;
+        sendJsonResponse(req, res, 401, { ok: false, error: 'Invalid webhook HMAC signature.' });
+        return;
+      }
+      const payload = sanitizeObjectDeep(JSON.parse(rawBody || '{}'));
+      sendJsonResponse(req, res, 200, { ok: true, verified: true, eventId: payload.eventId || null });
+    } catch (e) {
+      sendJsonResponse(req, res, 400, { ok: false, error: e.message });
+    }
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 0P. Lightweight Device Heartbeat & Presence (`POST /api/device/heartbeat`)
+  // --------------------------------------------------------------------------
   if (pathname === '/api/device/heartbeat' && req.method === 'POST') {
     try {
       const data = await readJsonBody(req);
@@ -1477,9 +2650,9 @@ const server = http.createServer(async (req, res) => {
         const delAt = Number((masterState.deletedDeviceIds && masterState.deletedDeviceIds[dev.deviceId]) || 0);
         const now = Date.now();
         if (now > delAt) {
-          const matchedUser = (masterState.adminUsersList || []).find(u => u && u.userId === dev.userId);
+          const matchedUser = findCanonicalUserInState(masterState, dev.userId);
           masterState.connectedDevices[dev.deviceId] = Object.assign({}, masterState.connectedDevices[dev.deviceId] || {}, dev, {
-            balanceInr: matchedUser ? Number(matchedUser.cashBalanceInr || 0) : Number(dev.balanceInr || 0),
+            balanceInr: matchedUser ? Number(matchedUser.cashBalanceInr || 0) : 0,
             lastSeenAt: now,
             online: true
           });
@@ -1493,8 +2666,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. Real-Time SSE Stream Endpoint
+  // --------------------------------------------------------------------------
+  // 1. Real-Time SSE Stream Endpoint (`GET /api/xyz-stream`)
+  // --------------------------------------------------------------------------
   if (pathname === '/api/xyz-stream' && req.method === 'GET') {
+    const authSession = extractAuthSession(req);
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
@@ -1502,8 +2678,9 @@ const server = http.createServer(async (req, res) => {
       'X-Accel-Buffering': 'no'
     });
     delete masterState.serverNowMs;
-    res.write(`data: ${JSON.stringify({ type: 'SYNC', sourceDeviceId: 'SERVER_INIT', state: masterState, ts: Date.now() })}\n\n`);
-    sseClients.add(res);
+    const redactedInitial = redactStateForClient(masterState, authSession);
+    res.write(`data: ${JSON.stringify({ type: 'SYNC', sourceDeviceId: 'SERVER_INIT', state: redactedInitial, ts: Date.now() })}\n\n`);
+    sseClients.set(res, { authSession });
     securityMetrics.activeSseConnections = sseClients.size;
     if (sseClients.size > securityMetrics.peakConcurrentSse) {
       securityMetrics.peakConcurrentSse = sseClients.size;
@@ -1515,15 +2692,30 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 2. Admin Concurrent Device Session Endpoint
+  // --------------------------------------------------------------------------
+  // 2. Admin Concurrent Device Session Endpoint (`POST /api/xyz-admin-session`)
+  //    Strictly requires a verified Admin JWT! Never mints tokens without auth.
+  // --------------------------------------------------------------------------
   if (pathname === '/api/xyz-admin-session' && req.method === 'POST') {
+    const adminSess = extractAuthSession(req, 'ADMIN');
+    if (!adminSess || !adminSess.isAdmin) {
+      securityMetrics.unauthorizedAttempts++;
+      sendJsonResponse(req, res, 401, {
+        ok: false,
+        valid: false,
+        error: 'Unauthorized: Valid Admin JWT token is required for admin session management.'
+      });
+      return;
+    }
+
     try {
       const data = await readJsonBody(req);
-      const action = data.action || 'CHECK';
-      const loginId = String(data.loginId || '').trim().toLowerCase();
-      const isSuperAdmin = Boolean(data.isSuperAdmin);
-      const sessionId = String(data.sessionId || '').trim();
-      const deviceId = String(data.deviceId || '').trim();
+      const action = String(data.action || 'CHECK').toUpperCase();
+      // Derive identity & role strictly from verified Admin JWT, never from client body
+      const loginId = String(adminSess.loginId || adminSess.sub || '').toLowerCase();
+      const isSuperAdmin = Boolean(adminSess.isMasterSuperAdmin || adminSess.role === 'SUPER_ADMIN');
+      const sessionId = String(data.sessionId || adminSess.sessionId || '').trim();
+      const deviceId = String(data.deviceId || 'ADM-DEV').trim();
       const bucketKey = isSuperAdmin ? 'SUPER_ADMIN_POOL' : `ROLE_${loginId}`;
       const maxDevices = isSuperAdmin ? 5 : 30;
 
@@ -1536,6 +2728,16 @@ const server = http.createServer(async (req, res) => {
       }
 
       let list = masterState.adminActiveSessions[bucketKey];
+
+      if (action === 'LOGOUT') {
+        if (adminSess.jti) revokeTokenJti(adminSess.jti);
+        masterState.adminActiveSessions[bucketKey] = list.filter(s => s && s.sessionId !== sessionId);
+        scheduleSaveStateToDb(100);
+        sendJsonResponse(req, res, 200, { ok: true, valid: false }, {
+          'Set-Cookie': clearCookieHeader('xyz_admin_token', req)
+        });
+        return;
+      }
 
       if (action === 'LOGIN') {
         masterState.evictedAdminSessions = masterState.evictedAdminSessions.filter(id => id !== sessionId);
@@ -1558,39 +2760,16 @@ const server = http.createServer(async (req, res) => {
             masterState.evictedAdminSessions.unshift(oldest.sessionId);
           }
         }
-        if (masterState.evictedAdminSessions.length > 200) {
-          masterState.evictedAdminSessions = masterState.evictedAdminSessions.slice(0, 200);
-        }
         masterState.adminActiveSessions[bucketKey] = list;
         scheduleSaveStateToDb(100);
-
-        const jwtToken = signJwt({
-          sub: loginId,
-          loginId,
-          role: isSuperAdmin ? 'SUPER_ADMIN' : 'ROLE_ADMIN',
-          isAdmin: true,
-          sessionId
-        }, 86400 * 3);
 
         sendJsonResponse(req, res, 200, {
           ok: true,
           valid: true,
-          token: jwtToken,
           activeCount: list.length,
           maxDevices,
           evictedSessionIds: evictedNow,
           sessions: list
-        }, {
-          'Set-Cookie': `xyz_admin_token=${encodeURIComponent(jwtToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${86400 * 3}`
-        });
-        return;
-      }
-
-      if (action === 'LOGOUT') {
-        masterState.adminActiveSessions[bucketKey] = list.filter(s => s && s.sessionId !== sessionId);
-        scheduleSaveStateToDb(100);
-        sendJsonResponse(req, res, 200, { ok: true }, {
-          'Set-Cookie': 'xyz_admin_token=; Path=/; HttpOnly; Max-Age=0'
         });
         return;
       }
@@ -1604,7 +2783,7 @@ const server = http.createServer(async (req, res) => {
           list.push({
             sessionId,
             loginId,
-            deviceId: deviceId || 'ADM-DEV',
+            deviceId,
             isSuperAdmin,
             createdAt: Date.now(),
             lastSeenAt: Date.now()
@@ -1619,12 +2798,14 @@ const server = http.createServer(async (req, res) => {
         maxDevices
       });
     } catch (e) {
-      sendJsonResponse(req, res, 400, { error: 'Invalid JSON' });
+      sendJsonResponse(req, res, 400, { ok: false, error: 'Invalid JSON' });
     }
     return;
   }
 
-  // 3. Fast Admin Auth Status Check Endpoint
+  // --------------------------------------------------------------------------
+  // 3. Fast Admin Auth Status Check Endpoint (`GET /api/xyz-auth-status`)
+  // --------------------------------------------------------------------------
   if (pathname === '/api/xyz-auth-status' && req.method === 'GET') {
     const isConfigured = Boolean(
       masterState.superAdminConfigured &&
@@ -1638,40 +2819,62 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 4. REST State Get / Merge Endpoint
+  // --------------------------------------------------------------------------
+  // 4. REST State Get / Merge Endpoint (`/api/xyz-state`)
+  //    Enforces Role-Scoped Redaction on GET and Verified JWT Auth on POST!
+  // --------------------------------------------------------------------------
   if (pathname === '/api/xyz-state' || pathname === '/xyz_games_state.json') {
+    const authSession = extractAuthSession(req);
+
     if (req.method === 'GET') {
       delete masterState.serverNowMs;
-      sendJsonResponse(req, res, 200, masterState);
+      const redacted = redactStateForClient(masterState, authSession);
+      sendJsonResponse(req, res, 200, redacted);
       return;
     }
+
     if (req.method === 'POST' || req.method === 'PUT') {
       try {
         const incoming = await readJsonBody(req);
-        const isAdminPush = Boolean(
+        const clientClaimedAdmin = Boolean(
           incoming && (incoming.isAdminPush === true || req.headers['x-xyz-source'] === 'ADMIN_PANEL')
         );
+        const verifiedAdminSess = extractAuthSession(req, 'ADMIN');
+
+        // Reject forged admin state pushes that claim ADMIN_PANEL / isAdminPush without a valid Admin JWT!
+        if (clientClaimedAdmin && (!verifiedAdminSess || !verifiedAdminSess.isAdmin)) {
+          securityMetrics.unauthorizedAttempts++;
+          sendJsonResponse(req, res, 401, {
+            ok: false,
+            error: 'Unauthorized: Forged or unauthenticated Admin state push rejected. Valid Admin JWT required.'
+          });
+          return;
+        }
+
+        const isAdminPush = Boolean(verifiedAdminSess && verifiedAdminSess.isAdmin);
         const sourceDeviceId = (incoming && incoming.sourceDeviceId) ? String(incoming.sourceDeviceId) : '';
         const unwrapped = (incoming && incoming.state && typeof incoming.state === 'object')
           ? incoming.state
           : incoming;
 
-        masterState = mergeServerState(masterState, unwrapped, isAdminPush);
+        masterState = mergeServerState(masterState, unwrapped, isAdminPush, authSession);
         delete masterState.serverNowMs;
         scheduleSaveStateToDb(100);
         broadcastStateToSseClients(sourceDeviceId, isAdminPush);
 
-        sendJsonResponse(req, res, 200, masterState);
+        sendJsonResponse(req, res, 200, redactStateForClient(masterState, authSession));
       } catch (err) {
-        sendJsonResponse(req, res, 400, { error: 'Invalid JSON payload' });
+        sendJsonResponse(req, res, 400, { ok: false, error: 'Invalid JSON payload' });
       }
       return;
     }
   }
 
-  // 5. Serve Static HTML & SPA Routes
+  // --------------------------------------------------------------------------
+  // 5. Serve Static HTML & SPA Routes (with Sensitive File Denylist)
+  // --------------------------------------------------------------------------
   let targetFile = 'index.html';
-  if (pathname === '/admin' || pathname === '/admin/' || pathname === '/admin_panel.html') {
+  if (pathname === '/admin' || pathname === '/admin/' || pathname === '/admin_panel.html' || pathname === '/super_admin_panel.html') {
     targetFile = 'admin_panel.html';
   } else if (pathname === '/' || pathname === '/index.html' || pathname === '/register' || pathname === '/register/' || pathname === '/signup' || pathname === '/login') {
     targetFile = 'index.html';
@@ -1683,7 +2886,21 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  if (targetFile.endsWith('.sqlite') || targetFile.endsWith('.sqlite-wal') || targetFile.endsWith('.sqlite-shm') || targetFile.endsWith('.key') || targetFile === 'xyz_cloud_state.json') {
+  const lowerTarget = targetFile.toLowerCase();
+  if (
+    lowerTarget.endsWith('.sqlite') ||
+    lowerTarget.endsWith('.sqlite-wal') ||
+    lowerTarget.endsWith('.sqlite-shm') ||
+    lowerTarget.endsWith('.key') ||
+    lowerTarget.endsWith('.env') ||
+    lowerTarget.endsWith('.sql') ||
+    lowerTarget.endsWith('.yaml') ||
+    lowerTarget === 'xyz_cloud_state.json' ||
+    lowerTarget === 'server.js' ||
+    lowerTarget === 'database.js' ||
+    lowerTarget === 'security.js' ||
+    lowerTarget === 'package.json'
+  ) {
     res.writeHead(403, { 'Content-Type': 'text/plain' });
     res.end('Forbidden');
     return;
@@ -1738,9 +2955,10 @@ process.on('SIGINT', gracefulShutdown);
 if (require.main === module) {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`=====================================================================`);
-    console.log(`🚀 XYZ Games Production Server v13.0 (20,000+ DAU Ready) on port ${PORT}`);
-    console.log(`🗄️  SQLite3 WAL DB : ${DB_FILE}`);
-    console.log(`🔒 Security Engine: scrypt + JWT + Rate Limiter + Anti-Tamper Guard`);
+    console.log(`🚀 XYZ Games Production Server v14.0 (20,000+ DAU Ready) on port ${PORT}`);
+    console.log(`🗄️  SQLite3 WAL DB : ${DB_FILE} (Integer Paise ACID Ledger)`);
+    console.log(`🔒 Security Engine: scrypt + Purpose-Bound JWT + Role Redaction`);
+    console.log(`🎰 WinGo Fairness : HMAC-SHA256 Commit-Reveal CSPRNG`);
     console.log(`📱 Customer Webapp : http://localhost:${PORT}/`);
     console.log(`🛡️  Super Admin     : http://localhost:${PORT}/admin`);
     console.log(`📊 Health & DB API : http://localhost:${PORT}/api/health`);
@@ -1748,4 +2966,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { server };
+module.exports = { server, getServerSlotUtcClock, settleWingoPeriodOnce };

@@ -27703,7 +27703,7 @@ function generateGenuineQrMatrix(text) {
     provider: 'AUTO_SERVER',
     endpointUrl: '',
     supabaseUrl: 'https://acpzrkazjoeylyamdrrq.supabase.co',
-    supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc',
+    supabaseAnonKey: '',
     pollIntervalMs: 3000
   };
 
@@ -28073,7 +28073,7 @@ function generateGenuineQrMatrix(text) {
   function buildCloudRequestInfo(cfg, method, bodyObj) {
     const prov = String(cfg.provider || 'AUTO_SERVER').toUpperCase();
     const sbUrl = String(cfg.supabaseUrl || cfg.endpointUrl || 'https://acpzrkazjoeylyamdrrq.supabase.co').trim().replace(/\/+$/, '');
-    const sbKey = String(cfg.supabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc').trim();
+    const sbKey = String(cfg.supabaseAnonKey || '').trim();
     const dev = window.getXyzDeviceInfo();
 
     if (prov === 'SUPABASE' || (window.location.protocol === 'file:' && sbUrl.includes('.supabase.co')) || (serverApiAvailable === false && sbUrl.includes('.supabase.co'))) {
@@ -32689,6 +32689,199 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ CUSTOMER V13 FULL PRODUCTION FIXES === -->
+
+
+<!-- === START XYZ CUSTOMER V14 SERVER-AUTHORITATIVE AUTH & ATOMIC SYNC === -->
+<script>
+(function() {
+  const XYZ_USER_JWT_KEY = 'XYZ_CUSTOMER_JWT_TOKEN_V12';
+  const XYZ_STATE_KEY = 'XYZ_GAMES_SHARED_STATE_V1';
+  const XYZ_TAB_SESSION_KEY = 'XYZ_TAB_USER_AUTH_SESSION_V8';
+  const XYZ_LOCAL_SESS_KEY = 'XYZ_ACTIVE_AUTH_SESSION_V1';
+
+  // Ensure all /api/ fetch calls include credentials: 'same-origin' and Bearer token
+  const _origFetchV14 = window.fetch;
+  if (typeof _origFetchV14 === 'function') {
+    window.fetch = function(input, init) {
+      try {
+        const urlStr = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        if (urlStr.includes('/api/')) {
+          init = Object.assign({ credentials: 'same-origin' }, init || {});
+          const headers = new Headers(init.headers || {});
+          const jwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_USER_JWT_KEY)) ||
+                      (window.localStorage && window.localStorage.getItem(XYZ_USER_JWT_KEY));
+          if (jwt && !headers.has('Authorization')) {
+            headers.set('Authorization', 'Bearer ' + jwt);
+          }
+          init.headers = headers;
+        }
+      } catch (e) {}
+      return _origFetchV14.call(this, input, init);
+    };
+  }
+
+  function showV14AuthBanner(msg, isSuccess) {
+    const el = document.getElementById('authInlineAlert');
+    if (!el) return;
+    if (!msg) {
+      el.style.display = 'none';
+      el.textContent = '';
+      return;
+    }
+    el.style.display = 'block';
+    el.style.background = isSuccess ? 'rgba(16, 185, 129, 0.14)' : 'rgba(239, 68, 68, 0.14)';
+    el.style.border = isSuccess ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(239, 68, 68, 0.4)';
+    el.style.color = isSuccess ? '#10b981' : '#ef4444';
+    el.textContent = msg;
+  }
+
+  function applyAuthenticatedCustomerSessionV14(data, idRaw) {
+    if (!data || !data.user) return;
+    if (data.token) {
+      try {
+        if (window.sessionStorage) window.sessionStorage.setItem(XYZ_USER_JWT_KEY, data.token);
+        if (window.localStorage) window.localStorage.setItem(XYZ_USER_JWT_KEY, data.token);
+      } catch (e) {}
+    }
+    const u = data.user;
+    const sessObj = {
+      userId: u.userId,
+      identity: u.identity || idRaw,
+      username: u.username,
+      referralCode: u.referralCode || ('XYZ' + String(u.userId).replace(/[^0-9]/g, '')),
+      loggedInAt: Date.now()
+    };
+    window.__xyzTabSessionMem = sessObj;
+    try {
+      if (window.sessionStorage) {
+        window.sessionStorage.setItem(XYZ_TAB_SESSION_KEY, JSON.stringify(sessObj));
+        window.sessionStorage.setItem(XYZ_LOCAL_SESS_KEY, JSON.stringify(sessObj));
+      }
+      if (window.localStorage) {
+        window.localStorage.setItem(XYZ_LOCAL_SESS_KEY, JSON.stringify(sessObj));
+      }
+    } catch (e) {}
+
+    let st = {};
+    try {
+      const raw = window.__xyzSafeStorage.getItem(XYZ_STATE_KEY);
+      if (raw) st = JSON.parse(raw) || {};
+    } catch (e) {}
+
+    if (data.state && typeof data.state === 'object') {
+      st = window.mergeXyzMultiDeviceState ? window.mergeXyzMultiDeviceState(st, data.state) : Object.assign({}, st, data.state);
+    }
+    st.activeUserId = u.userId;
+    st.username = u.username;
+    st.userIdOrEmail = u.identity || idRaw;
+    st.balance = Number(u.cashBalanceInr || 0);
+    st.promoBalanceInr = Number(u.promoBalanceInr || 0);
+    st.isLoggedIn = true;
+
+    try {
+      window.__isApplyingRemoteCloudState = true;
+      window.__xyzSafeStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
+    } catch (e) {
+    } finally {
+      window.__isApplyingRemoteCloudState = false;
+    }
+
+    window.__lastForceLogoutWasBlocked = false;
+    window.__lastLoggedInUserIdV11 = u.userId;
+    showV14AuthBanner('', true);
+    if (typeof window.switchXyzView === 'function') {
+      window.switchXyzView('homepage');
+    }
+    if (typeof window.syncAllXyzScreens === 'function') {
+      window.syncAllXyzScreens();
+    }
+  }
+
+  // Server-authoritative Customer Registration
+  const _origRegisterV13 = window.handleXyzUserRegister;
+  window.handleXyzUserRegister = async function() {
+    if (window.location.protocol !== 'file:') {
+      const idRaw = (document.getElementById('regIdentityInput')?.value || '').trim();
+      const pwdRaw = document.getElementById('regPasswordInput')?.value || '';
+      const cnfRaw = document.getElementById('regConfirmPasswordInput')?.value || '';
+      const invRaw = (document.getElementById('regInviteCodeInput')?.value || '').trim().toUpperCase();
+
+      if (!idRaw) {
+        showV14AuthBanner('⚠️ Please enter your mobile number or email address.', false);
+        return;
+      }
+      if (!pwdRaw || pwdRaw.length < 4) {
+        showV14AuthBanner('⚠️ Password must be at least 4 characters.', false);
+        return;
+      }
+      if (pwdRaw !== cnfRaw) {
+        showV14AuthBanner('⚠️ Confirm Password does not match your password.', false);
+        return;
+      }
+      if (!invRaw) {
+        showV14AuthBanner('⚠️ Invite Code is required! Registration cannot proceed without an Invite Code.', false);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identity: idRaw, password: pwdRaw, inviteCode: invRaw })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showV14AuthBanner('❌ ' + (data.error || 'Registration failed.'), false);
+          return;
+        }
+        applyAuthenticatedCustomerSessionV14(data, idRaw);
+        return;
+      } catch (e) {}
+    }
+    if (typeof _origRegisterV13 === 'function') {
+      return await _origRegisterV13();
+    }
+  };
+
+  // Server-authoritative Customer Login (works with scrypt passwordHash & redacted state)
+  const _origLoginV13 = window.handleXyzUserLogin;
+  window.handleXyzUserLogin = async function() {
+    const idRaw = (document.getElementById('loginIdentityInput')?.value || '').trim();
+    const pwdRaw = document.getElementById('loginPasswordInput')?.value || '';
+    if (!idRaw) {
+      showV14AuthBanner('⚠️ Please enter your registered Mobile Number, Email, or User ID.', false);
+      return;
+    }
+    if (!pwdRaw) {
+      showV14AuthBanner('⚠️ Please enter your password.', false);
+      return;
+    }
+
+    if (window.location.protocol !== 'file:') {
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identity: idRaw, password: pwdRaw })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          const prefix = (res.status === 403 || data.blocked) ? '🚫 ' : '❌ ';
+          showV14AuthBanner(prefix + (data.error || 'Invalid login credentials.'), false);
+          return;
+        }
+        applyAuthenticatedCustomerSessionV14(data, idRaw);
+        return;
+      } catch (e) {}
+    }
+
+    if (typeof _origLoginV13 === 'function') {
+      return await _origLoginV13();
+    }
+  };
+})();
+</script>
+<!-- === END XYZ CUSTOMER V14 SERVER-AUTHORITATIVE AUTH & ATOMIC SYNC === -->
 
 </body>
 </html>

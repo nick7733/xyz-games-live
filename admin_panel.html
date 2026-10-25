@@ -5215,7 +5215,7 @@
             </div>
             <pre style="background:#0F172A;color:#E2E8F0;padding:14px;border-radius:10px;font-size:0.74rem;line-height:1.55;overflow-x:auto;"># Public Client Variables (Safe for Frontend)
 NEXT_PUBLIC_SUPABASE_URL="https://acpzrkazjoeylyamdrrq.supabase.co"
-NEXT_PUBLIC_SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc"
+NEXT_PUBLIC_SUPABASE_ANON_KEY="<YOUR_SUPABASE_ANON_KEY>"
 
 # Privileged Server-Only Secrets (Keep strictly in Edge Functions / Backend)
 SUPABASE_SERVICE_ROLE_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
@@ -18660,7 +18660,7 @@ function generateGenuineQrMatrix(text) {
     provider: 'AUTO_SERVER',
     endpointUrl: '',
     supabaseUrl: 'https://acpzrkazjoeylyamdrrq.supabase.co',
-    supabaseAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc',
+    supabaseAnonKey: '',
     pollIntervalMs: 3000
   };
 
@@ -18900,7 +18900,7 @@ function generateGenuineQrMatrix(text) {
   function buildAdminCloudReq(cfg, method, bodyObj) {
     const prov = String(cfg.provider || 'AUTO_SERVER').toUpperCase();
     const sbUrl = String(cfg.supabaseUrl || cfg.endpointUrl || 'https://acpzrkazjoeylyamdrrq.supabase.co').trim().replace(/\/+$/, '');
-    const sbKey = String(cfg.supabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc').trim();
+    const sbKey = String(cfg.supabaseAnonKey || '').trim();
     const myDevId = getOrCreateAdminDeviceId();
 
     if (prov === 'SUPABASE' || (window.location.protocol === 'file:' && sbUrl.includes('.supabase.co')) || (admServerApiAvailable === false && sbUrl.includes('.supabase.co'))) {
@@ -25779,6 +25779,203 @@ function generateGenuineQrMatrix(text) {
 })();
 </script>
 <!-- === END XYZ ADMIN V13 FULL PRODUCTION FIXES === -->
+
+
+<!-- === START XYZ ADMIN V14 SERVER-AUTHORITATIVE AUTH, RBAC & ATOMIC SYNC === -->
+<script>
+(function() {
+  const XYZ_ADMIN_JWT_KEY = 'XYZ_ADMIN_JWT_TOKEN_V12';
+  const XYZ_ADMIN_SESSION_KEY = 'XYZ_ACTIVE_ADMIN_AUTH_SESSION_V1';
+
+  // Ensure all /api/ fetch calls include credentials: 'same-origin' and Admin Bearer JWT
+  const _origAdmFetchV14 = window.fetch;
+  if (typeof _origAdmFetchV14 === 'function') {
+    window.fetch = function(input, init) {
+      try {
+        const urlStr = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+        if (urlStr.includes('/api/')) {
+          init = Object.assign({ credentials: 'same-origin' }, init || {});
+          const headers = new Headers(init.headers || {});
+          const jwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_JWT_KEY)) ||
+                      (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_JWT_KEY));
+          if (jwt && !headers.has('Authorization')) {
+            headers.set('Authorization', 'Bearer ' + jwt);
+          }
+          init.headers = headers;
+        }
+      } catch (e) {}
+      return _origAdmFetchV14.call(this, input, init);
+    };
+  }
+
+  // Guard pushAdminStateToCloudNow so unauthenticated gate views do not push state before login
+  const _origPushAdmCloud = window.pushAdminStateToCloudNow;
+  window.pushAdminStateToCloudNow = async function(forceImmediate) {
+    if (window.location.protocol !== 'file:') {
+      const jwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_JWT_KEY)) ||
+                  (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_JWT_KEY));
+      if (!jwt && !loggedInAdminAccount) {
+        return;
+      }
+    }
+    if (typeof _origPushAdmCloud === 'function') {
+      return await _origPushAdmCloud(forceImmediate);
+    }
+  };
+
+  function showV14GateErr(msg) {
+    const errEl = document.getElementById('admAuthErrorBanner');
+    if (!errEl) return;
+    errEl.style.display = msg ? 'block' : 'none';
+    errEl.textContent = msg || '';
+  }
+
+  function applyAuthenticatedAdminSessionV14(data) {
+    if (!data || !data.admin) return;
+    if (data.token) {
+      try {
+        if (window.sessionStorage) window.sessionStorage.setItem(XYZ_ADMIN_JWT_KEY, data.token);
+        if (window.localStorage) window.localStorage.setItem(XYZ_ADMIN_JWT_KEY, data.token);
+      } catch (e) {}
+    }
+    if (data.state && typeof data.state === 'object') {
+      db = window.mergeXyzMultiDeviceState ? window.mergeXyzMultiDeviceState(db, data.state) : Object.assign({}, db, data.state);
+    }
+    const adm = data.admin;
+    loggedInAdminAccount = adm;
+    window.__currentAdminSessionId = data.sessionId || ('ASESS-' + Date.now());
+    activeAdminRole = (adm.isMasterSuperAdmin === true) ? 'SUPER_ADMIN' : (adm.roleKey || 'CUSTOM_ROLE');
+    currentAdminPage = typeof window.getDefaultPageForAdminAccount === 'function'
+      ? window.getDefaultPageForAdminAccount(adm)
+      : 'dashboard';
+
+    const sessPayload = JSON.stringify({
+      loginId: adm.loginId,
+      adminId: adm.adminId,
+      username: adm.username,
+      roleKey: adm.roleKey,
+      isMasterSuperAdmin: Boolean(adm.isMasterSuperAdmin),
+      sessionId: window.__currentAdminSessionId,
+      ts: Date.now()
+    });
+    try {
+      if (window.sessionStorage) window.sessionStorage.setItem(XYZ_ADMIN_SESSION_KEY, sessPayload);
+      if (window.localStorage) window.localStorage.setItem(XYZ_ADMIN_SESSION_KEY, sessPayload);
+      window.__xyzSafeStorage.setItem(XYZ_ADMIN_SESSION_KEY, sessPayload);
+    } catch (e) {}
+
+    showV14GateErr('');
+    saveAdminDb();
+    if (typeof window.syncTopbarAndShellForActiveAdmin === 'function') window.syncTopbarAndShellForActiveAdmin();
+    if (typeof renderSidebarTree === 'function') renderSidebarTree('');
+    if (typeof renderCurrentAdminView === 'function') renderCurrentAdminView();
+  }
+
+  // Server-authoritative First-Time Super Admin Bootstrap (/api/auth/admin-bootstrap)
+  const _origBootstrapV13 = window.completeFirstTimeSuperAdminSetup;
+  window.completeFirstTimeSuperAdminSetup = async function() {
+    if (window.location.protocol !== 'file:') {
+      const name = (document.getElementById('setupSaNameInput')?.value || '').trim() || 'Super Admin';
+      const loginId = (document.getElementById('setupSaLoginIdInput')?.value || '').trim();
+      const pwd = (document.getElementById('setupSaPwdInput')?.value || '').trim();
+      const confPwd = (document.getElementById('setupSaConfPwdInput')?.value || '').trim();
+
+      if (!loginId || loginId.length < 3) {
+        showV14GateErr('⚠️ Please enter a Super Admin Login ID (minimum 3 characters).');
+        return;
+      }
+      if (!pwd || pwd.length < 4) {
+        showV14GateErr('⚠️ Please enter a Super Admin Password (minimum 4 characters).');
+        return;
+      }
+      if (pwd !== confPwd) {
+        showV14GateErr('⚠️ Confirm Password does not match your Super Admin Password.');
+        return;
+      }
+
+      try {
+        const allFeatKeys = Array.isArray(window.ADMIN_FEATURE_CATALOG) ? window.ADMIN_FEATURE_CATALOG.map(f => f.key) : ['ALL'];
+        const res = await fetch('/api/auth/admin-bootstrap', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: name,
+            loginId,
+            password: pwd,
+            allowedFeatures: allFeatKeys
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showV14GateErr('❌ ' + (data.error || 'Failed to initialize Super Admin.'));
+          return;
+        }
+        applyAuthenticatedAdminSessionV14(data);
+        showAdmToast(`👑 Welcome, ${name}! Super Admin ID "${loginId}" is now set up and authenticated.`);
+        return;
+      } catch (e) {}
+    }
+    if (typeof _origBootstrapV13 === 'function') {
+      return await _origBootstrapV13();
+    }
+  };
+
+  // Server-authoritative Admin Login (/api/admin/login)
+  const _origSubmitGateV13 = window.submitAdminGateLogin;
+  window.submitAdminGateLogin = async function() {
+    const loginId = (document.getElementById('gateLoginIdInput')?.value || '').trim();
+    const pwd = (document.getElementById('gateLoginPwdInput')?.value || '').trim();
+    if (!loginId || !pwd) {
+      showV14GateErr('⚠️ Please enter both your Admin Login ID and Password.');
+      return;
+    }
+
+    if (window.location.protocol !== 'file:') {
+      try {
+        const res = await fetch('/api/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            loginId,
+            password: pwd,
+            deviceId: (window.localStorage && window.localStorage.getItem('XYZ_ADMIN_DEVICE_ID_V1')) || 'ADM-DEV'
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showV14GateErr('❌ ' + (data.error || 'Invalid Admin Login ID or Password.'));
+          return;
+        }
+        const pwEl = document.getElementById('gateLoginPwdInput');
+        if (pwEl) pwEl.value = '';
+        applyAuthenticatedAdminSessionV14(data);
+        showAdmToast(`✅ Logged in as ${data.admin.username} (Device ${data.activeCount || 1}/${data.maxDevices || 5})!`);
+        return;
+      } catch (e) {}
+    }
+
+    if (typeof _origSubmitGateV13 === 'function') {
+      return await _origSubmitGateV13();
+    }
+  };
+
+  // Server-authoritative Logout
+  const _origLogoutV13 = window.logoutAdminSessionToGate;
+  window.logoutAdminSessionToGate = function() {
+    try {
+      if (window.sessionStorage) window.sessionStorage.removeItem(XYZ_ADMIN_JWT_KEY);
+      if (window.localStorage) window.localStorage.removeItem(XYZ_ADMIN_JWT_KEY);
+      if (window.location.protocol !== 'file:') {
+        fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+      }
+    } catch (e) {}
+    if (typeof _origLogoutV13 === 'function') {
+      _origLogoutV13();
+    }
+  };
+})();
+</script>
+<!-- === END XYZ ADMIN V14 SERVER-AUTHORITATIVE AUTH, RBAC & ATOMIC SYNC === -->
 
 </body>
 </html>

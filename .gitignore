@@ -1,7 +1,24 @@
+# Node.js dependencies & logs
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment & Secret Files (NEVER commit to Git)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Runtime SQLite3 WAL Databases & Local State Snapshots
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-*.snap
-.xyz_jwt_secret.key
+xyz_cloud_state.json
+
+# OS & Editor files
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/

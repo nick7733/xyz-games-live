@@ -1,32 +1,29 @@
 {
-  "name": "xyz-games-production-server",
-  "version": "12.0.0",
-  "description": "XYZ Games — Production Backend, SQLite3 WAL Relational Database & Enterprise Security Engine for 20,000+ Daily Traffic",
+  "name": "xyz-games-platform",
+  "version": "14.0.0",
+  "description": "XYZ Games Production Full-Stack Platform — Customer Webapp, Super Admin Panel, Atomic Integer-Paise SQLite3 WAL + Supabase Engine, scrypt + Purpose-Bound JWT Security, and Provably Fair Commit-Reveal WinGo Engine (20,000+ DAU Ready)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js",
-    "serve": "node server.js",
-    "pm2:start": "pm2 start ecosystem.config.js --env production"
+    "dev": "node server.js",
+    "test": "node test_suite_v14.js"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
   "keywords": [
     "xyz-games",
     "wingo",
-    "lottery",
-    "uno",
-    "aviator",
     "ludo",
-    "quiz-game",
+    "uno",
+    "quiz",
+    "lottery",
+    "aviator",
     "admin-panel",
     "sqlite-wal",
-    "security",
-    "jwt",
-    "rate-limiter"
+    "supabase"
   ],
-  "author": "XYZ Games",
-  "license": "MIT",
-  "dependencies": {}
+  "author": "XYZ Games Engineering",
+  "license": "UNLICENSED",
+  "private": true
 }

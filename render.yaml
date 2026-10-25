@@ -2,32 +2,31 @@ services:
   - type: web
     name: xyz-games-production
     runtime: node
-    plan: starter
-    region: singapore
-    buildCommand: npm install
+    plan: standard
+    buildCommand: npm install --production
     startCommand: node server.js
     healthCheckPath: /api/health
     autoDeploy: true
+    disk:
+      name: xyz-sqlite-wal-data
+      mountPath: /var/data
+      sizeGB: 10
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 10000
-      - key: SUPABASE_URL
-        value: https://acpzrkazjoeylyamdrrq.supabase.co
-      - key: NEXT_PUBLIC_SUPABASE_URL
-        value: https://acpzrkazjoeylyamdrrq.supabase.co
-      - key: SUPABASE_ANON_KEY
-        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc
-      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
-        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTIxOTUsImV4cCI6MjEwODM4ODE5NX0.OES8EQ2pMUdsBKnZQtgp1M0KVHZOpeVVApbcfgNe1jc
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFjcHpya2F6am9leWx5YW1kcnJxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MjgxMjE5NSwiZXhwIjoyMTA4Mzg4MTk1fQ._6-EXphUoPv9sPJTsUPXPVHqP8PKL2xJVgRmmyuVdPg
-      - key: DATABASE_URL
-        value: postgresql://postgres:Luvupirate%4023@db.acpzrkazjoeylyamdrrq.supabase.co:5432/postgres
+        value: 4000
+      - key: XYZ_DATA_DIR
+        value: /var/data
       - key: JWT_SECRET
         generateValue: true
-      - key: WINGO_CSPRNG_HMAC_SECRET
+      - key: WINGO_MASTER_SEED
         generateValue: true
-      - key: PAYMENT_WEBHOOK_HMAC_SECRET
+      - key: WEBHOOK_HMAC_SECRET
         generateValue: true
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
