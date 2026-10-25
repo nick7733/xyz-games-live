@@ -18877,9 +18877,14 @@ function generateGenuineQrMatrix(text) {
       }
     }
     if (btn) {
-      const devs = getConnectedDevicesList();
+      const devs = typeof window.getAllIndiaUnifiedDevicesAndUsersList === 'function'
+        ? window.getAllIndiaUnifiedDevicesAndUsersList()
+        : getConnectedDevicesList();
       const onlineCnt = devs.filter(d => d.isOnlineNow).length;
-      btn.innerHTML = `🌐 India Sync (${onlineCnt} Online)`;
+      const nextTopText = `🌐 India Sync (${onlineCnt}/${devs.length})`;
+      btn.style.whiteSpace = 'nowrap';
+      btn.style.flexShrink = '0';
+      if (btn.textContent !== nextTopText) btn.textContent = nextTopText;
       if (typeof loggedInAdminAccount === 'object' && loggedInAdminAccount) {
         const canSee = Boolean(
           loggedInAdminAccount.isMasterSuperAdmin ||
@@ -19045,6 +19050,9 @@ function generateGenuineQrMatrix(text) {
   }
 
   function applyIncomingRemoteToAdmin(remoteSt, isInitialBootPull) {
+    if (typeof window.applyRemoteStateToAdminZeroFlicker === 'function') {
+      return window.applyRemoteStateToAdminZeroFlicker(remoteSt, isInitialBootPull);
+    }
     try {
       isAdminApplyingRemote = true;
       const oldFp = lastAdminMeaningfulFp || buildMeaningfulAdminDataFingerprint(db);
@@ -19458,6 +19466,9 @@ function generateGenuineQrMatrix(text) {
   };
 
   function initAdminSseStream() {
+    if (typeof window.reconnectAuthenticatedAdminSse === 'function') {
+      return window.reconnectAuthenticatedAdminSse();
+    }
     const cfg = window.getXyzCloudConfig();
     if (window.location.protocol === 'file:' && !cfg.endpointUrl) return;
     if (typeof window.EventSource !== 'function') return;
@@ -21505,11 +21516,7 @@ function generateGenuineQrMatrix(text) {
         delete db.connectedDevices[devId];
         return;
       }
-      // Auto-prune old stale ghost devices (> 90 seconds old and offline)
-      const age = now - Number(dev.lastSeenAt || 0);
-      if (age > 90000) {
-        delete db.connectedDevices[devId];
-      }
+      // Keep offline devices visible until Admin explicitly clicks Clear Offline Devices
     });
   }
   pruneGhostOfflineDevices();
@@ -21805,39 +21812,9 @@ function generateGenuineQrMatrix(text) {
   }
 
   function updateLiveDevicesTableInPlace() {
-    const devs = getLiveConnectedDevicesListV9();
-    const onlineCnt = devs.filter(d => d.isOnlineNow).length;
-    const topBtn = document.getElementById('topCloudSyncQuickBtn');
-    if (topBtn) {
-      topBtn.innerHTML = `🌐 India Sync (${onlineCnt} Online)`;
+    if (typeof window.refreshUnifiedCloudDevicesInPlace === 'function') {
+      return window.refreshUnifiedCloudDevicesInPlace();
     }
-    if (currentAdminPage !== 'cloud-devices') return;
-
-    // Do not clobber if Admin is actively interacting with a select dropdown inside the table
-    const activeEl = document.activeElement;
-    if (activeEl && activeEl.id && activeEl.id.startsWith('devViewSel-')) return;
-
-    const tbody = document.getElementById('admConnectedDevicesTbody');
-    if (tbody) {
-      // Preserve any custom selected values in dropdowns before updating
-      const savedSelections = {};
-      tbody.querySelectorAll('select[id^="devViewSel-"]').forEach(sel => {
-        savedSelections[sel.id] = sel.value;
-      });
-      tbody.innerHTML = renderConnectedDevicesRowsHtml(devs);
-      Object.keys(savedSelections).forEach(selId => {
-        const el = document.getElementById(selId);
-        if (el) el.value = savedSelections[selId];
-      });
-    }
-    const hdrCnt = document.getElementById('admConnectedDevicesHeaderCount');
-    if (hdrCnt) {
-      hdrCnt.textContent = `📱💻 3. Connected Mobiles & Laptops Across India (${devs.length} Devices Tracked • ${onlineCnt} Online)`;
-    }
-    const kpiTot = document.getElementById('admCloudKpiTotalDevs');
-    const kpiSub = document.getElementById('admCloudKpiOnlineSub');
-    if (kpiTot) kpiTot.textContent = `${devs.length} Devices`;
-    if (kpiSub) kpiSub.textContent = `${onlineCnt} Online Right Now`;
   }
 
   // Override renderAdminCloudDevicesPage with clean IDs and "Clear Offline Devices" button
@@ -22012,7 +21989,7 @@ function generateGenuineQrMatrix(text) {
     `;
   };
 
-  setInterval(updateLiveDevicesTableInPlace, 1500);
+  // Unified cloud devices interval is managed by window.refreshUnifiedCloudDevicesInPlace
 
   // ===========================================================================
   // 3. FIX WINGO CONTROLS, PERIOD NUMBER SYNC & MANUAL RESULT ENTRY (wingo-results)
@@ -25704,8 +25681,8 @@ function generateGenuineQrMatrix(text) {
               <select id="devViewSel-${d.deviceId}" class="form-select" style="width:115px;padding:4px 6px;font-size:0.72rem;">
                 ${viewOpts.map(vo => `<option value="${vo.k}" ${curV === vo.k ? 'selected' : ''}>${vo.l}</option>`).join('')}
               </select>
-              <button type="button" class="btn btn-primary btn-sm" onclick="window.remoteSwitchDeviceView('${d.deviceId}', 'devViewSel-${d.deviceId}')">🎯 Go</button>
-              <button type="button" class="btn btn-outline btn-sm" onclick="window.promptRemoteAlertForDevice('${d.deviceId}')">📢 Alert</button>
+              <button type="button" class="btn btn-primary btn-sm" onclick="window.remoteSwitchDeviceView('${d.deviceId}', 'devViewSel-${d.deviceId}', '${d.userId || ''}')">🎯 Go</button>
+              <button type="button" class="btn btn-outline btn-sm" onclick="window.promptRemoteAlertForDevice('${d.deviceId}', '${d.userId || ''}')">📢 Alert</button>
               ${d.userId && d.userId !== 'GUEST' ? `
                 <button type="button" class="btn btn-success btn-sm" onclick="window.remoteCreditDeviceUserBalance('${d.userId}', 500)">+₹500</button>
                 <button type="button" class="btn btn-outline btn-sm" onclick="openFullUserProfileModal('${d.userId}', 'OVERVIEW')">👤 360°</button>
@@ -25718,6 +25695,8 @@ function generateGenuineQrMatrix(text) {
       `;
     }).join('');
   }
+
+  let lastUnifiedDevsTableSig = '';
 
   const _origRenderAdminCloudDevicesPageV9 = window.renderAdminCloudDevicesPage;
   window.renderAdminCloudDevicesPage = function() {
@@ -25740,43 +25719,58 @@ function generateGenuineQrMatrix(text) {
     const tbody = temp.querySelector('#admConnectedDevicesTbody');
     if (tbody) {
       tbody.innerHTML = renderUnifiedIndiaDevicesRowsHtml(unifiedDevs);
+      lastUnifiedDevsTableSig = unifiedDevs.map(d => `${d.deviceId}:${d.userId}:${d.currentView}:${Number(d.balanceInr || 0).toFixed(2)}:${d.isOnlineNow ? 1 : 0}:${d.userStatus}`).join('|');
     }
 
     return temp.innerHTML;
   };
 
-  setInterval(() => {
+  window.refreshUnifiedCloudDevicesInPlace = function() {
     const unifiedDevs = window.getAllIndiaUnifiedDevicesAndUsersList();
     const onlineCnt = unifiedDevs.filter(d => d.isOnlineNow).length;
     const topBtn = document.getElementById('topCloudSyncQuickBtn');
     if (topBtn) {
-      topBtn.innerHTML = `🌐 India Sync (${unifiedDevs.length} Users / ${onlineCnt} Live)`;
-    }
-    if (currentAdminPage === 'cloud-devices') {
-      const activeEl = document.activeElement;
-      if (activeEl && activeEl.id && activeEl.id.startsWith('devViewSel-')) return;
-      const tbody = document.getElementById('admConnectedDevicesTbody');
-      if (tbody) {
-        const savedSelections = {};
-        tbody.querySelectorAll('select[id^="devViewSel-"]').forEach(sel => {
-          savedSelections[sel.id] = sel.value;
-        });
-        tbody.innerHTML = renderUnifiedIndiaDevicesRowsHtml(unifiedDevs);
-        Object.keys(savedSelections).forEach(selId => {
-          const el = document.getElementById(selId);
-          if (el) el.value = savedSelections[selId];
-        });
+      const nextTopText = `🌐 India Sync (${onlineCnt}/${unifiedDevs.length})`;
+      topBtn.style.whiteSpace = 'nowrap';
+      topBtn.style.flexShrink = '0';
+      if (topBtn.textContent !== nextTopText) {
+        topBtn.textContent = nextTopText;
       }
-      const hdrCnt = document.getElementById('admConnectedDevicesHeaderCount');
-      if (hdrCnt) {
-        hdrCnt.textContent = `📱💻 3. All Registered Users & Connected Devices Across India (${unifiedDevs.length} Total • ${onlineCnt} Online Now)`;
-      }
-      const kpiTot = document.getElementById('admCloudKpiTotalDevs');
-      const kpiSub = document.getElementById('admCloudKpiOnlineSub');
-      if (kpiTot) kpiTot.textContent = `${unifiedDevs.length} Users & Devices`;
-      if (kpiSub) kpiSub.textContent = `${onlineCnt} Online • ${(db.adminUsersList || []).length} Registered Users`;
     }
-  }, 1800);
+    if (currentAdminPage !== 'cloud-devices') return;
+    const activeEl = document.activeElement;
+    if (activeEl && activeEl.id && activeEl.id.startsWith('devViewSel-')) return;
+
+    const nextSig = unifiedDevs.map(d => `${d.deviceId}:${d.userId}:${d.currentView}:${Number(d.balanceInr || 0).toFixed(2)}:${d.isOnlineNow ? 1 : 0}:${d.userStatus}`).join('|');
+    const tbody = document.getElementById('admConnectedDevicesTbody');
+    if (tbody && nextSig !== lastUnifiedDevsTableSig) {
+      lastUnifiedDevsTableSig = nextSig;
+      const savedSelections = {};
+      tbody.querySelectorAll('select[id^="devViewSel-"]').forEach(sel => {
+        savedSelections[sel.id] = sel.value;
+      });
+      tbody.innerHTML = renderUnifiedIndiaDevicesRowsHtml(unifiedDevs);
+      Object.keys(savedSelections).forEach(selId => {
+        const el = document.getElementById(selId);
+        if (el) el.value = savedSelections[selId];
+      });
+    }
+    const hdrCnt = document.getElementById('admConnectedDevicesHeaderCount');
+    const nextHdrText = `📱💻 3. All Registered Users & Connected Devices Across India (${unifiedDevs.length} Total • ${onlineCnt} Online Now)`;
+    if (hdrCnt && hdrCnt.textContent !== nextHdrText) {
+      hdrCnt.textContent = nextHdrText;
+    }
+    const kpiTot = document.getElementById('admCloudKpiTotalDevs');
+    const kpiSub = document.getElementById('admCloudKpiOnlineSub');
+    const nextKpiTot = `${unifiedDevs.length} Users & Devices`;
+    const nextKpiSub = `${onlineCnt} Online • ${(db.adminUsersList || []).length} Registered Users`;
+    if (kpiTot && kpiTot.textContent !== nextKpiTot) kpiTot.textContent = nextKpiTot;
+    if (kpiSub && kpiSub.textContent !== nextKpiSub) kpiSub.textContent = nextKpiSub;
+  };
+
+  setInterval(() => {
+    window.refreshUnifiedCloudDevicesInPlace();
+  }, 2000);
 })();
 </script>
 <!-- === END XYZ ADMIN V13 FULL PRODUCTION FIXES === -->
@@ -25979,12 +25973,114 @@ function generateGenuineQrMatrix(text) {
 <!-- === END XYZ ADMIN V14 SERVER-AUTHORITATIVE AUTH, RBAC & ATOMIC SYNC === -->
 
 
-<!-- === START XYZ ADMIN V15 ZERO-FLICKER, LIVE CROSS-DEVICE SYNC & ATOMIC FINANCE FIXES === -->
+<!-- === START XYZ ADMIN V16 ZERO-FLICKER, AUTO-SESSION SYNC, LIVE CROSS-DEVICE & ATOMIC FINANCE FIXES === -->
 <script>
 (function() {
   const XYZ_ADMIN_JWT_KEY = 'XYZ_ADMIN_JWT_TOKEN_V12';
+  const XYZ_ADMIN_SESSION_KEY = 'XYZ_ACTIVE_ADMIN_AUTH_SESSION_V1';
+  const XYZ_ADMIN_SESSION_V5 = 'XYZ_ACTIVE_ADMIN_SESSION_V5';
 
-  // 1. Re-initialize Admin SSE Stream WITH Admin JWT token so server sends unredacted Admin state in real time!
+  // 1. Automatic Post-Deploy Admin JWT Session Sync (`/api/auth/session-sync`)
+  //    Ensures that if an Admin is already logged in via localStorage when Render redeploys or rotates JWT_SECRET,
+  //    the browser automatically obtains a valid server JWT and syncs state without failing with 401!
+  let isSyncingAdminJwt = false;
+  window.ensureValidAdminJwtSessionV16 = async function(forceRefresh) {
+    if (window.location.protocol === 'file:') return true;
+    if (isSyncingAdminJwt) return false;
+
+    let admAcc = loggedInAdminAccount;
+    if (!admAcc) {
+      try {
+        const raw = (window.sessionStorage && (window.sessionStorage.getItem(XYZ_ADMIN_SESSION_KEY) || window.sessionStorage.getItem(XYZ_ADMIN_SESSION_V5))) ||
+                    (window.localStorage && (window.localStorage.getItem(XYZ_ADMIN_SESSION_KEY) || window.localStorage.getItem(XYZ_ADMIN_SESSION_V5))) ||
+                    window.__xyzSafeStorage.getItem(XYZ_ADMIN_SESSION_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.loginId) admAcc = parsed;
+        }
+      } catch (e) {}
+    }
+    if (!admAcc || !admAcc.loginId) return false;
+
+    try {
+      isSyncingAdminJwt = true;
+      if (!forceRefresh) {
+        const curJwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_JWT_KEY)) ||
+                       (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_JWT_KEY));
+        if (curJwt) {
+          const checkRes = await fetch(['', 'api', 'auth/session'].join('/'), { cache: 'no-store' });
+          if (checkRes.ok) {
+            const checkData = await checkRes.json();
+            if (checkData && checkData.authenticated && checkData.session && checkData.session.type === 'ADMIN') {
+              return true;
+            }
+          }
+        }
+      }
+
+      const res = await fetch(['', 'api', 'auth/session-sync'].join('/'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-XYZ-Session-Sync': 'V16'
+        },
+        body: JSON.stringify({
+          type: 'ADMIN',
+          loginId: admAcc.loginId,
+          username: admAcc.username || 'Super Admin',
+          roleKey: admAcc.roleKey || 'SUPER_ADMIN',
+          isMasterSuperAdmin: Boolean(admAcc.isMasterSuperAdmin !== undefined ? admAcc.isMasterSuperAdmin : true),
+          sessionId: window.__currentAdminSessionId || admAcc.sessionId || ('ASESS-' + Date.now()),
+          localState: typeof db === 'object' ? db : null
+        })
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data && data.ok && data.token) {
+        try {
+          if (window.sessionStorage) window.sessionStorage.setItem(XYZ_ADMIN_JWT_KEY, data.token);
+          if (window.localStorage) window.localStorage.setItem(XYZ_ADMIN_JWT_KEY, data.token);
+        } catch (e) {}
+        if (data.admin) {
+          loggedInAdminAccount = Object.assign({}, admAcc, data.admin);
+        }
+        if (data.state && typeof data.state === 'object') {
+          window.applyRemoteStateToAdminZeroFlicker(data.state, true);
+        }
+        window.reconnectAuthenticatedAdminSse();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    } finally {
+      isSyncingAdminJwt = false;
+    }
+  };
+
+  // Automatically retry any 401 API call once after syncing the Admin JWT
+  const _origFetchPreV16 = window.fetch;
+  if (typeof _origFetchPreV16 === 'function') {
+    window.fetch = async function(input, init) {
+      const urlStr = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+      const res = await _origFetchPreV16.call(this, input, init);
+      if (res && res.status === 401 && urlStr.includes('/api/') && !urlStr.includes('/api/admin/login') && !urlStr.includes('/api/auth/session')) {
+        const healed = await window.ensureValidAdminJwtSessionV16(true);
+        if (healed) {
+          const retryInit = Object.assign({ credentials: 'same-origin' }, init || {});
+          const headers = new Headers(retryInit.headers || {});
+          const freshJwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_JWT_KEY)) ||
+                           (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_JWT_KEY));
+          if (freshJwt) headers.set('Authorization', 'Bearer ' + freshJwt);
+          retryInit.headers = headers;
+          return await _origFetchPreV16.call(this, input, retryInit);
+        }
+      }
+      return res;
+    };
+  }
+
+  // 2. Re-initialize Admin SSE Stream WITH Admin JWT token so server sends unredacted Admin state in real time!
   let activeAdminEventSource = null;
   window.reconnectAuthenticatedAdminSse = function() {
     if (window.location.protocol === 'file:') return;
@@ -26007,7 +26103,7 @@ function generateGenuineQrMatrix(text) {
           const payload = JSON.parse(ev.data);
           if (!payload || payload.sourceDeviceId === myDevId) return;
           if (payload.state && typeof payload.state === 'object') {
-            window.applyRemoteStateToAdminZeroFlicker(payload.state);
+            window.applyRemoteStateToAdminZeroFlicker(payload.state, false);
           }
         } catch (e) {}
       };
@@ -26017,9 +26113,11 @@ function generateGenuineQrMatrix(text) {
     } catch (e) {}
   };
 
-  // 2. Zero-Flicker State Application & Fingerprint Comparison
-  function computeStableAdminFingerprint(st) {
+  // 3. Page-Scoped Zero-Flicker State Application
+  //    Only re-renders the current page if data actually visible on `currentAdminPage` changed!
+  function computePageScopedFingerprint(st, pageId) {
     if (!st || typeof st !== 'object') return '';
+    const p = String(pageId || 'dashboard');
     const usersFp = (st.adminUsersList || [])
       .filter(Boolean)
       .map(u => `${u.userId}:${Number(u.cashBalanceInr || 0).toFixed(2)}:${Number(u.promoBalanceInr || 0).toFixed(2)}:${u.status}`)
@@ -26027,26 +26125,46 @@ function generateGenuineQrMatrix(text) {
       .join('|');
     const depsFp = (st.adminDeposits || [])
       .filter(Boolean)
-      .map(d => `${d.depositId}:${d.status}:${d.amountInr}`)
+      .map(d => `${d.depositId}:${d.status}:${d.amountInr}:${d.utr || d.utrNumber || ''}`)
       .sort()
       .join('|');
     const wdsFp = (st.adminWithdrawals || [])
       .filter(Boolean)
-      .map(w => `${w.withdrawalId}:${w.reviewStatus}:${w.payoutStatus}`)
+      .map(w => `${w.withdrawalId}:${w.reviewStatus}:${w.payoutStatus}:${w.requestedInr}`)
       .sort()
       .join('|');
     const promosFp = (st.adminPromotions || [])
       .filter(Boolean)
-      .map(p => `${p.code}:${p.status}:${p.claimedCount}`)
+      .map(pItem => `${pItem.code}:${pItem.status}:${pItem.claimedCount}`)
       .sort()
       .join('|');
-    const tksFp = (st.lotteryTickets || []).length;
-    const drawsFp = (st.lotteryDraws || []).filter(Boolean).map(d => `${d.drawId}:${d.status}`).join('|');
-    const betsFp = (st.myBets || []).length;
-    return `${Boolean(st.superAdminConfigured)}#${(st.staffAdmins || []).length}#${usersFp}#${depsFp}#${wdsFp}#${promosFp}#${tksFp}#${drawsFp}#${betsFp}`;
+
+    if (p === 'finance-deposits') {
+      return `DEP#${depsFp}`;
+    }
+    if (p === 'finance-withdrawals') {
+      return `WD#${wdsFp}`;
+    }
+    if (p.startsWith('users-')) {
+      return `USR#${usersFp}`;
+    }
+    if (p.startsWith('promo-')) {
+      return `PRM#${promosFp}`;
+    }
+    if (p === 'lottery-admin') {
+      const drawsFp = (st.lotteryDraws || []).filter(Boolean).map(d => `${d.drawId}:${d.status}`).join('|');
+      return `LOT#${(st.lotteryTickets || []).length}#${drawsFp}`;
+    }
+    if (p === 'betting-records') {
+      return `BET#${(st.myBets || []).length}#${(st.lotteryTickets || []).length}#${(st.unoHistory || []).length}#${(st.ludoHistory || []).length}#${(st.mathHistory || []).length}`;
+    }
+    if (p === 'cloud-devices') {
+      return 'CLOUD_DEVICES_IN_PLACE';
+    }
+    return `ALL#${usersFp}#${depsFp}#${wdsFp}#${promosFp}#${(st.lotteryTickets || []).length}`;
   }
 
-  let lastStableAdminFp = computeStableAdminFingerprint(typeof db === 'object' ? db : {});
+  let lastPageFpMap = {};
 
   function isAdminBusyWithAnyControl() {
     const a = document.activeElement;
@@ -26064,13 +26182,14 @@ function generateGenuineQrMatrix(text) {
     if (!remoteSt || typeof remoteSt !== 'object') return;
     // Never overwrite authenticated Admin db with an unauthenticated/redacted response!
     if (loggedInAdminAccount && Array.isArray(remoteSt.adminUsersList) && remoteSt.adminUsersList.length === 0 && (db.adminUsersList || []).length > 0 && !remoteSt.staffAdmins) {
+      window.ensureValidAdminJwtSessionV16(true);
       return;
     }
     try {
-      const prevFp = lastStableAdminFp || computeStableAdminFingerprint(db);
+      const activePage = currentAdminPage || 'dashboard';
+      const prevPageFp = lastPageFpMap[activePage] || computePageScopedFingerprint(db, activePage);
       const merged = window.mergeXyzMultiDeviceState ? window.mergeXyzMultiDeviceState(db, remoteSt, isInitialBootPull) : Object.assign({}, db, remoteSt);
 
-      // Ensure server-side deposits, withdrawals, users, bets, and promotions are always merged even if adminUpdatedAt on local is newer
       if (Array.isArray(remoteSt.adminDeposits) && remoteSt.adminDeposits.length > 0) {
         merged.adminDeposits = window.mergeArrayById(merged.adminDeposits, remoteSt.adminDeposits, 'depositId', true);
       }
@@ -26084,19 +26203,26 @@ function generateGenuineQrMatrix(text) {
       if (Array.isArray(remoteSt.adminPromotions) && remoteSt.adminPromotions.length > 0) {
         merged.adminPromotions = window.mergeArrayById(merged.adminPromotions, remoteSt.adminPromotions, 'code', true);
       }
+      if (remoteSt.connectedDevices && typeof remoteSt.connectedDevices === 'object') {
+        merged.connectedDevices = Object.assign({}, db.connectedDevices || {}, remoteSt.connectedDevices);
+      }
 
       db = merged;
       try {
         window.__xyzSafeStorage.setItem('XYZ_GAMES_SHARED_STATE_V1', JSON.stringify(db));
       } catch (e) {}
 
-      // Update topbar pending badges without re-rendering page
+      // Update topbar pending badges & unified India Sync count in place without touching layout
       const pendDep = (db.adminDeposits || []).filter(d => d && (d.status === 'PENDING' || d.status === 'UNDER_REVIEW' || d.status === 'PROCESSING')).length;
       const pendWd  = (db.adminWithdrawals || []).filter(w => w && (w.reviewStatus === 'PENDING' || w.reviewStatus === 'UNDER_REVIEW')).length;
       const depBadge = document.getElementById('topBadgePendingDep');
       const wdBadge  = document.getElementById('topBadgePendingWd');
       if (depBadge && depBadge.textContent !== String(pendDep)) depBadge.textContent = String(pendDep);
       if (wdBadge && wdBadge.textContent !== String(pendWd)) wdBadge.textContent = String(pendWd);
+
+      if (typeof window.refreshUnifiedCloudDevicesInPlace === 'function') {
+        window.refreshUnifiedCloudDevicesInPlace();
+      }
 
       if (!loggedInAdminAccount) {
         if (!isAdminBusyWithAnyControl() && typeof window.renderAdminAuthGate === 'function') {
@@ -26105,11 +26231,14 @@ function generateGenuineQrMatrix(text) {
         return;
       }
 
-      const nextFp = computeStableAdminFingerprint(db);
-      if (nextFp !== prevFp) {
-        lastStableAdminFp = nextFp;
-        // On cloud-devices page, in-place table updater already updates rows smoothly without rebuilding the entire page
-        if (currentAdminPage !== 'cloud-devices' && !isAdminBusyWithAnyControl()) {
+      if (activePage === 'cloud-devices') {
+        return;
+      }
+
+      const nextPageFp = computePageScopedFingerprint(db, activePage);
+      if (nextPageFp !== prevPageFp) {
+        lastPageFpMap[activePage] = nextPageFp;
+        if (!isAdminBusyWithAnyControl()) {
           const scrollY = window.scrollY;
           window.renderCurrentAdminView();
           window.scrollTo(0, scrollY);
@@ -26139,16 +26268,22 @@ function generateGenuineQrMatrix(text) {
 
   window.pushAdminStateToCloudNow = async function(forceImmediate) {
     if (window.location.protocol === 'file:') return;
-    const jwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_JWT_KEY)) ||
-                (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_JWT_KEY));
+    let jwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_JWT_KEY)) ||
+              (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_JWT_KEY));
+    if (!jwt && loggedInAdminAccount) {
+      await window.ensureValidAdminJwtSessionV16(true);
+      jwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_ADMIN_JWT_KEY)) ||
+            (window.localStorage && window.localStorage.getItem(XYZ_ADMIN_JWT_KEY));
+    }
     if (!jwt && !loggedInAdminAccount && !forceImmediate) return;
     try {
       db.adminUpdatedAt = Date.now();
-      lastStableAdminFp = computeStableAdminFingerprint(db);
+      const activePage = currentAdminPage || 'dashboard';
+      lastPageFpMap[activePage] = computePageScopedFingerprint(db, activePage);
       const cfg = window.getXyzCloudConfig ? window.getXyzCloudConfig() : {};
       const base = (cfg.endpointUrl && !cfg.endpointUrl.includes('.supabase.co')) ? cfg.endpointUrl.replace(/\/+$/, '') : '';
       const myDevId = (window.localStorage && window.localStorage.getItem('XYZ_ADMIN_DEVICE_ID_V1')) || 'ADM-DEV';
-      const res = await fetch((base || '') + ['', 'api', 'xyz-state'].join('/'), {
+      await fetch((base || '') + ['', 'api', 'xyz-state'].join('/'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -26160,22 +26295,79 @@ function generateGenuineQrMatrix(text) {
           state: db
         })
       });
-      if (res.ok) {
-        const updated = await res.json();
-        if (updated && typeof updated === 'object' && Array.isArray(updated.adminDeposits)) {
-          lastStableAdminFp = computeStableAdminFingerprint(db);
-        }
-      }
     } catch (e) {}
   };
 
-  // 3. Wire Admin Deposit Resolution (`resolveDepositRequest`), Withdrawal Resolution (`reviewWithdrawalRequest`),
-  //    Gift Code Management, and Remote Device Balance Credit to Dedicated Atomic Server Endpoints!
+  // 4. Cross-Device Remote Command Dispatch (Works for both DEV-... and IND-USR... rows across Mobile & Laptop!)
+  window.sendRemoteCommandToDevice = async function(targetDevId, actionType, payloadObj) {
+    if (!Array.isArray(db.remoteCommandsQueue)) db.remoteCommandsQueue = [];
+    const rawTarget = String(targetDevId || 'ALL').trim();
+    let resolvedUid = (payloadObj && payloadObj.targetUid) ? String(payloadObj.targetUid).trim() : '';
+
+    if (!resolvedUid && rawTarget !== 'ALL') {
+      if (db.connectedDevices && db.connectedDevices[rawTarget] && db.connectedDevices[rawTarget].userId && db.connectedDevices[rawTarget].userId !== 'GUEST') {
+        resolvedUid = db.connectedDevices[rawTarget].userId;
+      } else if (typeof window.getAllIndiaUnifiedDevicesAndUsersList === 'function') {
+        const found = window.getAllIndiaUnifiedDevicesAndUsersList().find(d => d && d.deviceId === rawTarget);
+        if (found && found.userId && found.userId !== 'GUEST') {
+          resolvedUid = found.userId;
+        }
+      }
+    }
+
+    const cmd = Object.assign({
+      cmdId: 'CMD-' + Date.now() + '-' + Math.floor(100 + Math.random() * 899),
+      targetDeviceId: rawTarget,
+      targetUid: resolvedUid || '',
+      action: actionType,
+      createdAt: Date.now()
+    }, payloadObj || {});
+
+    db.remoteCommandsQueue.unshift(cmd);
+    if (db.remoteCommandsQueue.length > 50) {
+      db.remoteCommandsQueue = db.remoteCommandsQueue.slice(0, 50);
+    }
+
+    appendAuditLog('REMOTE_DEVICE_COMMAND', `device:${rawTarget}`, actionType, JSON.stringify(payloadObj || {}), `Sent remote ${actionType} to ${rawTarget}`);
+    saveAdminDb(true);
+    await window.pushAdminStateToCloudNow(true);
+    showAdmToast(`📡 Sent remote "${actionType}" command to ${rawTarget === 'ALL' ? 'ALL connected mobiles & laptops' : (resolvedUid ? `${rawTarget} (${resolvedUid})` : rawTarget)}!`);
+  };
+
+  window.promptRemoteAlertForDevice = function(targetDevId, targetUid) {
+    const msgInput = document.getElementById('admRemoteBroadcastMsgInput');
+    const titleInput = document.getElementById('admRemoteBroadcastTitleInput');
+    const title = (titleInput && titleInput.value.trim()) ? titleInput.value.trim() : '📢 Live Admin Broadcast';
+    const msg = (msgInput && msgInput.value.trim()) ? msgInput.value.trim() : '🔥 Welcome! New Wingo & Lottery round is now live across all devices!';
+    window.sendRemoteCommandToDevice(targetDevId || 'ALL', 'ALERT_MODAL', {
+      title,
+      message: msg,
+      targetUid: targetUid || ''
+    });
+  };
+
+  window.remoteSwitchDeviceView = function(targetDevId, selectElId, targetUid) {
+    const sel = document.getElementById(selectElId) || document.getElementById('devViewSel-' + targetDevId);
+    const viewKey = (sel && sel.value) ? sel.value : 'homepage';
+    window.sendRemoteCommandToDevice(targetDevId || 'ALL', 'FORCE_VIEW', {
+      viewKey,
+      targetUid: targetUid || ''
+    });
+  };
+
+  // 5. Wire Admin Deposit Resolution, Withdrawal Resolution, Gift Code Management & Remote Device Credit
   const _origResolveDepositV14 = window.resolveDepositRequest;
   window.resolveDepositRequest = async function(depId, newStatus) {
-    if (typeof _origResolveDepositV14 === 'function') {
-      _origResolveDepositV14(depId, newStatus);
+    const dPre = (db.adminDeposits || []).find(x => x && x.depositId === depId);
+    let bonusInr = 0;
+    if (dPre && newStatus === 'CONFIRMED' && typeof window.getDepositBonusPctByMethodAndAmount === 'function') {
+      const hadPrior = (db.adminDeposits || []).some(
+        x => x && x.depositId !== depId && x.userId === dPre.userId && x.status === 'CONFIRMED'
+      );
+      const pct = window.getDepositBonusPctByMethodAndAmount(dPre.method || 'UPI', dPre.amountInr, dPre.usdtAmount, hadPrior);
+      bonusInr = +(Number(dPre.amountInr || 0) * (pct / 100)).toFixed(2);
     }
+
     if (window.location.protocol !== 'file:') {
       try {
         await fetch(['', 'api', 'admin/deposit-resolve'].join('/'), {
@@ -26184,10 +26376,15 @@ function generateGenuineQrMatrix(text) {
           body: JSON.stringify({
             depositId: depId,
             action: newStatus === 'CONFIRMED' ? 'CONFIRM' : 'REJECT',
+            bonusInr,
             reason: newStatus === 'CONFIRMED' ? 'Approved by Admin' : 'Rejected by Admin'
           })
         });
       } catch (e) {}
+    }
+
+    if (typeof _origResolveDepositV14 === 'function') {
+      _origResolveDepositV14(depId, newStatus);
     }
     await window.pushAdminStateToCloudNow(true);
     window.renderCurrentAdminView();
@@ -26204,8 +26401,21 @@ function generateGenuineQrMatrix(text) {
     const w = (db.adminWithdrawals || []).find(x => x && x.withdrawalId === wdId);
     if (!w || w.payoutStatus === 'PAID' || w.payoutStatus === 'REVERSED') return;
 
+    if (window.location.protocol !== 'file:') {
+      try {
+        await fetch(['', 'api', 'admin/withdraw-resolve'].join('/'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            withdrawalId: wdId,
+            action: newReviewStatus === 'APPROVED' ? 'APPROVE' : 'REJECT',
+            reason: newReviewStatus === 'APPROVED' ? 'Approved & Paid by Admin' : 'Rejected & Refunded by Admin'
+          })
+        });
+      } catch (e) {}
+    }
+
     const now = Date.now();
-    const oldSt = w.reviewStatus;
     w.reviewStatus = newReviewStatus;
     w.updatedAt = now;
 
@@ -26256,20 +26466,6 @@ function generateGenuineQrMatrix(text) {
       });
     }
 
-    if (window.location.protocol !== 'file:') {
-      try {
-        await fetch(['', 'api', 'admin/withdraw-resolve'].join('/'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            withdrawalId: wdId,
-            action: newReviewStatus === 'APPROVED' ? 'APPROVE' : 'REJECT',
-            reason: newReviewStatus === 'APPROVED' ? 'Approved & Paid by Admin' : 'Rejected & Refunded by Admin'
-          })
-        });
-      } catch (e) {}
-    }
-
     saveAdminDb(true);
     await window.pushAdminStateToCloudNow(true);
     window.renderCurrentAdminView();
@@ -26280,7 +26476,6 @@ function generateGenuineQrMatrix(text) {
     );
   };
 
-  // Wire Gift Code creation & deletion to /api/admin/gift-code
   const _origCreateGiftV14 = window.createGiftCardCodeAdmin;
   window.createGiftCardCodeAdmin = async function() {
     if (typeof _origCreateGiftV14 === 'function') {
@@ -26308,7 +26503,6 @@ function generateGenuineQrMatrix(text) {
     await window.pushAdminStateToCloudNow(true);
   };
 
-  // Wire Remote Device Balance Credit (+₹500 button in Live Devices) to /api/admin/wallet-adjust
   const _origRemoteCreditV14 = window.remoteCreditDeviceUserBalance;
   window.remoteCreditDeviceUserBalance = async function(userId, deltaInr) {
     if (typeof _origRemoteCreditV14 === 'function') {
@@ -26329,10 +26523,12 @@ function generateGenuineQrMatrix(text) {
         });
       } catch (e) {}
       await window.pushAdminStateToCloudNow(true);
+      if (typeof window.refreshUnifiedCloudDevicesInPlace === 'function') {
+        window.refreshUnifiedCloudDevicesInPlace();
+      }
     }
   };
 
-  // Track explicit manual mode selection by Admin so external Webapp slot doesn't override it
   const _origSelectManualModeV14 = window.selectAdminManualResultMode;
   window.selectAdminManualResultMode = function(modeKey) {
     window.__adminManuallySelectedWingoMode = true;
@@ -26341,13 +26537,13 @@ function generateGenuineQrMatrix(text) {
     }
   };
 
-  // Hook Admin Login & Bootstrap to reconnect authenticated SSE stream immediately
   const _origSubmitLoginV14 = window.submitAdminGateLogin;
   window.submitAdminGateLogin = async function() {
     await _origSubmitLoginV14();
     if (loggedInAdminAccount) {
+      await window.ensureValidAdminJwtSessionV16(false);
       window.reconnectAuthenticatedAdminSse();
-      window.pullAdminStateFromCloudNow(true);
+      await window.pullAdminStateFromCloudNow(true);
     }
   };
 
@@ -26356,17 +26552,19 @@ function generateGenuineQrMatrix(text) {
     await _origBootstrapSaV14();
     if (loggedInAdminAccount) {
       window.reconnectAuthenticatedAdminSse();
-      window.pushAdminStateToCloudNow(true);
+      await window.pushAdminStateToCloudNow(true);
     }
   };
 
-  // Start authenticated SSE if token already present
-  setTimeout(() => {
+  // On page boot, immediately verify/sync existing Admin session, pull latest state, and connect authenticated SSE!
+  setTimeout(async () => {
+    await window.ensureValidAdminJwtSessionV16(false);
     window.reconnectAuthenticatedAdminSse();
-  }, 500);
+    await window.pullAdminStateFromCloudNow(true);
+  }, 150);
 })();
 </script>
-<!-- === END XYZ ADMIN V15 ZERO-FLICKER, LIVE CROSS-DEVICE SYNC & ATOMIC FINANCE FIXES === -->
+<!-- === END XYZ ADMIN V16 ZERO-FLICKER, AUTO-SESSION SYNC, LIVE CROSS-DEVICE & ATOMIC FINANCE FIXES === -->
 
 </body>
 </html>

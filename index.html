@@ -28255,6 +28255,9 @@ function generateGenuineQrMatrix(text) {
   });
 
   function applyIncomingRemoteState(remoteSt) {
+    if (typeof window.applyRemoteStateToCustomerV15 === 'function') {
+      return window.applyRemoteStateToCustomerV15(remoteSt);
+    }
     try {
       isApplyingRemoteCloudState = true;
       window.__isApplyingRemoteCloudState = true;
@@ -28286,6 +28289,9 @@ function generateGenuineQrMatrix(text) {
   }
 
   function initSseStreamIfAvailable() {
+    if (typeof window.reconnectAuthenticatedCustomerSse === 'function') {
+      return window.reconnectAuthenticatedCustomerSse();
+    }
     const cfg = window.getXyzCloudConfig();
     if (window.location.protocol === 'file:' && !cfg.endpointUrl) return;
     if (typeof window.EventSource !== 'function') return;
@@ -28527,7 +28533,10 @@ function generateGenuineQrMatrix(text) {
         if (matchedUser.avatarId) stObj.avatarId = matchedUser.avatarId;
         if (matchedUser.avatarUrl) stObj.avatarUrl = matchedUser.avatarUrl;
       } else {
-        stObj.isLoggedIn = false;
+        stObj.activeUserId = sess.userId;
+        stObj.username = sess.username || stObj.username || 'Player';
+        stObj.userIdOrEmail = sess.identity || stObj.userIdOrEmail || '';
+        stObj.isLoggedIn = true;
       }
     } else {
       stObj.isLoggedIn = false;
@@ -30433,16 +30442,7 @@ function generateGenuineQrMatrix(text) {
       }
       st.connectedDevices[dev.deviceId] = devRecord;
 
-      if (window.localStorage) {
-        window.localStorage.setItem(XYZ_STATE_KEY, JSON.stringify(st));
-      }
-      if (customerBc) {
-        customerBc.postMessage({
-          type: 'HEARTBEAT',
-          sourceDeviceId: dev.deviceId,
-          device: devRecord
-        });
-      }
+      // Heartbeat presence is sent via lightweight /api/device/heartbeat without thrashing localStorage
     } catch (e) {}
   }
 
@@ -32684,8 +32684,7 @@ function generateGenuineQrMatrix(text) {
     } catch (e) {}
   }
 
-  setInterval(sendLightweightHeartbeatAndSyncBalance, 2000);
-  setTimeout(sendLightweightHeartbeatAndSyncBalance, 400);
+  // Handled by unified V16 pollDeviceHeartbeatAndCommandsV15
 })();
 </script>
 <!-- === END XYZ CUSTOMER V13 FULL PRODUCTION FIXES === -->
@@ -32884,7 +32883,7 @@ function generateGenuineQrMatrix(text) {
 <!-- === END XYZ CUSTOMER V14 SERVER-AUTHORITATIVE AUTH & ATOMIC SYNC === -->
 
 
-<!-- === START XYZ CUSTOMER V15 CROSS-DEVICE REMOTE CONTROL & ATOMIC DEPOSIT/WITHDRAW SYNC === -->
+<!-- === START XYZ CUSTOMER V16 AUTO-SESSION SYNC, CROSS-DEVICE REMOTE CONTROL & ATOMIC DEPOSIT/WITHDRAW SYNC === -->
 <script>
 (function() {
   const XYZ_USER_JWT_KEY = 'XYZ_CUSTOMER_JWT_TOKEN_V12';
@@ -32909,7 +32908,101 @@ function generateGenuineQrMatrix(text) {
     return window.__xyzTabSessionMem || null;
   }
 
-  // 1. Reconnect Customer SSE Stream with JWT token so server pushes scoped customer state + remote commands in real time
+  // 1. Automatic Post-Deploy Customer JWT Session Sync (`/api/auth/session-sync`)
+  let isSyncingCustomerJwt = false;
+  window.ensureValidCustomerJwtSessionV16 = async function(forceRefresh) {
+    if (window.location.protocol === 'file:') return true;
+    if (isSyncingCustomerJwt) return false;
+
+    const sess = getActiveCustomerSessV15();
+    let st = {};
+    try {
+      st = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
+    } catch (e) {}
+
+    const uid = (sess && sess.userId) || (st.isLoggedIn && st.activeUserId && st.activeUserId !== 'GUEST' ? st.activeUserId : '');
+    const ident = (sess && sess.identity) || st.userIdOrEmail || '';
+    const uname = (sess && sess.username) || st.username || 'Player';
+    if (!uid && !ident) return false;
+
+    try {
+      isSyncingCustomerJwt = true;
+      if (!forceRefresh) {
+        const curJwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_USER_JWT_KEY)) ||
+                       (window.localStorage && window.localStorage.getItem(XYZ_USER_JWT_KEY));
+        if (curJwt) {
+          const checkRes = await fetch(['', 'api', 'auth/session'].join('/'), { cache: 'no-store' });
+          if (checkRes.ok) {
+            const checkData = await checkRes.json();
+            if (checkData && checkData.authenticated && checkData.session && checkData.session.type === 'CUSTOMER') {
+              return true;
+            }
+          }
+        }
+      }
+
+      const userRec = (st.adminUsersList || []).find(u => u && u.userId === uid) ||
+                      (st.registeredAccounts || []).find(a => a && a.userId === uid) || null;
+
+      const res = await fetch(['', 'api', 'auth/session-sync'].join('/'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-XYZ-Session-Sync': 'V16'
+        },
+        body: JSON.stringify({
+          type: 'CUSTOMER',
+          userId: uid,
+          username: uname,
+          identity: ident,
+          cashBalanceInr: Number(st.balance || (userRec && userRec.cashBalanceInr) || 0),
+          userRecord: userRec
+        })
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (data && data.ok && data.token) {
+        try {
+          if (window.sessionStorage) window.sessionStorage.setItem(XYZ_USER_JWT_KEY, data.token);
+          if (window.localStorage) window.localStorage.setItem(XYZ_USER_JWT_KEY, data.token);
+        } catch (e) {}
+        if (data.state && typeof data.state === 'object') {
+          window.applyRemoteStateToCustomerV15(data.state);
+        }
+        window.reconnectAuthenticatedCustomerSse();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    } finally {
+      isSyncingCustomerJwt = false;
+    }
+  };
+
+  // Automatically retry any 401 API call once after syncing the Customer JWT
+  const _origCustFetchPreV16 = window.fetch;
+  if (typeof _origCustFetchPreV16 === 'function') {
+    window.fetch = async function(input, init) {
+      const urlStr = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+      const res = await _origCustFetchPreV16.call(this, input, init);
+      if (res && res.status === 401 && urlStr.includes('/api/') && !urlStr.includes('/api/auth/login') && !urlStr.includes('/api/auth/register') && !urlStr.includes('/api/auth/session')) {
+        const healed = await window.ensureValidCustomerJwtSessionV16(true);
+        if (healed) {
+          const retryInit = Object.assign({ credentials: 'same-origin' }, init || {});
+          const headers = new Headers(retryInit.headers || {});
+          const freshJwt = (window.sessionStorage && window.sessionStorage.getItem(XYZ_USER_JWT_KEY)) ||
+                           (window.localStorage && window.localStorage.getItem(XYZ_USER_JWT_KEY));
+          if (freshJwt) headers.set('Authorization', 'Bearer ' + freshJwt);
+          retryInit.headers = headers;
+          return await _origCustFetchPreV16.call(this, input, retryInit);
+        }
+      }
+      return res;
+    };
+  }
+
+  // 2. Reconnect Customer SSE Stream with JWT token so server pushes scoped customer state + remote commands in real time
   let activeCustomerEs = null;
   window.reconnectAuthenticatedCustomerSse = function() {
     if (window.location.protocol === 'file:') return;
@@ -32948,8 +33041,10 @@ function generateGenuineQrMatrix(text) {
     if (!Array.isArray(cmdList) || cmdList.length === 0) return;
     const dev = window.getXyzDeviceInfo ? window.getXyzDeviceInfo() : { deviceId: '' };
     const sess = getActiveCustomerSessV15();
+    let st = {};
+    try { st = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}'); } catch (e) {}
     const myDevId = String(dev.deviceId || '').trim().toUpperCase();
-    const myUid = String((sess && sess.userId) || '').trim().toUpperCase();
+    const myUid = String((sess && sess.userId) || st.activeUserId || '').trim().toUpperCase();
     const now = Date.now();
 
     cmdList.forEach(cmd => {
@@ -32963,8 +33058,8 @@ function generateGenuineQrMatrix(text) {
       const matchesMe = (
         tDev === 'ALL' ||
         (myDevId && tDev === myDevId) ||
-        (myUid && tUid && tUid === myUid) ||
-        (myUid && tDev === ('IND-' + myUid.replace(/[^A-Z0-9]/g, '')))
+        (myUid && myUid !== 'GUEST' && tUid && tUid === myUid) ||
+        (myUid && myUid !== 'GUEST' && tDev === ('IND-' + myUid.replace(/[^A-Z0-9]/g, '')))
       );
       if (!matchesMe) return;
 
@@ -33021,19 +33116,28 @@ function generateGenuineQrMatrix(text) {
       if (typeof window.checkCurrentUserForceLogoutOrBlock === 'function') {
         window.checkCurrentUserForceLogoutOrBlock(merged);
       }
-      if (typeof window.renderBalance === 'function') window.renderBalance();
-      if (typeof window.updateProfileNotificationBadges === 'function') window.updateProfileNotificationBadges();
+      try { if (typeof window.applyGlobalTheme === 'function') window.applyGlobalTheme(); } catch (e) {}
+      try { if (typeof window.renderLobbyBanners === 'function') window.renderLobbyBanners(false); } catch (e) {}
+      try { if (typeof window.renderBalance === 'function') window.renderBalance(); } catch (e) {}
+      try { if (typeof window.updateProfileNotificationBadges === 'function') window.updateProfileNotificationBadges(); } catch (e) {}
 
       const activeEl = document.activeElement;
       const isTyping = activeEl && ['INPUT', 'TEXTAREA', 'SELECT'].includes((activeEl.tagName || '').toUpperCase());
       const openModal = document.querySelector('.bet-popup-backdrop.show, .drawer-backdrop.show, .modal-backdrop.show');
       if (!isTyping && !openModal) {
         const curView = window.__xyzCurrentActiveView || 'homepage';
-        if (curView === 'deposit' && typeof window.renderDepositHistoryList === 'function') window.renderDepositHistoryList();
-        if (curView === 'withdraw' && typeof window.renderWithdrawPage === 'function') window.renderWithdrawPage();
-        if (curView === 'lottery' && typeof window.renderLottoAll === 'function') window.renderLottoAll();
-        if (curView === 'games' && typeof window.renderEverything === 'function') window.renderEverything(false);
-        if (curView === 'profile' && typeof window.renderProfilePage === 'function') window.renderProfilePage();
+        if (curView === 'deposit') {
+          if (typeof window.pickRandomGatewayCredentialsForDeposit === 'function') window.pickRandomGatewayCredentialsForDeposit(false);
+          if (typeof window.renderDepositHistoryList === 'function') window.renderDepositHistoryList();
+        }
+        else if (curView === 'withdraw' && typeof window.renderWithdrawPage === 'function') window.renderWithdrawPage();
+        else if (curView === 'lottery' && typeof window.renderLottoAll === 'function') window.renderLottoAll();
+        else if (curView === 'games' && typeof window.renderEverything === 'function') window.renderEverything(false);
+        else if (curView === 'cards' && typeof window.renderLobbyUI === 'function') window.renderLobbyUI();
+        else if (curView === 'contest' && typeof window.renderHubUI === 'function') window.renderHubUI();
+        else if (curView === 'math' && typeof window.renderMathLobbyUI === 'function') window.renderMathLobbyUI();
+        else if (curView === 'profile' && typeof window.renderProfilePage === 'function') window.renderProfilePage();
+        else if (curView === 'promo' && typeof window.__syncPromo === 'function') window.__syncPromo();
       }
     } catch (e) {
     } finally {
@@ -33060,7 +33164,7 @@ function generateGenuineQrMatrix(text) {
     } catch (e) {}
   };
 
-  // 2. Wire Customer Deposit Submission (`handleProceedToPayment`) to `POST /api/deposit/submit`
+  // 3. Wire Customer Deposit Submission (`handleProceedToPayment`) to `POST /api/deposit/submit`
   //    so deposits from ANY mobile device immediately appear in the Admin Panel!
   const _origProceedPaymentV14 = window.handleProceedToPayment;
   window.handleProceedToPayment = async function() {
@@ -33076,17 +33180,23 @@ function generateGenuineQrMatrix(text) {
 
     if (window.location.protocol !== 'file:') {
       try {
+        await window.ensureValidCustomerJwtSessionV16(false);
+        const sess = getActiveCustomerSessV15();
         const stPost = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
         const newDep = (stPost.adminDeposits || []).find(d => d && d.depositId && !beforeIds.has(d.depositId));
         if (newDep) {
+          const effectiveUid = (sess && sess.userId) || ( newDep.userId && newDep.userId !== 'GUEST' ? newDep.userId : 'UID-10001');
+          const effectiveUname = (sess && sess.username) || newDep.username || stPost.username || 'Player';
+          newDep.userId = effectiveUid;
+          newDep.username = effectiveUname;
           await fetch(['', 'api', 'deposit/submit'].join('/'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               depositId: newDep.depositId,
               txId: newDep.txId,
-              userId: newDep.userId,
-              username: newDep.username,
+              userId: effectiveUid,
+              username: effectiveUname,
               amountInr: newDep.amountInr,
               usdtAmount: newDep.usdtAmount,
               appliedRate: newDep.appliedRate,
@@ -33105,8 +33215,7 @@ function generateGenuineQrMatrix(text) {
     }
   };
 
-  // 3. Wire Customer Withdrawal Submission (`submitWithdrawalRequest`) to `POST /api/withdraw/submit`
-  //    so withdrawals from ANY mobile device immediately appear in the Admin Panel!
+  // 4. Wire Customer Withdrawal Submission (`submitWithdrawalRequest`) to `POST /api/withdraw/submit`
   const _origSubmitWdV14 = window.submitWithdrawalRequest;
   window.submitWithdrawalRequest = async function() {
     let beforeWdIds = new Set();
@@ -33121,16 +33230,20 @@ function generateGenuineQrMatrix(text) {
 
     if (window.location.protocol !== 'file:') {
       try {
+        await window.ensureValidCustomerJwtSessionV16(false);
+        const sess = getActiveCustomerSessV15();
         const stPost = JSON.parse(window.__xyzSafeStorage.getItem(XYZ_STATE_KEY) || '{}');
         const newWd = (stPost.adminWithdrawals || []).find(w => w && w.withdrawalId && !beforeWdIds.has(w.withdrawalId));
         if (newWd) {
+          const effectiveUid = (sess && sess.userId) || newWd.userId || 'UID-10001';
+          const effectiveUname = (sess && sess.username) || newWd.username || stPost.username || 'Player';
           await fetch(['', 'api', 'withdraw/submit'].join('/'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               withdrawalId: newWd.withdrawalId,
-              userId: newWd.userId,
-              username: newWd.username,
+              userId: effectiveUid,
+              username: effectiveUname,
               amountInr: newWd.requestedInr,
               usdtAmount: newWd.usdtAmount,
               appliedRate: newWd.appliedRate,
@@ -33148,7 +33261,7 @@ function generateGenuineQrMatrix(text) {
     }
   };
 
-  // 4. Enhanced Cross-Device Heartbeat Poll that also receives Remote Commands & Balance Updates from Server!
+  // 5. Unified Cross-Device Heartbeat Poll that receives Remote Commands & Balance Updates from Server!
   async function pollDeviceHeartbeatAndCommandsV15() {
     if (window.location.protocol === 'file:') return;
     try {
@@ -33227,16 +33340,19 @@ function generateGenuineQrMatrix(text) {
             window.__isApplyingRemoteCloudState = false;
             if (typeof window.renderBalance === 'function') window.renderBalance();
             if (typeof window.renderProfilePage === 'function' && curView === 'profile') window.renderProfilePage();
+            if (typeof window.renderDepositPage === 'function' && curView === 'deposit') window.renderDepositPage();
+            if (typeof window.renderWithdrawPage === 'function' && curView === 'withdraw') window.renderWithdrawPage();
           }
         }
       }
     } catch (e) {}
   }
 
-  // Reconnect SSE upon Customer Login or Registration
+  // Reconnect SSE & sync session upon Customer Login or Registration
   const _origLoginV14 = window.handleXyzUserLogin;
   window.handleXyzUserLogin = async function() {
     await _origLoginV14();
+    await window.ensureValidCustomerJwtSessionV16(false);
     window.reconnectAuthenticatedCustomerSse();
     pollDeviceHeartbeatAndCommandsV15();
   };
@@ -33244,18 +33360,21 @@ function generateGenuineQrMatrix(text) {
   const _origRegV14 = window.handleXyzUserRegister;
   window.handleXyzUserRegister = async function() {
     await _origRegV14();
+    await window.ensureValidCustomerJwtSessionV16(false);
     window.reconnectAuthenticatedCustomerSse();
     pollDeviceHeartbeatAndCommandsV15();
   };
 
   setInterval(pollDeviceHeartbeatAndCommandsV15, 2000);
-  setTimeout(() => {
+  setTimeout(async () => {
+    await window.ensureValidCustomerJwtSessionV16(false);
     window.reconnectAuthenticatedCustomerSse();
     pollDeviceHeartbeatAndCommandsV15();
-  }, 500);
+    await window.pullCustomerStateFromCloud();
+  }, 200);
 })();
 </script>
-<!-- === END XYZ CUSTOMER V15 CROSS-DEVICE REMOTE CONTROL & ATOMIC DEPOSIT/WITHDRAW SYNC === -->
+<!-- === END XYZ CUSTOMER V16 AUTO-SESSION SYNC, CROSS-DEVICE REMOTE CONTROL & ATOMIC DEPOSIT/WITHDRAW SYNC === -->
 
 </body>
 </html>

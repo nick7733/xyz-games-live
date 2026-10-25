@@ -624,8 +624,15 @@ function redactStateForClient(masterState, authSession) {
   }
 
   // Customer or Unauthenticated Visitor View:
-  // Only expose public game/website config and the authenticated customer's own records
+  // Always include adminUpdatedAt & public game/website config so mobile devices immediately accept Admin updates!
   const publicAndSelfState = {
+    adminUpdatedAt: Number(masterState.adminUpdatedAt || Date.now()),
+    systemToggles: masterState.systemToggles || {},
+    auditModalConfig: masterState.auditModalConfig || {},
+    activeSlot: masterState.activeSlot || '30SEC',
+    webappActiveWingoSlot: masterState.webappActiveWingoSlot || masterState.activeSlot || '30SEC',
+    webappActiveWingoPeriodId: masterState.webappActiveWingoPeriodId || '',
+    webappActiveWingoUpdatedAt: Number(masterState.webappActiveWingoUpdatedAt || 0),
     websiteConfig: masterState.websiteConfig || {},
     currencyConfig: masterState.currencyConfig || {},
     firstDepositBonusConfig: masterState.firstDepositBonusConfig || {},
@@ -635,10 +642,7 @@ function redactStateForClient(masterState, authSession) {
     wingoRules: masterState.wingoRules || {},
     settledPeriodResults: Object.assign({}, masterState.settledPeriodResults || {}, masterState.manualOverrides || {}),
     manualOverrides: Object.assign({}, masterState.settledPeriodResults || {}, masterState.manualOverrides || {}),
-    wingoPeriods: (masterState.wingoPeriods || []).slice(0, 100).map(p => {
-      const cp = Object.assign({}, p);
-      return cp;
-    }),
+    wingoPeriods: (masterState.wingoPeriods || []).slice(0, 100).map(p => Object.assign({}, p)),
     lotteryDraws: (masterState.lotteryDraws || []).map(d => Object.assign({}, d)),
     ludoConfig: masterState.ludoConfig || {},
     unoConfig: masterState.unoConfig || {},
@@ -649,6 +653,9 @@ function redactStateForClient(masterState, authSession) {
     ludoTournaments: masterState.ludoTournaments || [],
     unoTournaments: masterState.unoTournaments || [],
     mathTournaments: masterState.mathTournaments || [],
+    ludoManualMatches: masterState.ludoManualMatches || [],
+    unoManualMatches: masterState.unoManualMatches || [],
+    mathManualMatches: masterState.mathManualMatches || [],
     liveMatchmakingLobby: masterState.liveMatchmakingLobby || { UNO: [], LUDO: [], QUIZ: [] },
     paymentGatewayConfig: masterState.paymentGatewayConfig
       ? {
@@ -667,21 +674,19 @@ function redactStateForClient(masterState, authSession) {
     superAdminConfigured: Boolean(masterState.superAdminConfigured),
     forceLogoutMap: callerUid && masterState.forceLogoutMap && masterState.forceLogoutMap[callerUid]
       ? { [callerUid]: masterState.forceLogoutMap[callerUid] }
-      : {},
-    // Redacted promotions metadata (never expose full list of active secret codes to unauthenticated scrapers)
-    adminPromotions: callerUid
-      ? (masterState.adminPromotions || []).map(p => ({
-          code: p.code,
-          title: p.title,
-          rewardInr: p.rewardInr,
-          totalValueInr: p.totalValueInr,
-          distributionMode: p.distributionMode,
-          maxClaims: p.maxClaims,
-          claimedCount: p.claimedCount,
-          status: p.status,
-          redeemedByUids: (p.redeemedByUids || []).includes(callerUid) ? [callerUid] : []
-        }))
-      : [],
+      : (masterState.forceLogoutMap || {}),
+    adminPromotions: (masterState.adminPromotions || []).map(p => ({
+      promoId: p.promoId,
+      code: p.code,
+      title: p.title,
+      rewardInr: p.rewardInr,
+      totalValueInr: p.totalValueInr,
+      distributionMode: p.distributionMode,
+      maxClaims: p.maxClaims,
+      claimedCount: p.claimedCount,
+      status: p.status,
+      redeemedByUids: callerUid && (p.redeemedByUids || []).includes(callerUid) ? [callerUid] : []
+    })),
     // Scoped strictly to the authenticated customer (`callerUid`)
     adminUsersList: callerUid
       ? (masterState.adminUsersList || []).filter(u => u && u.userId === callerUid).map(u => stripSecretsFromUser(u, true))
@@ -720,21 +725,12 @@ function redactStateForClient(masterState, authSession) {
     commissionLedger: callerUid
       ? (masterState.commissionLedger || []).filter(c => c && (!c.beneficiaryUserId || c.beneficiaryUserId === callerUid || c.memberId === callerUid))
       : [],
-    ludoManualMatches: callerUid
-      ? (masterState.ludoManualMatches || []).filter(m => m && (m.player1Id === callerUid || m.player2Id === callerUid))
-      : [],
-    unoManualMatches: callerUid
-      ? (masterState.unoManualMatches || []).filter(m => m && (m.player1Id === callerUid || m.player2Id === callerUid))
-      : [],
-    mathManualMatches: callerUid
-      ? (masterState.mathManualMatches || []).filter(m => m && (m.player1Id === callerUid || m.player2Id === callerUid))
-      : [],
     remoteCommandsQueue: (masterState.remoteCommandsQueue || []).filter(cmd => {
-      if (!cmd) return false;
+      if (!cmd || (Date.now() - Number(cmd.createdAt || 0) > 120000)) return false;
       const tDev = String(cmd.targetDeviceId || 'ALL').trim().toUpperCase();
       const tUid = String(cmd.targetUid || '').trim().toUpperCase();
       if (tDev === 'ALL' && !tUid) return true;
-      if (callerUid && tUid === callerUid.toUpperCase()) return true;
+      if (callerUid && (tUid === callerUid.toUpperCase() || tDev === ('IND-' + callerUid.toUpperCase().replace(/[^A-Z0-9]/g, '')))) return true;
       if (tDev && tDev !== 'ALL') return true;
       return false;
     })

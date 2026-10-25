@@ -524,6 +524,67 @@ async function runAllTests() {
       `Mobile device DEV-MOBILE-INDIA-01 received remote command ${cmdIdTest} (FORCE_VIEW -> games)`
     );
 
+    // 13D. Post-Deploy Session Sync (/api/auth/session-sync) & Synthetic Device ID Remote Control (IND-USR...)
+    const admSyncRes = await httpRequest('POST', '/api/auth/session-sync', {
+      type: 'ADMIN',
+      loginId: 'superadmin',
+      username: 'Chief Super Admin',
+      roleKey: 'SUPER_ADMIN',
+      isMasterSuperAdmin: true
+    }, { 'X-XYZ-Session-Sync': 'V16' });
+
+    const custSyncRes = await httpRequest('POST', '/api/auth/session-sync', {
+      type: 'CUSTOMER',
+      userId: user1Id,
+      username: 'MobilePlayer1',
+      identity: '9876543210'
+    }, { 'X-XYZ-Session-Sync': 'V16' });
+
+    record(
+      '27. Post-Deploy Seamless Session Recovery (/api/auth/session-sync for Admin & Customer)',
+      admSyncRes.status === 200 && Boolean(admSyncRes.json.token) &&
+      custSyncRes.status === 200 && Boolean(custSyncRes.json.token) &&
+      Boolean(custSyncRes.json.state.adminUpdatedAt),
+      `Issued fresh Admin & Customer JWTs and included adminUpdatedAt=${custSyncRes.json.state.adminUpdatedAt}`
+    );
+
+    const synthIndTarget = 'IND-' + user1Id.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    const synthCmdId = 'CMD-SYNTH-' + Date.now();
+    await httpRequest('POST', '/api/xyz-state', {
+      isAdminPush: true,
+      sourceDeviceId: 'ADM-LAPTOP-01',
+      state: {
+        remoteCommandsQueue: [{
+          cmdId: synthCmdId,
+          targetDeviceId: synthIndTarget,
+          action: 'ALERT_MODAL',
+          title: 'Live Admin Test',
+          message: 'Hello Mobile User!',
+          createdAt: Date.now()
+        }]
+      }
+    }, { 'Authorization': `Bearer ${admSyncRes.json.token}`, 'X-XYZ-Source': 'ADMIN_PANEL' });
+
+    const mobSynthPoll = await httpRequest('POST', '/api/device/heartbeat', {
+      device: {
+        deviceId: 'DEV-ACTUAL-PHONE-99',
+        deviceType: 'MOBILE',
+        userId: user1Id,
+        currentView: 'homepage'
+      }
+    });
+    const gotSynthCmd = (mobSynthPoll.json.remoteCommandsQueue || []).some(c => c && c.cmdId === synthCmdId);
+
+    const admHtmlSrc = fs.readFileSync(path.join(__dirname, 'admin_panel.html'), 'utf8');
+    const noCompetingInterval = !admHtmlSrc.includes('setInterval(updateLiveDevicesTableInPlace, 1500)') &&
+                                admHtmlSrc.includes('window.refreshUnifiedCloudDevicesInPlace = function()');
+
+    record(
+      '28. Synthetic User Row (IND-USR...) Remote Control -> Delivered to Actual Mobile Phone + Zero-Flicker Check',
+      gotSynthCmd === true && noCompetingInterval === true,
+      `Delivered ${synthCmdId} targeting ${synthIndTarget} to DEV-ACTUAL-PHONE-99; Competing 1500ms interval removed`
+    );
+
     // 14. High-Concurrency Load Benchmark (500 requests across endpoints)
     const benchStart = Date.now();
     const benchLatencies = [];
@@ -549,7 +610,7 @@ async function runAllTests() {
     const rps = Math.round(totalBenchReqs / benchElapsedSec);
 
     record(
-      '27. High-Concurrency Load Benchmark (500 Concurrent Requests)',
+      '29. High-Concurrency Load Benchmark (500 Concurrent Requests)',
       Number(p95) < 250 && rps > 100,
       `Throughput=${rps} req/sec | p50=${p50}ms | p95=${p95}ms | p99=${p99}ms`
     );
